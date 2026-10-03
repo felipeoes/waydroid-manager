@@ -10,7 +10,7 @@ import time
 
 from . import __version__, paths
 from .client import Daemon, DaemonError, platform_service, start_session, statusbar_service, stop_session, session_active
-from .instance import SETTINGS, RESTART_SETTINGS, validate_id
+from .instance import SETTINGS, RESTART_SETTINGS
 
 ACTIVE = ("RUNNING", "FROZEN")
 
@@ -55,20 +55,18 @@ def stock_state():
 
 def cmd_list(o):
     d = daemon()
-    rows = [("ID", "NAME", "STATE", "IP", "SIZE", "LIMITS")]
-    rows.append(("default", "stock Waydroid", stock_state(), "192.168.240.x", "-", "-"))
-    for i in sorted(d.list(), key=lambda x: int(x["index"])):
-        size = "{}x{}".format(i["width"], i["height"]) if i["width"] != "0" else "auto"
-        if i["dpi"] != "0":
-            size += "@" + i["dpi"]
-        lim = []
-        if i["cpus"]:
-            lim.append(i["cpus"] + " cpu")
+    items = sorted(d.list(), key=lambda x: int(x["index"]))
+    from .session import desktop
+    desktop.cleanup_launchers([i["id"] for i in items])
+    rows = [("#", "NAME", "STATE", "IP", "SCREEN", "DEVICE", "LIMITS")]
+    rows.append(("0", "Stock Waydroid (default)", stock_state(), "192.168.240.x", "-", "-", "-"))
+    from . import devices
+    for i in items:
+        screen = "{}x{}@{}".format(i["width"], i["height"], i["dpi"])
+        lim = "{} cpu, {}".format(i["cpus"], i["memory"])
         if i["cpuset"]:
-            lim.append("cpus " + i["cpuset"])
-        if i["memory"]:
-            lim.append(i["memory"] + " mem")
-        rows.append((i["id"], i["name"], i["state"], i["ip"], size, ", ".join(lim) or "-"))
+            lim += ", cpus " + i["cpuset"]
+        rows.append((i["id"], i["name"], i["state"], i["ip"], screen, devices.label(i["device_model"]), lim))
     widths = [max(len(r[c]) for r in rows) for c in range(len(rows[0]))]
     for r in rows:
         print("  ".join(v.ljust(w) for v, w in zip(r, widths)).rstrip())
@@ -76,12 +74,15 @@ def cmd_list(o):
 
 def settings_from_args(o):
     s = {}
-    for key in ("name", "width", "height", "dpi", "cpus", "cpuset", "memory", "close_action", "idle_action"):
+    for key in ("name", "width", "height", "dpi", "cpus", "cpuset", "memory", "close_action", "idle_action",
+                "device_model", "zoom"):
         v = getattr(o, key, None)
         if v is not None:
             s[key] = str(v)
     if getattr(o, "no_window_labels", False):
         s["window_labels"] = "false"
+    if getattr(o, "no_frame", False):
+        s["window_frame"] = "false"
     for kv in getattr(o, "prop", None) or []:
         if "=" not in kv:
             die("--prop expects KEY=VALUE")
@@ -90,55 +91,67 @@ def settings_from_args(o):
     return s
 
 
-def cmd_create(o):
-    try:
-        validate_id(o.id)
-    except ValueError as e:
-        die(e)
-    d = daemon()
-    opts = settings_from_args(o)
-    clone_from = getattr(o, "clone_from", None)
-    if clone_from:
-        opts["clone_from"] = clone_from
-        opts["reset_ids"] = "false" if o.keep_ids else "true"
-        if clone_from == "default":
-            from . import stockctl
-            if stockctl.status()["session"] == "RUNNING":
-                print("Stopping stock Waydroid first...")
-                stockctl.stop()
-        else:
-            info = d.get(clone_from)
-            if info["state"] != "STOPPED":
-                print("Stopping '{}' first...".format(clone_from))
-                stop_session(clone_from)
-                if d.get(clone_from)["state"] != "STOPPED":
-                    d.stop(clone_from)
-        print("Cloning {} into '{}'...".format(clone_from, o.id))
-    try:
-        d.create(o.id, opts)
-    except DaemonError as e:
-        die(e)
-    info = d.get(o.id)
+def _finish_create(d, iid, o, cloned=False):
+    info = d.get(iid)
     if not o.no_launcher:
         from .session import desktop
-        desktop.write_launcher(o.id, info["name"])
-    print("Created instance '{}' (IP {}).".format(o.id, info["ip"]))
-    if clone_from and not o.keep_ids:
+        desktop.write_launcher(iid, info["name"])
+    print("Created instance #{} “{}” (IP {}).".format(iid, info["name"], info["ip"]))
+    if cloned and not o.keep_ids:
         print("Device identity will be reset on first start. If this is a GAPPS image, register the new\n"
-              "GSF ID afterwards: waydroid-multi gsf-id {}  ->  https://www.google.com/android/uncertified".format(o.id))
-    print("Start it with: waydroid-multi start {}".format(o.id))
+              "GSF ID afterwards: waydroid-multi gsf-id {}  ->  https://www.google.com/android/uncertified".format(iid))
+    print("Start it with: waydroid-multi start {}".format(iid))
+
+
+def cmd_create(o):
+    d = daemon()
+    try:
+        iid = d.create(settings_from_args(o))
+    except DaemonError as e:
+        die(e)
+    _finish_create(d, iid, o)
 
 
 def cmd_clone(o):
-    o.id, o.clone_from = o.new, o.src
-    cmd_create(o)
+    d = daemon()
+    src = o.src
+    opts = settings_from_args(o)
+    opts["clone_from"] = src
+    opts["reset_ids"] = "false" if o.keep_ids else "true"
+    if src == "default":
+        from . import stockctl
+        if stockctl.status()["session"] == "RUNNING" or stockctl.state() != "STOPPED":
+            print("Stopping stock Waydroid first...")
+            stockctl.stop()
+        label = "stock Waydroid"
+    else:
+        info = d.get(src)
+        label = "#{} “{}”".format(src, info["name"])
+        if info["state"] != "STOPPED":
+            print("Stopping {} first...".format(label))
+            stop_session(src)
+            if d.get(src)["state"] != "STOPPED":
+                d.stop(src)
+    print("Cloning {}...".format(label))
+    try:
+        iid = d.create(opts)
+    except DaemonError as e:
+        die(e)
+    _finish_create(d, iid, o, cloned=True)
+
+
+def cmd_devices(o):
+    from . import devices
+    for key, (label, kind, values) in devices.PRESETS.items():
+        detail = "{} ({})".format(values["model"], kind) if values else ""
+        print("{:18} {:28} {}".format(key, label, detail))
 
 
 def cmd_delete(o):
     d = daemon()
     for iid in o.ids:
         if not o.yes:
-            ans = input("Delete instance '{}' and ALL its data? [y/N] ".format(iid))
+            ans = input("Delete instance #{} and ALL its data? [y/N] ".format(iid))
             if ans.strip().lower() not in ("y", "yes"):
                 continue
         stop_session(iid)
@@ -148,7 +161,7 @@ def cmd_delete(o):
             die(e)
         from .session import desktop
         desktop.remove_launcher(iid)
-        print("Deleted '{}'.".format(iid))
+        print("Deleted #{}.".format(iid))
 
 
 def cmd_config(o):
@@ -210,11 +223,11 @@ def ensure_running(d, iid, background=False):
     if info["state"] == "RUNNING":
         return False
     if info["state"] not in ("STOPPED",):
-        die("instance '{}' is {}".format(iid, info["state"]))
+        die("instance #{} is {}".format(iid, info["state"]))
     start_session(iid, background=background)
     st = wait_state(d, iid, ACTIVE)
     if st not in ACTIVE:
-        die("instance '{}' failed to start (state {}). See: journalctl --user -u {}"
+        die("instance #{} failed to start (state {}). See: journalctl --user -u {}"
             .format(iid, st, "waydroid-multi-session-{}".format(iid)))
     return True
 
@@ -229,15 +242,15 @@ def cmd_start(o):
     info = d.get(o.id)
     if info["state"] in ACTIVE:
         if o.background:
-            print("'{}' is already running.".format(o.id))
+            print("#{} is already running.".format(o.id))
             return
         if info["state"] == "FROZEN":
             d.unfreeze(o.id)
         show_full_ui(o.id)
         return
-    print("Starting '{}'...".format(o.id))
+    print("Starting #{}...".format(o.id))
     ensure_running(d, o.id, background=o.background)
-    print("'{}' is running (IP {}).".format(o.id, info["ip"]))
+    print("#{} is running (IP {}).".format(o.id, info["ip"]))
     if o.wait:
         cmd_wait(o)
 
@@ -270,7 +283,7 @@ def cmd_stop(o):
                 d.stop(iid)
         except DaemonError as e:
             die(e)
-        print("Stopped '{}'.".format(iid))
+        print("Stopped #{}.".format(iid))
 
 
 def cmd_status(o):
@@ -295,12 +308,12 @@ def cmd_wait(o):
         try:
             p = platform_service(o.id, timeout=max(1, int(deadline - time.time())))
             if p.getprop("sys.boot_completed", "") == "1":
-                print("'{}' has booted.".format(o.id))
+                print("#{} has booted.".format(o.id))
                 return
         except DaemonError:
             pass
         time.sleep(1)
-    die("timed out waiting for '{}' to boot".format(o.id))
+    die("timed out waiting for #{} to boot".format(o.id))
 
 
 def cmd_app(o):
@@ -324,7 +337,7 @@ def cmd_app(o):
         p.settingsPutString(2, "policy_control", "immersive.status=*" if multi == "false" else "immersive.full=*")
         return
     if d.get(o.id)["state"] not in ACTIVE:
-        die("instance '{}' is not running".format(o.id))
+        die("instance #{} is not running".format(o.id))
     if d.get(o.id)["state"] == "FROZEN":
         d.unfreeze(o.id)
     p = platform_service(o.id)
@@ -341,7 +354,7 @@ def cmd_app(o):
 def cmd_prop(o):
     d = daemon()
     if d.get(o.id)["state"] not in ACTIVE:
-        die("instance '{}' is not running".format(o.id))
+        die("instance #{} is not running".format(o.id))
     p = platform_service(o.id)
     if o.subaction == "get":
         print(p.getprop(o.key, "") or "")
@@ -369,7 +382,7 @@ def cmd_shell(o, logcat=False):
     if lxc_state(o.id) == "FROZEN":
         subprocess.run(["lxc-unfreeze", "-P", paths.LXC_PATH, "-n", paths.container_name(o.id)])
     elif lxc_state(o.id) != "RUNNING":
-        die("instance '{}' is not running".format(o.id))
+        die("instance #{} is not running".format(o.id))
     env = android_attach_env(o.id)
     cmd = ["lxc-attach", "-P", paths.LXC_PATH, "-n", paths.container_name(o.id), "--clear-env"]
     for k, v in env.items():
@@ -467,9 +480,12 @@ def add_settings(p, create=True):
     p.add_argument("--width", type=int, help="window width in px")
     p.add_argument("--height", type=int, help="window height in px")
     p.add_argument("--dpi", type=int, help="screen density")
-    p.add_argument("--cpus", help="CPU quota in cores (e.g. 2)")
+    p.add_argument("--cpus", help="CPU limit in cores (default 2)")
     p.add_argument("--cpuset", help="pin to host CPUs (e.g. 0-3)")
-    p.add_argument("--memory", help="soft memory limit (e.g. 4G)")
+    p.add_argument("--memory", help="memory limit (default 4G)")
+    p.add_argument("--device", dest="device_model", help="device model preset (see 'waydroid-multi devices')")
+    p.add_argument("--zoom", help="window zoom in %% or 'auto'")
+    p.add_argument("--no-frame", action="store_true", help="no title bar/toolbar")
     p.add_argument("--close-action", dest="close_action", choices=("stop", "freeze", "none"))
     p.add_argument("--idle-action", dest="idle_action", choices=("stop", "freeze", "none"))
     p.add_argument("--no-window-labels", action="store_true", help="don't label windows (no Wayland proxy)")
@@ -484,15 +500,13 @@ def parser():
 
     sub.add_parser("list", help="list instances").set_defaults(fn=cmd_list)
 
-    c = sub.add_parser("create", help="create a fresh instance from the stock Android image")
-    c.add_argument("id")
+    c = sub.add_parser("create", help="create a fresh instance from the stock Android image (gets the next free number)")
     add_settings(c)
     c.set_defaults(fn=cmd_create)
 
     c = sub.add_parser("clone", help="copy an instance (or 'default' = stock Waydroid) with its apps, "
                                      "data and settings into a new one")
-    c.add_argument("src")
-    c.add_argument("new")
+    c.add_argument("src", help="instance number or name, or 'default' (stock Waydroid)")
     c.add_argument("--keep-ids", action="store_true", help="keep the source's device identity")
     add_settings(c)
     c.set_defaults(fn=cmd_clone)
@@ -593,6 +607,7 @@ def parser():
     c.set_defaults(fn=cmd_gsf)
 
     sub.add_parser("doctor", help="check the host setup").set_defaults(fn=cmd_doctor)
+    sub.add_parser("devices", help="list device model presets").set_defaults(fn=cmd_devices)
 
     c = sub.add_parser("session", help=argparse.SUPPRESS)
     c.add_argument("id")
@@ -603,6 +618,19 @@ def parser():
     return p
 
 
+def resolve_refs(o):
+    """Turn instance references (number, name, 'default'/0) into ids."""
+    if not any(getattr(o, a, None) for a in ("id", "ids", "src")):
+        return
+    d = daemon()
+    if getattr(o, "id", None):
+        o.id = d.resolve(o.id)
+    if getattr(o, "ids", None):
+        o.ids = [d.resolve(r) for r in o.ids]
+    if getattr(o, "src", None):
+        o.src = d.resolve(o.src)
+
+
 def main(argv=None):
     p = parser()
     o = p.parse_args(argv)
@@ -610,6 +638,8 @@ def main(argv=None):
         p.print_help()
         return 0
     try:
+        if o.cmd not in ("session",):
+            resolve_refs(o)
         o.fn(o)
     except DaemonError as e:
         die(e)

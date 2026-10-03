@@ -22,7 +22,7 @@ import dbus.service
 from gi.repository import GLib
 
 from .. import __version__, paths, stock
-from ..instance import (Instance, SETTINGS, list_ids, validate_id, validate_prop,
+from ..instance import (Instance, SETTINGS, legacy_ids, list_ids, validate_id, validate_prop,
                         validate_setting)
 from ..registry import allocate_index
 from . import container, images, storage
@@ -64,13 +64,16 @@ class Manager(dbus.service.Object):
 
     def load(self, iid):
         try:
-            return Instance.load(validate_id(str(iid)))
+            iid = str(iid)
+            if iid in ("0", "default"):
+                raise ValueError("#0 is stock Waydroid, which is managed by Waydroid itself")
+            return Instance.load(validate_id(iid))
         except (FileNotFoundError, ValueError) as e:
             raise Error(e, "NotFound")
 
     def check_owner(self, inst, uid):
         if uid != 0 and uid != inst.owner_uid:
-            raise Error("instance '{}' belongs to another user".format(inst.id), "AccessDenied")
+            raise Error("instance #{} belongs to another user".format(inst.id), "AccessDenied")
 
     def state(self, iid):
         return self.transient.get(iid) or lxc_state(iid)
@@ -198,7 +201,7 @@ class Manager(dbus.service.Object):
             # Re-attach (e.g. after a daemon restart) or a second session
             cur = self.sessions.get(iid)
             if cur and cur["sender"] != sender and self._name_alive(cur["sender"]):
-                raise Error("instance '{}' is already running in another session".format(iid), "Busy")
+                raise Error("instance #{} is already running in another session".format(iid), "Busy")
             GLib.idle_add(self._attach_session, iid, uid, session, sender)
             if iid not in self.helpers:
                 self.start_helper(inst)
@@ -298,10 +301,11 @@ class Manager(dbus.service.Object):
         container.unfreeze(inst)
         GLib.idle_add(self._emit_state, iid)
 
-    def _create(self, iid, uid, opts):
-        if os.path.exists(paths.instance_dir(iid)):
-            raise Error("instance '{}' already exists".format(iid), "Exists")
+    def _create(self, uid, opts):
+        """Create an instance with the lowest free number; returns its id."""
         clone_from = opts.pop("clone_from", "")
+        if clone_from == "0":
+            clone_from = "default"
         reset_ids = opts.pop("reset_ids", "true") != "false"
         src_data = None
         settings = {}
@@ -317,11 +321,18 @@ class Manager(dbus.service.Object):
                 props.update(src.cfg["properties"])
         for k, v in opts.items():
             if k.startswith("prop:"):
-                props[k[5:]] = validate_prop(k[5:], v)
+                if v:
+                    props[k[5:]] = validate_prop(k[5:], v)
+                else:
+                    props.pop(k[5:], None)
             else:
                 settings[k] = validate_setting(k, v)
-        used = [i.index for i in self.all_instances()]
+        used = [i.index for i in self.all_instances()] + self._legacy_indices()
         index = allocate_index(used)
+        iid = str(index)
+        if os.path.exists(paths.instance_dir(iid)):
+            raise Error("instance #{} already exists on disk".format(iid), "Exists")
+        settings.setdefault("name", "Instance {}".format(iid))
         image_id = images.ensure_synced(self.images_in_use())
         w = dict(stock.load_stock_cfg()["waydroid"])
         for k in ("binder", "vndbinder", "hwbinder", "images_path"):
@@ -350,6 +361,39 @@ class Manager(dbus.service.Object):
             self.set_transient(iid, None)
         self.net.reload_hosts(self.hosts())
         GLib.idle_add(lambda: (self.InstanceAdded(iid), False)[1])
+        return iid
+
+    def _legacy_indices(self):
+        out = []
+        for slug in legacy_ids():
+            try:
+                out.append(Instance.load(slug, legacy=True).index)
+            except Exception:  # noqa: BLE001
+                pass
+        return out
+
+    def migrate_legacy(self):
+        """0.1 used names as ids; rename stopped instances to their numbers."""
+        for slug in legacy_ids():
+            try:
+                old = Instance.load(slug, legacy=True)
+                if lxc_state(slug) != "STOPPED":
+                    log.warning("instance '%s' is running; it will be renumbered after it stops", slug)
+                    continue
+                new_id = str(old.index)
+                if os.path.exists(paths.instance_dir(new_id)):
+                    log.error("cannot renumber '%s': instance #%s already exists", slug, new_id)
+                    continue
+                container.cleanup(old)
+                if not old.cfg["instance"].get("name"):
+                    old.cfg["instance"]["name"] = slug
+                old.save()
+                os.rename(paths.instance_dir(slug), paths.instance_dir(new_id))
+                if os.path.isdir(paths.lxc_dir(slug)):
+                    os.rename(paths.lxc_dir(slug), paths.lxc_dir(new_id))
+                log.info("renumbered instance '%s' to #%s", slug, new_id)
+            except Exception as e:  # noqa: BLE001
+                log.error("migrating instance '%s' failed: %s", slug, e)
 
     def _clone_source(self, src, uid):
         if src == "default":
@@ -357,7 +401,7 @@ class Manager(dbus.service.Object):
             data = os.path.join(pw.pw_dir, ".local/share/waydroid/data")
             r = subprocess.run(["lxc-info", "-P", paths.STOCK_WORK + "/lxc", "-n", "waydroid", "-sH"],
                                capture_output=True, text=True)
-            if r.stdout.strip() not in ("", "STOPPED"):
+            if r.stdout.strip() not in ("", "STOPPED") or os.path.isdir("/sys/fs/cgroup/lxc.payload.waydroid"):
                 raise Error("stop the stock Waydroid session first ('waydroid session stop')", "Busy")
             if not os.path.isdir(data) or os.path.islink(data) or os.stat(data).st_uid != uid:
                 raise Error("no stock Waydroid data found at {}".format(data), "NotFound")
@@ -365,7 +409,7 @@ class Manager(dbus.service.Object):
         sinst = self.load(src)
         self.check_owner(sinst, uid)
         if self.state(sinst.id) != "STOPPED":
-            raise Error("stop instance '{}' before cloning it".format(src), "Busy")
+            raise Error("stop instance #{} before cloning it".format(src), "Busy")
         return sinst.data_dir
 
     def _delete(self, iid):
@@ -396,17 +440,15 @@ class Manager(dbus.service.Object):
     def Get(self, iid):
         return self.info(self.load(iid))
 
-    @dbus.service.method(paths.DBUS_IFACE, in_signature="sa{ss}", out_signature="",
+    @dbus.service.method(paths.DBUS_IFACE, in_signature="a{ss}", out_signature="s",
                          sender_keyword="sender", async_callbacks=("reply", "error"))
-    def Create(self, iid, opts, sender, reply, error):
+    def Create(self, opts, sender, reply, error):
+        """Create (or clone, with opts["clone_from"]) an instance; returns its number."""
         uid = self.caller(sender)
-        try:
-            iid = validate_id(str(iid))
-        except ValueError as e:
-            return error(Error(e, "InvalidArgs"))
         if uid != 0 and sum(1 for i in self.all_instances() if i.owner_uid == uid) >= MAX_PER_USER:
             return error(Error("instance limit reached ({} per user)".format(MAX_PER_USER), "LimitReached"))
-        self.run_async(iid, lambda: self._create(iid, uid, _s(opts)), reply, error)
+        # Creates are serialised: the lowest free number is reserved by creating its directory
+        self.run_async("__create__", lambda: self._create(uid, _s(opts)), reply, error)
 
     @dbus.service.method(paths.DBUS_IFACE, in_signature="s", out_signature="",
                          sender_keyword="sender", async_callbacks=("reply", "error"))
@@ -453,7 +495,7 @@ class Manager(dbus.service.Object):
             if uid == 0 and inst.owner_uid != 0:
                 uid = inst.owner_uid  # root starting a user's instance: use the owner's sockets
             if self.transient.get(inst.id) in ("STARTING", "STOPPING", "CLONING", "DELETING"):
-                raise Error("instance '{}' is busy ({})".format(inst.id, self.transient[inst.id]), "Busy")
+                raise Error("instance #{} is busy ({})".format(inst.id, self.transient[inst.id]), "Busy")
         except Error as e:
             return error(e)
         except (ValueError, dbus.DBusException) as e:
@@ -515,7 +557,7 @@ class Manager(dbus.service.Object):
                 container.unfreeze(inst)
             elif st != "RUNNING":
                 os.close(raw)
-                raise Error("instance '{}' is not running".format(inst.id), "NotRunning")
+                raise Error("instance #{} is not running".format(inst.id), "NotRunning")
             return storage.install_apk(inst, raw, str(filename))
         self.run_async(inst.id, work, reply, error)
 
@@ -588,6 +630,7 @@ class Manager(dbus.service.Object):
         return False
 
     def reconcile(self):
+        self.migrate_legacy()
         try:
             a = stock.make_args(paths.STATE_DIR, paths.STATE_DIR + "/none.cfg")
             container.binder.ensure_binderfs(a)

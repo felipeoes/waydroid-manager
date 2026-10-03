@@ -14,9 +14,10 @@ import os
 import re
 import time
 
-from . import paths
+from . import devices, paths
 
-ID_RE = re.compile(r"^[a-z][a-z0-9_]{0,30}$")
+ID_RE = re.compile(r"^[1-9][0-9]{0,2}$")            # instance ids are their numbers
+LEGACY_ID_RE = re.compile(r"^[a-z][a-z0-9_]{0,30}$")  # 0.1 slug ids, migrated at daemon start
 PROP_KEY_RE = re.compile(r"^[A-Za-z0-9_.\-]{1,96}$")
 CPUSET_RE = re.compile(r"^[0-9]+(-[0-9]+)?(,[0-9]+(-[0-9]+)?)*$")
 MEM_RE = re.compile(r"^[0-9]+[KMG]?$")
@@ -24,11 +25,33 @@ MAX_INDEX = 240
 ACTIONS = ("stop", "freeze", "none")
 
 
-def validate_id(iid):
-    if iid == "default" or not ID_RE.match(iid or ""):
-        raise ValueError("invalid instance id '{}': use 1-31 chars of a-z, 0-9, _ "
-                         "starting with a letter ('default' is reserved)".format(iid))
-    return iid
+def validate_id(iid, legacy=False):
+    iid = str(iid or "")
+    if ID_RE.match(iid) and int(iid) <= MAX_INDEX:
+        return iid
+    if legacy and LEGACY_ID_RE.match(iid) and iid != "default":
+        return iid
+    raise ValueError("invalid instance id '{}': instances are numbered 1-{}".format(iid, MAX_INDEX))
+
+
+def host_memory_bytes():
+    try:
+        with open("/proc/meminfo") as f:
+            for line in f:
+                if line.startswith("MemTotal:"):
+                    return int(line.split()[1]) * 1024
+    except (OSError, ValueError, IndexError):
+        pass
+    return 8 * 1024 ** 3
+
+
+def default_cpus():
+    return str(min(2, os.cpu_count() or 2))
+
+
+def default_memory():
+    # 4 GB per instance, but small hosts (<= 6 GB RAM) get 2 GB
+    return "4G" if host_memory_bytes() > 6 * 1024 ** 3 else "2G"
 
 
 def _bool(v):
@@ -51,11 +74,12 @@ def _uint(maxv):
 
 def _cpus(v):
     s = str(v).strip()
-    if s in ("", "0"):
-        return ""
-    n = float(s)
-    if n <= 0 or n > 1024:
-        raise ValueError("cpus must be a positive number of cores")
+    try:
+        n = float(s)
+    except ValueError:
+        raise ValueError("cpus must be a number of cores, e.g. 2")
+    if n < 0.25 or n > 1024:
+        raise ValueError("cpus must be at least 0.25 cores")
     return ("%g" % n)
 
 
@@ -70,10 +94,28 @@ def _memory(v):
     s = str(v).strip().upper()
     if s.endswith("B"):
         s = s[:-1]
-    if s in ("", "0"):
-        return ""
     if not MEM_RE.match(s):
-        raise ValueError("memory must look like 4G, 3072M")
+        raise ValueError("memory must look like 4G or 3072M")
+    mult = {"K": 1024, "M": 1024 ** 2, "G": 1024 ** 3}.get(s[-1], 1)
+    if int(s.rstrip("KMG")) * mult < 512 * 1024 ** 2:
+        raise ValueError("memory must be at least 512M")
+    return s
+
+
+def _zoom(v):
+    s = str(v).strip().lower().rstrip("%")
+    if s in ("", "auto"):
+        return "auto"
+    n = int(round(float(s)))
+    if n < 25 or n > 200:
+        raise ValueError("zoom must be auto or 25-200 (%)")
+    return str(n)
+
+
+def _device(v):
+    s = str(v).strip()
+    if s not in devices.PRESETS:
+        raise ValueError("unknown device model '{}' (see 'waydroid-multi devices')".format(s))
     return s
 
 
@@ -91,23 +133,33 @@ def _name(v):
     return s
 
 
-# User-editable settings: key -> (validator, default, description)
+# User-editable settings: key -> (validator, default, description).
+# A callable default is evaluated when read (host-dependent defaults).
 SETTINGS = {
     "name": (_name, None, "display name"),
-    "width": (_uint(16384), "0", "window width in pixels (0 = default)"),
-    "height": (_uint(16384), "0", "window height in pixels (0 = default)"),
-    "dpi": (_uint(1000), "0", "screen density (0 = default)"),
-    "cpus": (_cpus, "", "CPU quota in cores, e.g. 2 or 1.5 (empty = unlimited)"),
+    "width": (_uint(16384), "1280", "Android screen width in pixels"),
+    "height": (_uint(16384), "720", "Android screen height in pixels"),
+    "dpi": (_uint(1000), "240", "screen density"),
+    "cpus": (_cpus, default_cpus, "CPU limit in cores, e.g. 2"),
     "cpuset": (_cpuset, "", "pin to host CPUs, e.g. 0-3 (empty = any)"),
-    "memory": (_memory, "", "soft memory limit, e.g. 4G (empty = unlimited)"),
+    "memory": (_memory, default_memory, "memory limit, e.g. 4G"),
+    "device_model": (_device, "waydroid", "device model preset (see 'waydroid-multi devices')"),
+    "zoom": (_zoom, "auto", "window zoom in % (25-200) or auto (fit the screen)"),
     "close_action": (_action, "stop", "what closing the window does: stop|freeze|none"),
     "idle_action": (_action, "freeze", "what Android idle-suspend does: freeze|stop|none"),
     "window_labels": (_bool, "true", "label windows per instance (Wayland proxy)"),
+    "window_frame": (_bool, "true", "title bar, toolbar and resizing (needs window_labels)"),
     "desktop_apps": (_bool, "false", "create desktop entries for this instance's apps"),
 }
 
 # Settings that only take effect at the next start
-RESTART_SETTINGS = {"width", "height", "dpi", "cpus", "cpuset", "memory", "window_labels"}
+RESTART_SETTINGS = {"width", "height", "dpi", "cpus", "cpuset", "memory", "device_model",
+                    "window_labels", "window_frame"}
+
+
+def setting_default(key):
+    d = SETTINGS[key][1]
+    return d() if callable(d) else d
 
 
 def validate_setting(key, value):
@@ -140,8 +192,8 @@ def binder_nodes(index):
 class Instance:
     """An instance as stored in /var/lib/waydroid-multi/instances/<id>/instance.cfg."""
 
-    def __init__(self, iid, cfg=None):
-        self.id = validate_id(iid)
+    def __init__(self, iid, cfg=None, legacy=False):
+        self.id = validate_id(iid, legacy=legacy)
         self.cfg = cfg or configparser.ConfigParser()
         for sec in ("waydroid", "properties", "instance"):
             if sec not in self.cfg:
@@ -183,7 +235,7 @@ class Instance:
 
     @property
     def name(self):
-        return self.cfg["instance"].get("name") or self.id
+        return self.cfg["instance"].get("name") or "Instance {}".format(self.id)
 
     @property
     def mac(self):
@@ -198,11 +250,11 @@ class Instance:
         return self.cfg["instance"].get("image_id", "")
 
     def get(self, key):
+        if key == "name":
+            return self.name
         if key in SETTINGS:
-            default = SETTINGS[key][1]
-            if key == "name":
-                default = self.id
-            return self.cfg["instance"].get(key, default)
+            # empty values from older versions ("unlimited") read as the default
+            return self.cfg["instance"].get(key) or setting_default(key)
         return self.cfg["instance"].get(key, "")
 
     def getbool(self, key):
@@ -239,12 +291,12 @@ class Instance:
         return inst
 
     @classmethod
-    def load(cls, iid, path=None):
+    def load(cls, iid, path=None, legacy=False):
         cfg = configparser.ConfigParser()
-        p = path or os.path.join(paths.instance_dir(validate_id(iid)), "instance.cfg")
+        p = path or os.path.join(paths.instance_dir(validate_id(iid, legacy=legacy)), "instance.cfg")
         if not cfg.read(p):
-            raise FileNotFoundError("instance '{}' does not exist".format(iid))
-        return cls(iid, cfg)
+            raise FileNotFoundError("instance #{} does not exist".format(iid))
+        return cls(iid, cfg, legacy=legacy)
 
     def save(self, path=None):
         p = path or self.cfg_path
@@ -268,9 +320,19 @@ class Instance:
         return d
 
 
-def list_ids():
+def _dirs():
     try:
-        names = sorted(os.listdir(paths.INSTANCES_DIR))
+        return os.listdir(paths.INSTANCES_DIR)
     except FileNotFoundError:
         return []
-    return [n for n in names if ID_RE.match(n) and os.path.isfile(os.path.join(paths.INSTANCES_DIR, n, "instance.cfg"))]
+
+
+def list_ids():
+    ids = [n for n in _dirs() if ID_RE.match(n) and os.path.isfile(os.path.join(paths.INSTANCES_DIR, n, "instance.cfg"))]
+    return sorted(ids, key=int)
+
+
+def legacy_ids():
+    """Instance dirs from 0.1 that still use a name as their id."""
+    return sorted(n for n in _dirs() if not ID_RE.match(n) and LEGACY_ID_RE.match(n)
+                  and os.path.isfile(os.path.join(paths.INSTANCES_DIR, n, "instance.cfg")))

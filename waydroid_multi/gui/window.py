@@ -164,7 +164,7 @@ class StockRow(BaseRow):
         return m
 
     def subtitle(self):
-        return "{} · default instance, managed by Waydroid".format(STATE_LABEL.get(self.info["state"], "Stopped"))
+        return "#0 · {} · default instance, managed by Waydroid".format(STATE_LABEL.get(self.info["state"], "Stopped"))
 
 
 class MainWindow(Adw.ApplicationWindow):
@@ -256,6 +256,9 @@ class MainWindow(Adw.ApplicationWindow):
     def _got_list(self, items):
         self.stack.set_visible_child_name("list")
         self.instances = sorted(items, key=lambda i: int(i["index"]))
+        if not getattr(self, "_launchers_cleaned", False):
+            desktop.cleanup_launchers([i["id"] for i in self.instances])
+            self._launchers_cleaned = True
         ids = {i["id"] for i in self.instances}
         for iid in list(self.rows):
             if iid not in ids:
@@ -390,36 +393,36 @@ class MainWindow(Adw.ApplicationWindow):
     def new_instance(self):
         InstanceDialog("create", self._create).present(self)
 
-    def _create(self, iid, values):
-        self.toast("Creating '{}'…".format(values.get("name") or iid))
+    def _create(self, values):
+        name = values.get("name") or "new instance"
+        self.toast("Creating “{}”…".format(name))
 
-        def ok(*_):
+        def ok(iid):
+            info_name = values.get("name") or "Instance {}".format(iid)
             if values.get("window_labels", "true") == "true":
-                desktop.write_launcher(iid, values.get("name") or iid)
-            self.toast("Created '{}'".format(values.get("name") or iid))
+                desktop.write_launcher(iid, info_name)
+            self.toast("Created #{} “{}”".format(iid, info_name))
             self.refresh()
-        self.backend.call("Create", iid, values, ok=ok, fail=self.toast)
+        self.backend.call("Create", values, ok=ok, fail=self.toast)
 
     def clone(self, info):
-        taken = {i["id"] for i in self.instances}
-        CloneDialog(info, taken, self._clone).present(self)
+        CloneDialog(info, self._clone).present(self)
 
-    def _clone(self, source, iid, values):
-        name = values.get("name") or iid
-
+    def _clone(self, source, values):
         def do_clone(ok=True):
             if not ok:
                 return
-            self.toast("Copying “{}” into “{}”…".format(source["name"], name), timeout=10)
+            self.toast("Copying “{}”…".format(source["name"]), timeout=10)
 
-            def done(*_):
+            def done(iid):
+                name = values.get("name") or "Instance {}".format(iid)
                 desktop.write_launcher(iid, name)
-                msg = "Cloned into “{}”".format(name)
+                msg = "Cloned into #{} “{}”".format(iid, name)
                 if values.get("reset_ids") == "true":
                     msg += " — new device identity on first start"
                 self.toast(msg, timeout=6)
                 self.refresh()
-            self.backend.call("Create", iid, values, ok=done, fail=self.toast)
+            self.backend.call("Create", values, ok=done, fail=self.toast)
 
         if source["state"] in ACTIVE:
             self._cli(source["id"], ["stop", source["id"]], "Could not stop " + source["name"], then=do_clone)

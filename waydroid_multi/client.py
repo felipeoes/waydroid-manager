@@ -56,8 +56,28 @@ class Daemon:
     def get(self, iid):
         return self.plain(self.call("Get", iid, timeout=60))
 
-    def create(self, iid, opts):
-        self.call("Create", iid, dbus.Dictionary(opts, signature="ss"))
+    def create(self, opts):
+        """Create (or clone, with opts['clone_from']) an instance; returns its number."""
+        return str(self.call("Create", dbus.Dictionary(opts, signature="ss")))
+
+    def resolve(self, ref):
+        """Instance number for a reference: a number, 'default'/'0', or a display name."""
+        ref = str(ref).strip()
+        if ref.lower() in ("0", "default", "#0"):
+            return "default"
+        num = ref.lstrip("#")
+        items = self.list()
+        if num.isdigit():
+            if any(i["id"] == num for i in items):
+                return num
+            raise DaemonError("no instance #{}".format(num))
+        hits = [i for i in items if i["name"].lower() == ref.lower()]
+        if len(hits) == 1:
+            return hits[0]["id"]
+        if not hits:
+            raise DaemonError("no instance named '{}'".format(ref))
+        raise DaemonError("several instances are named '{}': {}".format(
+            ref, ", ".join("#" + i["id"] for i in hits)))
 
     def delete(self, iid):
         self.call("Delete", iid)
@@ -115,7 +135,7 @@ def platform_service(iid, timeout=60):
             if remote:
                 return t.interfaces.IPlatform.IPlatform(remote)
         time.sleep(1)
-    raise DaemonError("Android in '{}' did not become ready in {}s".format(iid, timeout))
+    raise DaemonError("Android in #{} did not become ready in {}s".format(iid, timeout))
 
 
 def statusbar_service(iid):

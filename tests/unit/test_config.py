@@ -104,22 +104,49 @@ class LxcConfigTest(unittest.TestCase):
 
 
 class InstanceTest(unittest.TestCase):
-    def test_ids(self):
-        for ok in ("t1", "game_2", "a" * 31):
+    def test_ids_are_numbers(self):
+        for ok in ("1", "2", "99", "240"):
             self.assertEqual(validate_id(ok), ok)
-        for bad in ("", "default", "1abc", "A", "a-b", "a" * 32, "../x", "a b"):
+        for bad in ("", "0", "default", "241", "01", "t1", "-1", "1a", "../x"):
             with self.assertRaises(ValueError):
                 validate_id(bad)
+        # 0.1 name-based ids are only accepted for migration
+        self.assertEqual(validate_id("game_2", legacy=True), "game_2")
+        with self.assertRaises(ValueError):
+            validate_id("default", legacy=True)
 
     def test_settings_validation(self):
         self.assertEqual(validate_setting("memory", "4gb"), "4G")
         self.assertEqual(validate_setting("cpus", "2.0"), "2")
         self.assertEqual(validate_setting("window_labels", "off"), "false")
         self.assertEqual(validate_setting("close_action", "FREEZE"), "freeze")
+        self.assertEqual(validate_setting("zoom", "75%"), "75")
+        self.assertEqual(validate_setting("zoom", "AUTO"), "auto")
+        self.assertEqual(validate_setting("device_model", "pixel_7"), "pixel_7")
         for k, v in (("width", "-1"), ("cpuset", "0-3;rm"), ("memory", "lots"), ("close_action", "explode"),
-                     ("name", "a\nb"), ("bogus", "1")):
+                     ("name", "a\nb"), ("bogus", "1"), ("cpus", ""), ("memory", ""), ("memory", "100M"),
+                     ("zoom", "10"), ("device_model", "nokia3310")):
             with self.assertRaises(ValueError):
                 validate_setting(k, v)
+
+    def test_resource_defaults_follow_host_memory(self):
+        from unittest import mock
+        from waydroid_multi import instance
+        with mock.patch.object(instance, "host_memory_bytes", return_value=30 * 1024 ** 3):
+            self.assertEqual(instance.default_memory(), "4G")
+        with mock.patch.object(instance, "host_memory_bytes", return_value=4 * 1024 ** 3):
+            self.assertEqual(instance.default_memory(), "2G")
+        with mock.patch.object(instance.os, "cpu_count", return_value=1):
+            self.assertEqual(instance.default_cpus(), "1")
+
+    def test_empty_legacy_values_read_as_defaults(self):
+        inst = Instance.new("5", 5, 1000, "1-1", {}, {})
+        inst.cfg["instance"]["memory"] = ""
+        inst.cfg["instance"]["cpus"] = ""
+        from waydroid_multi.instance import default_cpus, default_memory
+        self.assertEqual(inst.get("memory"), default_memory())
+        self.assertEqual(inst.get("cpus"), default_cpus())
+        self.assertEqual(inst.get("name"), "Instance 5")
 
     def test_props(self):
         self.assertEqual(validate_prop("ro.hardware.egl", "mesa"), "mesa")
@@ -128,18 +155,18 @@ class InstanceTest(unittest.TestCase):
                 validate_prop(k, v)
 
     def test_new_instance_layout_and_roundtrip(self):
-        inst = Instance.new("t1", 3, 1000, "100-200", {"arch": "x86_64", "vendor_type": "MAINLINE"}, {"a.b": "1"})
+        inst = Instance.new("3", 3, 1000, "100-200", {"arch": "x86_64", "vendor_type": "MAINLINE"}, {"a.b": "1"})
         self.assertEqual(inst.binder("binder"), "binderfs/wdm3-binder")
         self.assertEqual(inst.binder("hwbinder"), "binderfs/wdm3-hwbinder")
         self.assertEqual(inst.mac, mac_for_index(3))
         self.assertEqual(inst.veth, "wdm3v")
         self.assertEqual(inst.get("close_action"), "stop")
-        self.assertEqual(inst.get("name"), "t1")
+        self.assertEqual(inst.get("name"), "Instance 3")
         with tempfile.TemporaryDirectory() as d:
             p = os.path.join(d, "instance.cfg")
             inst.set("width", "1280")
             inst.save(p)
-            again = Instance.load("t1", p)
+            again = Instance.load("3", p)
             self.assertEqual(again.get("width"), "1280")
             self.assertEqual(again.index, 3)
             self.assertEqual(again.cfg["properties"]["a.b"], "1")
@@ -180,22 +207,27 @@ class NetConfigTest(unittest.TestCase):
 
 
 class RegistryTest(unittest.TestCase):
-    def test_round_robin_without_reuse(self):
-        with tempfile.TemporaryDirectory() as d:
-            p = os.path.join(d, "registry.cfg")
-            self.assertEqual(allocate_index([], p), 1)
-            self.assertEqual(allocate_index([1], p), 2)
-            # 2 deleted: next allocation still moves forward
-            self.assertEqual(allocate_index([1], p), 3)
+    def test_lowest_free_number_is_reused(self):
+        self.assertEqual(allocate_index([]), 1)
+        self.assertEqual(allocate_index([1, 2, 3]), 4)
+        self.assertEqual(allocate_index([2, 3, 14]), 1)       # #1 was deleted: reuse it
+        self.assertEqual(allocate_index([1, 2, 3, 14]), 4)
 
-    def test_wraps_and_skips_used(self):
-        with tempfile.TemporaryDirectory() as d:
-            p = os.path.join(d, "registry.cfg")
-            with open(p, "w") as f:
-                f.write("[registry]\nnext_index = 240\n")
-            self.assertEqual(allocate_index([240, 1], p), 2)
-            with self.assertRaises(RuntimeError):
-                allocate_index(range(1, 241), p)
+    def test_limit(self):
+        with self.assertRaises(RuntimeError):
+            allocate_index(range(1, 241))
+
+
+class DevicesTest(unittest.TestCase):
+    def test_preset_props(self):
+        from waydroid_multi import devices
+        p = devices.props_for("galaxy_s24_ultra")
+        self.assertEqual(p["ro.product.waydroid.model"], "SM-S928B")
+        self.assertEqual(set(p), {"ro.product.waydroid." + f for f in devices.FIELDS})
+        self.assertEqual(devices.props_for("waydroid"), {})
+        custom = devices.props_for("custom", {"ro.product.waydroid.model": "X1", "ro.product.waydroid.brand": "",
+                                              "other": "y"})
+        self.assertEqual(custom, {"ro.product.waydroid.model": "X1"})
 
 
 if __name__ == "__main__":

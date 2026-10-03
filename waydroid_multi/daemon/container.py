@@ -12,7 +12,7 @@ import pwd
 import shutil
 import time
 
-from .. import lxcconfig, paths, stock
+from .. import devices, lxcconfig, paths, stock
 from ..instance import Instance
 from . import binder, images
 from .util import (CommandError, apparmor_profile_loaded, attach, bind, bind_file, chown_tree_top,
@@ -178,6 +178,9 @@ def write_props(inst, session):
     full = os.path.join(inst.dir, "waydroid.prop")
     t.helpers.images.make_prop(a, session, full)
     extra = ["waydroid.multi.instance=" + inst.id]
+    # Device model: ro.product.waydroid.* win in Android's product property source order
+    for k, v in devices.props_for(inst.get("device_model"), inst.cfg["properties"]).items():
+        extra.append("{}={}".format(k, v))
     if inst.get("width") != "0":
         extra.append("persist.waydroid.width=" + inst.get("width"))
     if inst.get("height") != "0":

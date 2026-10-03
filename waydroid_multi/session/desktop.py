@@ -61,6 +61,24 @@ def write_launcher(iid, name):
     return p
 
 
+def cleanup_launchers(existing_ids):
+    """Remove launchers of instances that no longer exist (e.g. 0.1 name-based ids)."""
+    d = paths.user_applications_dir()
+    keep = set(existing_ids)
+    try:
+        names = os.listdir(d)
+    except FileNotFoundError:
+        return
+    for f in names:
+        if f.startswith("waydroid-multi.") and f.endswith(".desktop"):
+            iid = f[len("waydroid-multi."):-len(".desktop")].split(".")[0]
+            if iid not in keep:
+                try:
+                    os.unlink(os.path.join(d, f))
+                except OSError:
+                    pass
+
+
 def remove_launcher(iid):
     for p in [launcher_path(iid)] + app_entries(iid):
         try:

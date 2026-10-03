@@ -64,6 +64,7 @@ class Backend:
             self.iface = None if "ServiceUnknown" in str(getattr(e, "get_dbus_name", lambda: "")()) else self.iface
             if fail:
                 fail(_clean(e))
+        args = [dbus.Dictionary(a, signature="ss") if isinstance(a, dict) else a for a in args]
         try:
             getattr(self._proxy(), method)(*args, reply_handler=reply, error_handler=error, timeout=timeout)
         except dbus.DBusException as e:

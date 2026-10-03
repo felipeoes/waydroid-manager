@@ -1,67 +1,49 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 """Create / clone / settings dialogs."""
+import os
+
 import gi
 
 gi.require_version("Gtk", "4.0")
 gi.require_version("Adw", "1")
-from gi.repository import Adw, Gdk, GLib, Gtk  # noqa: E402
+from gi.repository import Adw, GLib, Gtk  # noqa: E402
 
-from ..instance import ID_RE  # noqa: E402
+from .. import devices  # noqa: E402
+from ..instance import host_memory_bytes, setting_default  # noqa: E402
 
 # LDPlayer-style presets: (width, height, dpi)
 TABLET = [(960, 540, 160), (1280, 720, 240), (1600, 900, 240), (1920, 1080, 280), (2560, 1440, 360)]
 PHONE = [(540, 960, 240), (720, 1280, 320), (900, 1600, 320), (1080, 1920, 440), (1440, 2560, 560)]
-CPUS = [("", "Unlimited"), ("1", "1 core"), ("2", "2 cores"), ("3", "3 cores"), ("4", "4 cores"),
-        ("6", "6 cores"), ("8", "8 cores")]
-MEMORY = [("", "Unlimited"), ("1G", "1 GB"), ("1536M", "1.5 GB"), ("2G", "2 GB"), ("3G", "3 GB"),
-          ("4G", "4 GB"), ("6G", "6 GB"), ("8G", "8 GB")]
 ACTIONS = [("stop", "Stop the instance"), ("freeze", "Freeze (pause)"), ("none", "Keep running")]
 IDLE = [("freeze", "Freeze (pause)"), ("none", "Keep running"), ("stop", "Stop the instance")]
+ZOOMS = [("auto", "Fit the screen"), ("50", "50 %"), ("67", "67 %"), ("75", "75 %"), ("100", "100 %"),
+         ("125", "125 %"), ("150", "150 %")]
 
 
-def monitor_area():
-    """Logical size of the largest monitor minus room for a desktop panel.
-    (Waydroid windows have no title bar, so only the panel matters.)"""
-    w, h = 1366, 768
-    display = Gdk.Display.get_default()
-    if display:
-        mons = display.get_monitors()
-        best = None
-        for i in range(mons.get_n_items()):
-            g = mons.get_item(i).get_geometry()
-            if best is None or g.width * g.height > best[0] * best[1]:
-                best = (g.width, g.height)
-        if best:
-            w, h = best
-    return w, h - 48
+def cpu_options():
+    n = os.cpu_count() or 2
+    return [(str(c), "{} core{}".format(c, "s" if c > 1 else "")) for c in (1, 2, 3, 4, 6, 8) if c <= n]
+
+
+def memory_options():
+    total = host_memory_bytes()
+    opts = [("1G", 1), ("1536M", 1.5), ("2G", 2), ("3G", 3), ("4G", 4), ("6G", 6), ("8G", 8), ("12G", 12),
+            ("16G", 16)]
+    return [(v, "{:g} GB".format(gb)) for v, gb in opts if gb * 1024 ** 3 <= total]
 
 
 def resolution_presets(kind):
-    """[(label, width, height, dpi)] for 'phone' or 'tablet'."""
-    aw, ah = monitor_area()
-    out = []
-    if kind == "tablet":
-        out.append(("Fill the screen (automatic)", 0, 0, 0))
-        presets = TABLET
-    else:
-        fh = ah - ah % 2
-        fw = (fh * 9 // 16) & ~1
-        dpi = max(120, round(320 * fh / 1280 / 10) * 10)
-        out.append(("Fit the screen — {} × {} · {} dpi".format(fw, fh, dpi), fw, fh, dpi))
-        presets = PHONE
-    for w, h, dpi in presets:
-        label = "{} × {} · {} dpi".format(w, h, dpi)
-        if w > aw or h > ah:
-            label += "  (larger than your screen)"
-        out.append((label, w, h, dpi))
-    return out
+    """[(label, width, height, dpi)] for 'phone' or 'tablet'. Windows are zoomed to fit
+    the screen, so every preset is usable on any monitor."""
+    presets = TABLET if kind == "tablet" else PHONE
+    return [("{} × {} · {} dpi".format(w, h, d), w, h, d) for w, h, d in presets]
 
 
 def classify(width, height, dpi):
     """Which form factor/preset index an existing size belongs to."""
     for kind in ("tablet", "phone"):
         for i, (_, w, h, d) in enumerate(resolution_presets(kind)):
-            if (w, h) == (width, height) and (d == dpi or (w == 0 and dpi == 0)):
+            if (w, h, d) == (width, height, dpi):
                 return kind, i
     return "custom", 0
 
@@ -78,7 +60,15 @@ def _select(row, options, value):
     for i, (v, _) in enumerate(options):
         if v == value:
             row.set_selected(i)
-            return
+            return True
+    return False
+
+
+def _with_current(options, value, fmt):
+    """Keep an existing non-preset value selectable."""
+    if value and value not in dict(options):
+        return options + [(value, fmt(value))]
+    return options
 
 
 def _spin(title, lo, hi, step, value, digits=0, subtitle=None):
@@ -89,18 +79,9 @@ def _spin(title, lo, hi, step, value, digits=0, subtitle=None):
     return row
 
 
-class InstanceDialog(Adw.Dialog):
-    """mode: 'create' (fresh instance from the stock image) or 'edit'."""
-
-    def __init__(self, mode, on_submit, info=None):
-        super().__init__()
-        self.mode = mode
-        self.on_submit = on_submit
-        self.info = info or {}
-        self.set_content_width(520)
-        self.set_content_height(720)
-        self.set_title("New Instance" if mode == "create" else "Settings — " + self.info.get("name", ""))
-
+class _Dialog(Adw.Dialog):
+    def _frame(self, title, submit_label):
+        self.set_title(title)
         view = Adw.ToolbarView()
         header = Adw.HeaderBar()
         header.set_show_end_title_buttons(False)
@@ -108,38 +89,47 @@ class InstanceDialog(Adw.Dialog):
         cancel = Gtk.Button(label="Cancel")
         cancel.connect("clicked", lambda *_: self.close())
         header.pack_start(cancel)
-        self.submit = Gtk.Button(label="Create" if mode == "create" else "Save")
-        self.submit.add_css_class("suggested-action")
+        self.submit = Gtk.Button(label=submit_label, css_classes=["suggested-action"])
         self.submit.connect("clicked", self._on_submit)
         header.pack_end(self.submit)
         view.add_top_bar(header)
-
-        self.toast = Adw.ToastOverlay()
         page = Adw.PreferencesPage()
-        self.toast.set_child(page)
-        view.set_content(self.toast)
+        view.set_content(page)
         self.set_child(view)
+        return page
+
+
+class InstanceDialog(_Dialog):
+    """mode: 'create' (fresh instance from the stock image) or 'edit'."""
+
+    def __init__(self, mode, on_submit, info=None):
+        super().__init__()
+        self.mode = mode
+        self.on_submit = on_submit
+        self.info = info or {}
+        self.set_content_width(540)
+        self.set_content_height(760)
+        page = self._frame("New Instance" if mode == "create" else
+                           "#{} {} — Settings".format(self.info.get("id", ""), self.info.get("name", "")),
+                           "Create" if mode == "create" else "Save")
 
         # -- general
         g = Adw.PreferencesGroup(title="General")
         page.add(g)
-        if mode == "create":
-            self.id_row = Adw.EntryRow(title="ID (a-z, 0-9, _)")
-            self.id_row.connect("changed", self._validate)
-            g.add(self.id_row)
-        self.name_row = Adw.EntryRow(title="Display name")
+        self.name_row = Adw.EntryRow(title="Name")
         self.name_row.set_text(self.info.get("name", ""))
         g.add(self.name_row)
         if mode == "create":
-            g.set_description("A fresh Android from the stock Waydroid image. "
-                              "To copy an existing instance, use Clone instead.")
+            g.set_description("A fresh Android from the stock Waydroid image; it gets the next free number. "
+                              "To copy an existing instance, use Clone.")
 
         # -- display
         g = Adw.PreferencesGroup(title="Display", description="Takes effect at the next start")
         page.add(g)
-        cw, ch = int(self.info.get("width", "0")), int(self.info.get("height", "0"))
-        cdpi = int(self.info.get("dpi", "0"))
-        kind, idx = classify(cw, ch, cdpi) if mode == "edit" else ("tablet", 2)
+        cw = int(self.info.get("width") or setting_default("width"))
+        ch = int(self.info.get("height") or setting_default("height"))
+        cdpi = int(self.info.get("dpi") or setting_default("dpi"))
+        kind, idx = classify(cw, ch, cdpi)
         type_row = Adw.ActionRow(title="Device type")
         self.kind = Adw.ToggleGroup(valign=Gtk.Align.CENTER)
         for name, label in (("phone", "Phone"), ("tablet", "Tablet"), ("custom", "Custom")):
@@ -148,30 +138,57 @@ class InstanceDialog(Adw.Dialog):
         g.add(type_row)
         self.res_row = Adw.ComboRow(title="Resolution")
         g.add(self.res_row)
-        self.width_row = _spin("Width", 240, 7680, 2, cw or 1280)
-        self.height_row = _spin("Height", 240, 7680, 2, ch or 720)
-        self.dpi_row = _spin("Density (DPI)", 0, 640, 10, cdpi, subtitle="0 = automatic")
+        self.width_row = _spin("Width", 240, 7680, 2, cw)
+        self.height_row = _spin("Height", 240, 7680, 2, ch)
+        self.dpi_row = _spin("Density (DPI)", 80, 640, 10, cdpi)
         for r in (self.width_row, self.height_row, self.dpi_row):
             g.add(r)
         self.kind.set_active_name(kind)
         self._kind_changed(select=idx)
         self.kind.connect("notify::active-name", lambda *_: self._kind_changed())
 
+        # -- window
+        g = Adw.PreferencesGroup(title="Window")
+        page.add(g)
+        cur = self.info.get("zoom", "auto")
+        self.zoom_opts = _with_current(list(ZOOMS), cur, lambda v: "{} %".format(v))
+        self.zoom_row = _combo("Zoom", self.zoom_opts, subtitle="You can also resize the window by dragging its edges")
+        _select(self.zoom_row, self.zoom_opts, cur)
+        g.add(self.zoom_row)
+        self.frame_row = Adw.SwitchRow(title="Title bar and toolbar",
+                                       subtitle="Move, resize and Android buttons (Back, Home, …)")
+        self.frame_row.set_active(self.info.get("window_frame", "true") == "true")
+        g.add(self.frame_row)
+
+        # -- device
+        g = Adw.PreferencesGroup(title="Device", description="What apps see as this device (next start)")
+        page.add(g)
+        self.dev_keys = list(devices.PRESETS)
+        self.device_row = Adw.ComboRow(title="Device model")
+        self.device_row.set_model(Gtk.StringList.new([devices.label(k) for k in self.dev_keys]))
+        cur = self.info.get("device_model", "waydroid")
+        self.device_row.set_selected(self.dev_keys.index(cur) if cur in self.dev_keys else 0)
+        g.add(self.device_row)
+        self.custom_rows = {}
+        for f in devices.FIELDS:
+            r = Adw.EntryRow(title=f.capitalize())
+            r.set_text(self.info.get("prop:ro.product.waydroid." + f, ""))
+            g.add(r)
+            self.custom_rows[f] = r
+        self.device_row.connect("notify::selected", lambda *_: self._device_changed())
+        self._device_changed()
+
         # -- performance
         g = Adw.PreferencesGroup(title="Performance", description="Limits apply at the next start")
         page.add(g)
-        self.cpu_opts = list(CPUS)
-        cur = self.info.get("cpus", "")
-        if cur and cur not in dict(self.cpu_opts):
-            self.cpu_opts.append((cur, "{} cores".format(cur)))
+        cur = self.info.get("cpus") or setting_default("cpus")
+        self.cpu_opts = _with_current(cpu_options(), cur, lambda v: "{} cores".format(v))
         self.cpu_row = _combo("CPU", self.cpu_opts)
         _select(self.cpu_row, self.cpu_opts, cur)
         g.add(self.cpu_row)
-        self.mem_opts = list(MEMORY)
-        cur = self.info.get("memory", "")
-        if cur and cur not in dict(self.mem_opts):
-            self.mem_opts.append((cur, cur.replace("G", " GB").replace("M", " MB")))
-        self.mem_row = _combo("Memory", self.mem_opts, subtitle="Soft limit: Android is slowed, not killed")
+        cur = self.info.get("memory") or setting_default("memory")
+        self.mem_opts = _with_current(memory_options(), cur, lambda v: v.replace("G", " GB").replace("M", " MB"))
+        self.mem_row = _combo("Memory", self.mem_opts)
         _select(self.mem_row, self.mem_opts, cur)
         g.add(self.mem_row)
 
@@ -184,8 +201,8 @@ class InstanceDialog(Adw.Dialog):
         self.idle_row = _combo("When Android goes idle", IDLE)
         _select(self.idle_row, IDLE, self.info.get("idle_action", "freeze"))
         g.add(self.idle_row)
-        self.labels_row = Adw.SwitchRow(title="Label window with instance name",
-                                        subtitle="Separate dock icon and title per instance")
+        self.labels_row = Adw.SwitchRow(title="Own dock icon and window title",
+                                        subtitle="Needed for the title bar, toolbar and zoom")
         self.labels_row.set_active(self.info.get("window_labels", "true") == "true")
         g.add(self.labels_row)
         if mode == "edit":
@@ -198,24 +215,23 @@ class InstanceDialog(Adw.Dialog):
         if mode == "edit":
             self.prop_group = Adw.PreferencesGroup(title="Android properties",
                                                    description="Overrides for vendor/waydroid.prop (next start)")
-            add = Gtk.Button(icon_name="list-add-symbolic", valign=Gtk.Align.CENTER, tooltip_text="Add property")
-            add.add_css_class("flat")
+            add = Gtk.Button(icon_name="list-add-symbolic", valign=Gtk.Align.CENTER, tooltip_text="Add property",
+                             css_classes=["flat"])
             add.connect("clicked", lambda *_: self._add_prop_row("", ""))
             self.prop_group.set_header_suffix(add)
             page.add(self.prop_group)
             self.prop_rows = []
-            self.orig_props = {k[5:]: v for k, v in self.info.items() if k.startswith("prop:")}
+            self.orig_props = {k[5:]: v for k, v in self.info.items()
+                               if k.startswith("prop:") and not k.startswith("prop:ro.product.waydroid.")}
             for k, v in sorted(self.orig_props.items()):
                 self._add_prop_row(k, v)
-        self._validate()
 
     # -- helpers
     def _add_prop_row(self, key, value):
         box = Gtk.Box(spacing=6, margin_top=6, margin_bottom=6, margin_start=12, margin_end=6)
         k = Gtk.Entry(text=key, placeholder_text="ro.some.property", hexpand=True)
         v = Gtk.Entry(text=value, placeholder_text="value", hexpand=True)
-        rm = Gtk.Button(icon_name="user-trash-symbolic", tooltip_text="Remove")
-        rm.add_css_class("flat")
+        rm = Gtk.Button(icon_name="user-trash-symbolic", tooltip_text="Remove", css_classes=["flat"])
         row = Gtk.ListBoxRow(activatable=False, child=box)
         box.append(k)
         box.append(v)
@@ -235,19 +251,13 @@ class InstanceDialog(Adw.Dialog):
             self.presets = resolution_presets(kind)
             self.res_row.set_model(Gtk.StringList.new([p[0] for p in self.presets]))
             if select is None:
-                select = 2 if kind == "tablet" else 0   # 1280x720 tablet / fit-screen phone
+                select = 1   # 1280x720 tablet / 720x1280 phone
             self.res_row.set_selected(min(select, len(self.presets) - 1))
 
-    def _validate(self, *_):
-        ok = True
-        if self.mode == "create":
-            text = self.id_row.get_text()
-            ok = bool(ID_RE.match(text)) and text != "default"
-            if text and not ok:
-                self.id_row.add_css_class("error")
-            else:
-                self.id_row.remove_css_class("error")
-        self.submit.set_sensitive(ok)
+    def _device_changed(self):
+        custom = self.dev_keys[self.device_row.get_selected()] == "custom"
+        for r in self.custom_rows.values():
+            r.set_visible(custom)
 
     def values(self):
         v = {}
@@ -260,6 +270,13 @@ class InstanceDialog(Adw.Dialog):
         else:
             _, w, h, dpi = self.presets[self.res_row.get_selected()]
         v["width"], v["height"], v["dpi"] = str(w), str(h), str(dpi)
+        v["zoom"] = self.zoom_opts[self.zoom_row.get_selected()][0]
+        v["window_frame"] = "true" if self.frame_row.get_active() else "false"
+        key = self.dev_keys[self.device_row.get_selected()]
+        v["device_model"] = key
+        if key == "custom":
+            for f, r in self.custom_rows.items():
+                v["prop:ro.product.waydroid." + f] = r.get_text().strip()
         v["cpus"] = self.cpu_opts[self.cpu_row.get_selected()][0]
         v["memory"] = self.mem_opts[self.mem_row.get_selected()][0]
         v["close_action"] = ACTIONS[self.close_row.get_selected()][0]
@@ -269,73 +286,38 @@ class InstanceDialog(Adw.Dialog):
             v["desktop_apps"] = "true" if self.apps_row.get_active() else "false"
             seen = set()
             for _, k, val in self.prop_rows:
-                key = k.get_text().strip()
-                if key:
-                    seen.add(key)
-                    if self.orig_props.get(key) != val.get_text():
-                        v["prop:" + key] = val.get_text()
-            for key in self.orig_props:
-                if key not in seen:
-                    v["prop:" + key] = ""
+                pk = k.get_text().strip()
+                if pk:
+                    seen.add(pk)
+                    if self.orig_props.get(pk) != val.get_text():
+                        v["prop:" + pk] = val.get_text()
+            for pk in self.orig_props:
+                if pk not in seen:
+                    v["prop:" + pk] = ""
         return v
 
     def _on_submit(self, *_):
-        v = self.values()
         if self.mode == "create":
-            self.on_submit(self.id_row.get_text(), v)
+            self.on_submit(self.values())
         else:
-            self.on_submit(self.info["id"], v)
+            self.on_submit(self.info["id"], self.values())
         self.close()
 
-    def show_error(self, msg):
-        self.toast.add_toast(Adw.Toast(title=GLib.markup_escape_text(msg)))
 
-
-def suggest_id(base, taken):
-    base = "".join(c if (c.isalnum() and c.isascii()) or c == "_" else "_" for c in base.lower()).strip("_")
-    if not base or not base[0].isalpha():
-        base = "copy_" + base
-    base = base[:26]
-    for n in range(2, 1000):
-        cand = "{}_{}".format(base, n)
-        if cand not in taken:
-            return cand
-    return base
-
-
-class CloneDialog(Adw.Dialog):
+class CloneDialog(_Dialog):
     """Copy an instance (or stock Waydroid) with its apps, data and settings."""
 
-    def __init__(self, source, taken_ids, on_submit):
+    def __init__(self, source, on_submit):
         super().__init__()
         self.source = source          # dict with id, name, state
         self.on_submit = on_submit
         self.set_content_width(460)
-        self.set_title("Clone “{}”".format(source["name"]))
-
-        view = Adw.ToolbarView()
-        header = Adw.HeaderBar()
-        header.set_show_end_title_buttons(False)
-        header.set_show_start_title_buttons(False)
-        cancel = Gtk.Button(label="Cancel")
-        cancel.connect("clicked", lambda *_: self.close())
-        header.pack_start(cancel)
-        self.submit = Gtk.Button(label="Clone")
-        self.submit.add_css_class("suggested-action")
-        self.submit.connect("clicked", self._on_submit)
-        header.pack_end(self.submit)
-        view.add_top_bar(header)
-
-        page = Adw.PreferencesPage()
+        page = self._frame("Clone “{}”".format(source["name"]), "Clone")
         what = "apps, accounts and data" if source["id"] == "default" else "apps, accounts, data and settings"
-        g = Adw.PreferencesGroup(description="Creates a new instance with a copy of the {} of “{}”."
-                                 .format(what, source["name"]))
+        g = Adw.PreferencesGroup(description="Creates a new instance (next free number) with a copy of the "
+                                             "{} of “{}”.".format(what, source["name"]))
         page.add(g)
-        self.id_row = Adw.EntryRow(title="New ID (a-z, 0-9, _)")
-        self.id_row.set_text(suggest_id(source["id"] if source["id"] != "default" else "stock", taken_ids))
-        self.id_row.connect("changed", self._validate)
-        g.add(self.id_row)
-        self.name_row = Adw.EntryRow(title="Display name")
+        self.name_row = Adw.EntryRow(title="Name")
         self.name_row.set_text("{} (copy)".format(source["name"]))
         g.add(self.name_row)
         self.reset_row = Adw.SwitchRow(title="New device identity",
@@ -350,15 +332,6 @@ class CloneDialog(Adw.Dialog):
             row.add_prefix(Gtk.Image(icon_name="dialog-warning-symbolic"))
             note.add(row)
             page.add(note)
-        view.set_content(page)
-        self.set_child(view)
-        self._validate()
-
-    def _validate(self, *_):
-        text = self.id_row.get_text()
-        ok = bool(ID_RE.match(text)) and text != "default"
-        (self.id_row.remove_css_class if ok or not text else self.id_row.add_css_class)("error")
-        self.submit.set_sensitive(ok)
 
     def _on_submit(self, *_):
         values = {"clone_from": self.source["id"],
@@ -366,5 +339,9 @@ class CloneDialog(Adw.Dialog):
         name = self.name_row.get_text().strip()
         if name:
             values["name"] = name
-        self.on_submit(self.source, self.id_row.get_text(), values)
+        self.on_submit(self.source, values)
         self.close()
+
+
+def show_error(parent, msg):
+    parent.add_toast(Adw.Toast(title=GLib.markup_escape_text(msg)))
