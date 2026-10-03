@@ -57,7 +57,7 @@ Then open **Waydroid Multi-Instance Manager** from your app grid.
 | Maximize / restore | double-click the title bar |
 | Fullscreen | toolbar button or **F11**; leave with **Esc** or **F11** |
 | Android buttons | ◁ Back, ○ Home, □ Recents, volume up/down |
-| Screenshot | toolbar camera button, saved to `~/Pictures/Waydroid` |
+| Screenshot | toolbar camera button, saved to `~/Pictures/Waydroid/<instance name>` |
 
 Closing the window stops the instance. You can change this in its Settings.
 

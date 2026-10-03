@@ -158,24 +158,34 @@ class Session:
         return False
 
     def screenshot(self):
+        # ~/Pictures/Waydroid/<instance name>/Screenshot_<date>-<time>.png
         pics = GLib.get_user_special_dir(GLib.UserDirectory.DIRECTORY_PICTURES) or os.path.expanduser("~/Pictures")
-        folder = os.path.join(pics, "Waydroid")
+        name = Instance.load(self.iid).name           # reload: the instance may have been renamed
+        safe = "".join(c if c.isalnum() or c in "-_ ." else "_" for c in name).strip(" .") or "Instance " + self.iid
+        folder = os.path.join(pics, "Waydroid", safe)
         os.makedirs(folder, exist_ok=True)
-        safe = "".join(c if c.isalnum() or c in "-_ " else "_" for c in self.inst.name).strip() or "instance"
-        path = os.path.join(folder, "{}-{}.png".format(safe, time.strftime("%Y%m%d-%H%M%S")))
+        path = os.path.join(folder, "Screenshot_{}.png".format(time.strftime("%Y%m%d-%H%M%S")))
         f = open(path, "wb")
 
         def done(*_):
             f.close()
             log.info("screenshot saved to %s", path)
             notify("Screenshot saved", path)
+
+        def failed(e):
+            f.close()
+            try:
+                os.unlink(path)          # don't leave an empty file behind
+            except OSError:
+                pass
+            msg = e.get_dbus_message() if isinstance(e, dbus.DBusException) else str(e)
+            log.warning("screenshot: %s", msg)
+            notify("Screenshot failed", msg or "")
         try:
             self.daemon.iface.Screenshot(self.iid, dbus.types.UnixFd(f), reply_handler=done,
-                                         error_handler=lambda e: (f.close(), log.warning("screenshot: %s", e)),
-                                         timeout=60)
+                                         error_handler=failed, timeout=60)
         except dbus.DBusException as e:
-            f.close()
-            log.warning("screenshot: %s", e)
+            failed(e)
 
     # -- lifecycle -----------------------------------------------------------------
     def session_dict(self, wl):

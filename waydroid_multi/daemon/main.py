@@ -622,10 +622,18 @@ class Manager(dbus.service.Object):
             raw = fd.take()
         except Error as e:
             return error(e)
-        if lxc_state(inst.id) != "RUNNING":
+        st = lxc_state(inst.id)
+        if st not in ACTIVE:
             os.close(raw)
             return error(Error("instance #{} is not running".format(inst.id), "NotRunning"))
-        self.run_async(inst.id, lambda: dbus.UInt64(storage.screenshot(inst, raw)), reply, error, lock=False)
+
+        def work():
+            if lxc_state(inst.id) == "FROZEN":       # idle-paused: wake it up for the capture
+                with self.locks[inst.id]:
+                    container.unfreeze(inst)
+                GLib.idle_add(self._emit_state, inst.id)
+            return dbus.UInt64(storage.screenshot(inst, raw))
+        self.run_async(inst.id, work, reply, error, lock=False)
 
     @dbus.service.method(paths.DBUS_IFACE, in_signature="s", out_signature="s",
                          sender_keyword="sender", async_callbacks=("reply", "error"))
