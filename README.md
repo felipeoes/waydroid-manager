@@ -59,7 +59,8 @@ Then open **Waydroid Multi-Instance Manager** from your app grid.
 | Android buttons | ◁ Back, ○ Home, □ Recents, volume up/down |
 | Screenshot | toolbar camera button, saved to `~/Pictures/Waydroid/<instance name>` |
 
-Closing the window stops the instance. You can change this in its Settings.
+Closing the window stops the instance after asking you to confirm. In its Settings you can
+make closing pause it or keep it running instead.
 
 ## Using the command line
 
@@ -89,16 +90,24 @@ Run `waydroid-multi --help` to see all commands.
   `waydroid-multi gsf-id <instance>` and enter the number at
   <https://www.google.com/android/uncertified>.
 - **Memory:** each running instance uses about 1.5–3 GB of RAM.
+- **Several users on one computer:** each user sees and controls only their own instances.
 - Running several accounts may be against some apps' or games' terms of service.
 
 ## Uninstall
 
+In the manager app, open the menu and choose **Uninstall Waydroid Multi…**. You can keep your
+instances or delete them with it. From a terminal:
+
 ```sh
-sudo scripts/uninstall.sh            # keeps your instances
-sudo scripts/uninstall.sh --purge    # also deletes all instances and their data
+sudo /usr/lib/waydroid-multi/uninstall.sh            # keeps your instances
+sudo /usr/lib/waydroid-multi/uninstall.sh --purge    # also deletes all instances and their data
 ```
 
 Your normal Waydroid is never modified.
+
+## Contributing
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for how it works inside and how to develop it.
 
 ## License
 
