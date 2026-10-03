@@ -1,0 +1,62 @@
+# Publish a GitHub release when a version tag is pushed (see CONTRIBUTING.md, "Releasing").
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Check tag, version and branch
+        run: |
+          tag="${GITHUB_REF_NAME}"
+          version="$(sed -n 's/^__version__ = "\(.*\)"/\1/p' waydroid_multi/__init__.py)"
+          [ "$tag" = "v$version" ] || { echo "::error::tag $tag does not match __version__ $version"; exit 1; }
+          git merge-base --is-ancestor "$GITHUB_SHA" origin/main ||
+            { echo "::error::$tag is not on main (release from main only)"; exit 1; }
+          grep -q "^## \[$version\]" CHANGELOG.md ||
+            { echo "::error::CHANGELOG.md has no section for $version"; exit 1; }
+          echo "VERSION=$version" >> "$GITHUB_ENV"
+
+      - name: Unit tests
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq python3-gi python3-gi-cairo python3-cairo gir1.2-rsvg-2.0 gir1.2-pango-1.0
+          /usr/bin/python3 -m unittest discover -s tests/unit -t .
+
+      - name: Build the .deb
+        run: |
+          packaging/deb/build.sh
+          dpkg-deb --info dist/*.deb
+          dpkg-deb --contents dist/*.deb | grep -q './usr/lib/waydroid-multi/waydroid_multi/daemon/main.py'
+
+      - name: Release notes from CHANGELOG.md
+        run: |
+          awk -v v="$VERSION" '
+            $0 ~ "^## \\[" v "\\]" {on=1; next}
+            on && /^## \[/ {exit}
+            on {print}' CHANGELOG.md > notes.md
+          cat >> notes.md <<'NOTES'
+
+          ### Install (Ubuntu 24.04+ / Debian 13+)
+          Download the `.deb` below, then:
+          ```sh
+          sudo apt install ./waydroid-multi_*_all.deb
+          ```
+          Other distributions: install from source, see the README.
+          NOTES
+          cat notes.md
+
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "$GITHUB_REF_NAME" dist/*.deb --title "waydroid-multi $VERSION" --notes-file notes.md --verify-tag

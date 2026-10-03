@@ -1,0 +1,31 @@
+#!/bin/sh
+# SPDX-License-Identifier: GPL-3.0-or-later
+set -e
+STATE=/var/lib/waydroid-multi
+case "$1" in
+remove)
+    rm -rf /run/waydroid-multi
+    if [ -d /run/systemd/system ]; then
+        systemctl daemon-reload
+        systemctl reload dbus >/dev/null 2>&1 || true
+    fi
+    ;;
+purge)
+    # rm --one-file-system does not stop at bind mounts of the same filesystem (stock
+    # Waydroid's data is usually on it): never delete while anything is mounted below
+    if awk -v d="$STATE" '$2 == d || index($2, d "/") == 1 {f=1} END {exit !f}' /proc/self/mounts; then
+        echo "waydroid-multi: not deleting $STATE, something is still mounted there." >&2
+        echo "Reboot and delete it by hand: sudo rm -rf --one-file-system $STATE" >&2
+    else
+        rm -rf --one-file-system "$STATE"
+    fi
+    rm -rf /etc/waydroid-multi
+    rm -f /var/lib/misc/dnsmasq.wdmulti0.leases
+    # per-user caches, removed as each user
+    getent passwd | while IFS=: read -r user _ uid _ _ home _; do
+        [ "$uid" -ge 1000 ] 2>/dev/null && [ "$uid" -lt 60000 ] && [ -d "$home/.cache/waydroid-multi" ] || continue
+        runuser -u "$user" -- rm -rf "$home/.cache/waydroid-multi" 2>/dev/null || true
+    done
+    ;;
+esac
+exit 0

@@ -27,9 +27,22 @@ window. Your normal Waydroid keeps working exactly as before.
 - **Waydroid installed and set up**: you can already run `waydroid show-full-ui`
 - Optional: `wl-clipboard` for clipboard sharing
 
-Tested on Ubuntu with Waydroid 1.6 and GNOME.
+Tested on Ubuntu 26.04 with Waydroid 1.6 and GNOME.
 
 ## Install
+
+### Ubuntu 24.04+ and Debian 13+
+
+Download `waydroid-multi_<version>_all.deb` from the
+[latest release](https://github.com/felipeoes/waydroid-multi-instances/releases/latest), then:
+
+```sh
+sudo apt install ./waydroid-multi_*_all.deb
+```
+
+Updates work the same way: install the newer `.deb`. Running instances keep running.
+
+### Other distributions (from source)
 
 ```sh
 git clone https://github.com/felipeoes/waydroid-multi-instances.git
@@ -37,7 +50,8 @@ cd waydroid-multi-instances
 sudo scripts/install.sh
 ```
 
-Then open **Waydroid Multi-Instance Manager** from your app grid.
+Then open **Waydroid Multi-Instance Manager** from your app grid. If you installed from source
+before, you can switch to the `.deb` at any time; your instances are kept.
 
 ## Using the manager app
 
@@ -97,6 +111,13 @@ Run `waydroid-multi --help` to see all commands.
 
 In the manager app, open the menu and choose **Uninstall Waydroid Multi…**. You can keep your
 instances or delete them with it. From a terminal:
+
+```sh
+sudo apt remove waydroid-multi       # keeps your instances
+sudo apt purge waydroid-multi        # also deletes all instances and their data
+```
+
+If you installed from source:
 
 ```sh
 sudo /usr/lib/waydroid-multi/uninstall.sh            # keeps your instances
