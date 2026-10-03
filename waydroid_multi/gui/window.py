@@ -8,6 +8,7 @@ gi.require_version("Gtk", "4.0")
 gi.require_version("Adw", "1")
 from gi.repository import Adw, Gio, GLib, Gtk  # noqa: E402
 
+from .. import paths  # noqa: E402
 from ..session import desktop  # noqa: E402
 from .backend import Backend  # noqa: E402
 from .dialogs import CloneDialog, InstanceDialog  # noqa: E402
@@ -18,6 +19,8 @@ STATE_STYLE = {"RUNNING": "success", "FROZEN": "warning", "STOPPED": "dim-label"
 STATE_LABEL = {"RUNNING": "Running", "FROZEN": "Paused", "STOPPED": "Stopped", "STARTING": "Starting…",
                "STOPPING": "Stopping…", "CLONING": "Cloning…", "DELETING": "Deleting…"}
 STOCK = {"id": "default", "name": "Stock Waydroid"}
+# install.sh puts the uninstaller next to the package (PREFIX/lib/waydroid-multi/)
+UNINSTALL_SCRIPT = os.path.join(os.path.dirname(paths.PKG_DIR), "uninstall.sh")
 
 
 def human_bytes(n):
@@ -184,6 +187,8 @@ class MainWindow(Adw.ApplicationWindow):
         menu.append("Stop all", "app.stop-all")
         about = Gio.Menu()
         about.append("About", "app.about")
+        if os.path.exists(UNINSTALL_SCRIPT):
+            about.append("Uninstall Waydroid Multi…", "app.uninstall")
         menu.append_section(None, about)
         header.pack_end(Gtk.MenuButton(icon_name="open-menu-symbolic", menu_model=menu, tooltip_text="Menu"))
         self.select_btn = Gtk.ToggleButton(icon_name="selection-mode-symbolic", tooltip_text="Select instances")
@@ -446,6 +451,59 @@ class MainWindow(Adw.ApplicationWindow):
             self.toast(msg)
             self.refresh()
         self.backend.call("SetConfig", iid, values, ok=ok, fail=self.toast, timeout=60)
+
+    def uninstall(self):
+        running = [i for i in self.instances if i.get("state") in ACTIVE]
+        body = ("Removes the program, its background service and the instances' app grid entries. "
+                "Your normal Waydroid is not touched.\n\nYou will be asked for an administrator password.")
+        if running:
+            body += " Running instances will be stopped."
+        dlg = Adw.AlertDialog(heading="Uninstall Waydroid Multi?", body=body)
+        purge = Gtk.CheckButton(label="Also delete all instances and their Android data")
+        dlg.set_extra_child(purge)
+        dlg.add_response("cancel", "Cancel")
+        dlg.add_response("uninstall", "Uninstall")
+        dlg.set_response_appearance("uninstall", Adw.ResponseAppearance.DESTRUCTIVE)
+        dlg.set_default_response("cancel")
+
+        def respond(_d, resp):
+            if resp == "uninstall":
+                self._uninstall_now(purge.get_active())
+        dlg.connect("response", respond)
+        dlg.present(self)
+
+    def _uninstall_now(self, purge):
+        argv = ["pkexec", UNINSTALL_SCRIPT] + (["--purge"] if purge else [])
+        try:
+            proc = Gio.Subprocess.new(argv, Gio.SubprocessFlags.STDOUT_PIPE | Gio.SubprocessFlags.STDERR_MERGE)
+        except GLib.Error as e:
+            self.toast("Could not run the uninstaller: " + e.message)
+            return
+        self.toast("Uninstalling…")
+
+        def done(p, res):
+            try:
+                _ok, out, _err = p.communicate_utf8_finish(res)
+            except GLib.Error as e:
+                out = e.message
+            status = p.get_exit_status() if p.get_if_exited() else -1
+            if status in (126, 127):     # pkexec: authentication cancelled or failed
+                self.toast("Uninstall cancelled")
+                return
+            if status == 0:
+                dlg = Adw.AlertDialog(heading="Waydroid Multi was uninstalled",
+                                      body="Instances and their data were deleted." if purge else
+                                      "Your instances were kept in /var/lib/waydroid-multi. Reinstall to "
+                                      "use them again.")
+                dlg.add_response("close", "Close")
+                dlg.connect("response", lambda *_: self.get_application().quit())
+            else:
+                lines = (out or "").strip().splitlines()
+                dlg = Adw.AlertDialog(heading="Uninstall failed",
+                                      body="\n".join(lines[-8:]) or "exit status {}".format(status))
+                dlg.add_response("close", "Close")
+            dlg.present(self)
+        proc.communicate_utf8_async(None, None, done)
 
     def delete(self, info):
         dlg = Adw.AlertDialog(heading="Delete “{}”?".format(info["name"]),

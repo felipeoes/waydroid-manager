@@ -22,6 +22,7 @@ mkdir -p "$LIBDIR"
 cp -r "$SRC/waydroid_multi" "$SRC/data" "$LIBDIR/"
 find "$LIBDIR" -name __pycache__ -prune -exec rm -rf {} +
 chmod 755 "$LIBDIR"/data/*.sh
+install -m755 "$SRC/scripts/uninstall.sh" "$LIBDIR/uninstall.sh"
 
 mkdir -p "$BINDIR"
 cat > "$BINDIR/waydroid-multi" <<EOF
@@ -66,7 +67,7 @@ systemctl reload dbus 2>/dev/null || true
 systemctl enable waydroid-multi.service
 # (re)start: a restarted daemon adopts running instances
 systemctl restart waydroid-multi.service
-echo "Done. Next steps:"
-echo "  waydroid-multi images sync      # copy the stock images into the image store (once per Waydroid upgrade)"
-echo "  waydroid-multi create game1     # create an instance"
-echo "  waydroid-multi start game1      # start it (or use the 'Waydroid Multi-Instance Manager' app)"
+echo "Done. Open 'Waydroid Multi-Instance Manager' from your app grid, or:"
+echo "  waydroid-multi create --name \"Account 1\"    # create an instance (prints its number)"
+echo "  waydroid-multi start 1                       # start it and open its window"
+echo "Uninstall later with: sudo $LIBDIR/uninstall.sh [--purge]"
