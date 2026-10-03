@@ -49,6 +49,8 @@ class Network:
             log.info("bringing up network %s on %s", self.cfg.network, self.cfg.bridge)
             run(["systemctl", "stop", DNSMASQ_UNIT], check=False)
             run(["systemctl", "reset-failed", DNSMASQ_UNIT], check=False)
+            with open(paths.NET_ENV_FILE, "w") as f:  # lets uninstall.sh tear down a custom setup
+                f.write(self.cfg.env_file_text())
             run(["sh", paths.NET_SCRIPT, "setup"], env=self._env())
             cmd = ["systemd-run", "--unit=" + DNSMASQ_UNIT, "--collect",
                    "--description=waydroid-multi DHCP/DNS for " + self.cfg.bridge,
