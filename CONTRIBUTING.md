@@ -316,6 +316,10 @@ Versions follow [Semantic Versioning](https://semver.org/). Releases are publish
      notes.
 
    If it fails, fix the problem through `dev` → `main` again. Never move a published tag.
+5. **Merge `main` back into `dev`.** The release PR's merge commit exists only on `main`, so
+   GitHub would show `dev` as one commit "behind". Open a PR `main` → `dev` (or merge
+   `origin/main` into a branch from `dev`) and merge it with **"Create a merge commit"**. It
+   changes no files. Afterwards `dev` is only ever ahead of `main`.
 
 ## Stock Waydroid pitfalls
 
