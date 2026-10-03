@@ -11,8 +11,13 @@ window. Your normal Waydroid keeps working exactly as before.
 - Run as many Android instances as your computer can handle, side by side
 - Create a fresh instance, or **clone** an existing one (including your normal Waydroid)
   to copy its apps and logins. Clones get their own device identity
-- Choose each instance's **window size**, **screen density**, and how much **CPU and memory**
-  it may use
+- Pick a **phone or tablet resolution**, the **CPU and memory** each instance may use, and a
+  **device model** (Samsung, Pixel, Xiaomi, … or your own) that apps will see
+- Every instance window has a **title bar and side toolbar**, LDPlayer style:
+  - drag the title bar to move it, drag an edge to **resize** (the picture scales, and the size
+    is remembered)
+  - double-click the title bar to maximize
+  - **◁ ○ □** Back / Home / Recents, volume buttons, screenshots and fullscreen
 - Find each instance in the dock and app grid under its own name
 - Install APKs, launch apps, and connect with `adb`, per instance
 
@@ -36,36 +41,48 @@ Then open **Waydroid Multi-Instance Manager** from your app grid.
 
 ## Using the manager app
 
-- **+** creates a new instance.
+- **+ New Instance** creates an instance. Instances are numbered automatically: your normal
+  Waydroid is **#0**, new ones get the next free number (#1, #2, …).
 - **▶** starts an instance, **👁** brings its window back, and **■** stops it.
 - **⋮** opens a menu with Settings, Clone, Install APK, Add to/Remove from app grid, and Delete.
+- The **☑** button switches to selection mode: start, stop or delete several instances at once.
 - Your normal Waydroid appears under **Default**. You can start, stop, or clone it from there.
 
-Closing an instance's window stops that instance. You can change this in its Settings.
+## The instance window
+
+| | |
+|---|---|
+| Move | drag the title bar |
+| Resize | drag any edge or the grip at the bottom of the toolbar |
+| Maximize / restore | double-click the title bar |
+| Fullscreen | toolbar button or **F11**; leave with **Esc** or **F11** |
+| Android buttons | ◁ Back, ○ Home, □ Recents, volume up/down |
+| Screenshot | toolbar camera button, saved to `~/Pictures/Waydroid` |
+
+Closing the window stops the instance. You can change this in its Settings.
 
 ## Using the command line
 
-Everything in the app can also be done from a terminal:
+Everything in the app can also be done from a terminal. Instances are referred to by their
+number or their name:
 
 ```sh
-waydroid-multi create game1 --name "Account 1"   # new instance
-waydroid-multi clone default game2               # copy your normal Waydroid
-waydroid-multi start game1                       # start and open its window
-waydroid-multi list                              # see all instances
-waydroid-multi app install game1 my-app.apk      # install an app
-waydroid-multi config game1 set width 1280 height 720
-waydroid-multi stop game1
-waydroid-multi delete game2
+waydroid-multi create --name "Account 1"           # new instance (prints its number, e.g. #1)
+waydroid-multi clone default --name "Account 2"    # copy your normal Waydroid
+waydroid-multi start 1                             # start and open its window
+waydroid-multi list                                # see all instances
+waydroid-multi app install 1 my-app.apk            # install an app
+waydroid-multi config 1 set device_model pixel_7   # what apps see (see: waydroid-multi devices)
+waydroid-multi config "Account 1" set cpus 4 memory 6G
+waydroid-multi stop 1
+waydroid-multi delete 2
 ```
 
 Run `waydroid-multi --help` to see all commands.
 
 ## Good to know
 
-- **Moving windows:** Waydroid windows have no title bar on GNOME. Hold the **Super** (Windows)
-  key and drag a window to move it.
-- **Window size** is fixed while an instance runs. Change it in Settings; it applies at the
-  next start.
+- **Resolution, device model, CPU and memory** changes apply at the next start of the instance.
 - **Updating Waydroid:** run `waydroid upgrade` as usual. Instances pick up the new Android
   version the next time they start.
 - **Google Play on a clone:** a clone counts as a new device, so register it once. Run
