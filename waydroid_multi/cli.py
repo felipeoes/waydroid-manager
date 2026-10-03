@@ -422,6 +422,17 @@ def cmd_shell(o, logcat=False):
 
 
 def cmd_log(o):
+    if o.id and o.window:
+        import signal as _signal
+        out = subprocess.run(["pgrep", "-f", "waydroid_multi.session.wlproxy .*--id {} ".format(o.id)],
+                             capture_output=True, text=True).stdout.split()
+        for pid in out:
+            os.kill(int(pid), _signal.SIGUSR1)
+        time.sleep(0.5)
+        path = os.path.join(paths.user_cache_dir(), "wlproxy-{}.log".format(o.id))
+        if not os.path.exists(path):
+            die("no window log for #{} (is it running with window labels on?)".format(o.id))
+        os.execvp("tail", ["tail", "-n", str(max(o.lines, 400)), path])
     if o.id:
         os.execvp("journalctl", ["journalctl", "--user", "-u", "waydroid-multi-session-{}".format(o.id),
                                  "-n", str(o.lines)] + (["-f"] if o.follow else []))
@@ -611,6 +622,7 @@ def parser():
     c.add_argument("id", nargs="?")
     c.add_argument("-n", "--lines", type=int, default=60)
     c.add_argument("-f", "--follow", action="store_true")
+    c.add_argument("--window", action="store_true", help="dump and show the window proxy's state and recent messages")
     c.set_defaults(fn=cmd_log)
 
     c = sub.add_parser("images", help="manage the image store")

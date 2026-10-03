@@ -377,10 +377,10 @@ class TranslatorTest(unittest.TestCase):
         tr = self.tr
         self.req(msg(1, P.WL_DISPLAY_GET_REGISTRY, "n", 2))
         hidden = tr.event(2, P.WL_REGISTRY_EV_GLOBAL, P._enc("u", 40) + P._enc("s", "gtk_shell1") + P._enc("u", 5))
-        self.assertIsNone(hidden)
+        self.assertIs(hidden, wp.HIDDEN)
         shown = tr.event(2, P.WL_REGISTRY_EV_GLOBAL, P._enc("u", 41) + P._enc("s", "wl_shm") + P._enc("u", 1))
         self.assertIsNotNone(shown)
-        self.assertIsNone(tr.event(2, P.WL_REGISTRY_EV_GLOBAL_REMOVE, P._enc("u", 40)))
+        self.assertIs(tr.event(2, P.WL_REGISTRY_EV_GLOBAL_REMOVE, P._enc("u", 40)), wp.HIDDEN)
 
     def test_server_created_objects_keep_ids(self):
         tr = self.tr

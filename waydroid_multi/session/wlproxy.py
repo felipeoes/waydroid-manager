@@ -101,7 +101,7 @@ class Stream:
         finally:
             self.feeding = False
         self._drain_deferred()
-        if self.post_feed and not self.inbuf:
+        if self.post_feed:
             self.post_feed()
 
     def _process(self):
@@ -135,6 +135,8 @@ class Stream:
         """
         if self.feeding or self.deferred or (fds and self.inbuf):
             self.deferred.append((data, list(fds)))
+            if not self.feeding:
+                self._drain_deferred()
             return
         self._append(data, fds)
 
@@ -149,10 +151,14 @@ class Stream:
         self.out += data
 
     def _drain_deferred(self):
-        if self.deferred and not self.inbuf:
-            items, self.deferred = self.deferred, []
-            for data, fds in items:
-                self._append(data, fds)
+        """Send deferred messages in order. Only a message carrying fds must wait
+        for an empty inbuf (a partial message may own fds already queued)."""
+        while self.deferred:
+            data, fds = self.deferred[0]
+            if fds and self.inbuf:
+                break
+            self.deferred.pop(0)
+            self._append(data, fds)
 
     def pending(self):
         # fds alone cannot be sent: they ride on the bytes that follow them
@@ -194,6 +200,7 @@ def flush(sock, stream):
 # -- object id translation -----------------------------------------------------------
 
 SERVER_ID_START = 0xff000000
+HIDDEN = ()      # Translator.event result for a deliberately hidden global
 
 
 class Translator:
@@ -301,9 +308,9 @@ class Translator:
                 name, gi = r.u(), r.s()
                 if gi not in self.schema:
                     self.hidden.add(name)      # the HWC must never bind what we cannot translate
-                    return None
+                    return HIDDEN
             elif op == P.WL_REGISTRY_EV_GLOBAL_REMOVE and r.u() in self.hidden:
-                return None
+                return HIDDEN
         off = 0
         try:
             for arg in iface.events[op]:
@@ -430,6 +437,8 @@ class Session:
         self.pressed = None      # (surface kind, action)
         self.last_title_click = 0.0
         self.cursor_dev = None
+        self.pings = {}           # serial -> time the compositor pinged
+        self.ping_stats = {"pings": 0, "pongs": 0, "max_latency": 0.0, "last_latency": 0.0}
 
     # -- helpers ------------------------------------------------------------------
     def new_id(self, kind):
@@ -607,6 +616,15 @@ class Session:
             self.viewports[new] = sid
             if sid in self.surfaces:
                 self.surfaces[sid].viewport = new
+            return None
+        if iface == "xdg_wm_base" and op == 3:          # pong
+            t0 = self.pings.pop(r.u(), None)
+            if t0 is not None:
+                lat = time.monotonic() - t0
+                st = self.ping_stats
+                st["pongs"] += 1
+                st["last_latency"] = lat
+                st["max_latency"] = max(st["max_latency"], lat)
             return None
         if iface == "xdg_wm_base" and op == P.XDG_WM_BASE_GET_XDG_SURFACE:
             new, sid = r.n(), r.o()
@@ -832,6 +850,12 @@ class Session:
             return [msg(obj, op, "u", 120)]
         if iface == "wl_surface" and op == 0 and self.window and obj == self.window.surface:
             self.surface_output = r.o()             # wl_surface.enter(output)
+            return None
+        if iface == "xdg_wm_base" and op == 0:          # ping
+            self.ping_stats["pings"] += 1
+            self.pings[r.u()] = time.monotonic()
+            if len(self.pings) > 64:
+                self.pings.pop(next(iter(self.pings)))
             return None
         if iface == "xdg_toplevel":
             return self._toplevel_event(obj, op, r)
@@ -1107,7 +1131,7 @@ class Session:
 
     def request_apply(self):
         """Bring geometry/frame up to date, as soon as the HWC's stream allows."""
-        if self.c2s.feeding or self.c2s.inbuf:
+        if self.c2s.feeding:
             self._apply_wanted = True
             return
         self.apply_now()
@@ -1455,8 +1479,13 @@ class Connection:
         except Exception:  # noqa: BLE001
             log_error("error translating event {}.{}".format(obj, op))
             return []
+        if t is HIDDEN:
+            return []
         if t is None:
             RECENT.append("<< dropped untranslatable event on {}.{}".format(obj, op))
+            self.drops = getattr(self, "drops", 0) + 1
+            if self.drops <= 20:
+                sys.stderr.write("wlproxy: dropped untranslatable event on {}.{}\n".format(obj, op))
             return []
         cobj, cpayload = t
         res = self.session.on_event(cobj, op, cpayload)
@@ -1600,6 +1629,25 @@ class Proxy:
         self.sel.register(client, selectors.EVENT_READ, conn)
         self.sel.register(up, selectors.EVENT_READ, conn)
 
+    def dump_state(self):
+        lines = ["{} state dump".format(time.strftime("%Y-%m-%d %H:%M:%S"))]
+        for i, c in enumerate(self.conns):
+            se = c.session
+            w = se.window
+            lines.append("connection {}: zoom={} res={} window={} fullscreen={} fill={} frame={}".format(
+                i, se.zoom, se.res, bool(w), w and w.fullscreen, w and w.fill_size, bool(w and w.frame)))
+            lines.append("  pings={pings} pongs={pongs} last_latency={last_latency:.3f}s "
+                         "max_latency={max_latency:.3f}s outstanding={n}".format(n=len(se.pings), **se.ping_stats))
+            lines.append("  c2s out={} deferred={} inbuf={} fds={} | s2c out={} deferred={} inbuf={} fds={}".format(
+                len(c.c2s.out), len(c.c2s.deferred), len(c.c2s.inbuf), len(c.c2s.fds),
+                len(c.s2c.out), len(c.s2c.deferred), len(c.s2c.inbuf), len(c.s2c.fds)))
+            lines.append("  dropped events={} ids mapped={}".format(getattr(c, "drops", 0), len(c.tr.c2s)))
+        lines.append("recent messages (oldest first):")
+        lines.extend("  " + r for r in RECENT)
+        if LOG_PATH:
+            with open(LOG_PATH, "a") as f:
+                f.write("\n".join(lines) + "\n\n")
+
     def run(self):
         if self.server is None:
             self.bind()
@@ -1635,8 +1683,10 @@ def main(argv=None):
         sys.exit(0)
     signal.signal(signal.SIGTERM, on_term)
     signal.signal(signal.SIGPIPE, signal.SIG_IGN)
+    proxy = Proxy(o.listen, o.upstream, cfg)
+    signal.signal(signal.SIGUSR1, lambda *_: proxy.dump_state())   # waydroid-multi log <id> --window
     try:
-        Proxy(o.listen, o.upstream, cfg).run()
+        proxy.run()
     except KeyboardInterrupt:
         pass
     except SystemExit:
