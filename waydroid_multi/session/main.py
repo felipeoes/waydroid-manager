@@ -89,18 +89,47 @@ class Session:
             stdout=subprocess.PIPE, stdin=subprocess.DEVNULL, env=env,
             stderr=open(os.path.join(paths.user_runtime_dir(self.iid), "wlproxy.log"), "w")
             if os.environ.get("WDM_PROXY_TRACE") == "1" else None)
-        line = self.proxy.stdout.readline().decode().strip()
-        if line != "ready":
+        # Read events with raw non-blocking reads: a buffered readline() under a
+        # GLib fd watch can leave complete lines stuck in Python's buffer
+        self.proxy_fd = self.proxy.stdout.fileno()
+        self.proxy_buf = b""
+        deadline = time.time() + 15
+        while b"\n" not in self.proxy_buf and time.time() < deadline:
+            chunk = os.read(self.proxy_fd, 4096)
+            if not chunk:
+                break
+            self.proxy_buf += chunk
+        line, _, self.proxy_buf = self.proxy_buf.partition(b"\n")
+        if line.strip() != b"ready":
             raise RuntimeError("Wayland proxy failed to start")
-        GLib.io_add_watch(self.proxy.stdout, GLib.PRIORITY_DEFAULT, GLib.IO_IN | GLib.IO_HUP, self.on_proxy)
+        os.set_blocking(self.proxy_fd, False)
+        GLib.io_add_watch(self.proxy_fd, GLib.PRIORITY_DEFAULT, GLib.IO_IN | GLib.IO_HUP, self.on_proxy)
+        if self.proxy_buf:
+            GLib.idle_add(lambda: (self._proxy_lines(), False)[1])
         return listen
 
-    def on_proxy(self, src, cond):
-        line = src.readline()
-        if not line:
-            log.warning("Wayland proxy exited")
+    def on_proxy(self, fd, cond):
+        try:
+            chunk = os.read(self.proxy_fd, 65536)
+        except BlockingIOError:
+            return True
+        except OSError:
+            chunk = b""
+        if not chunk:
+            code = self.proxy.poll() if self.proxy else None
+            log.warning("Wayland proxy exited (code %s); see ~/.cache/waydroid-multi/wlproxy-%s.log",
+                        code, self.iid)
             return False
-        ev = line.decode().strip()
+        self.proxy_buf += chunk
+        self._proxy_lines()
+        return True
+
+    def _proxy_lines(self):
+        while b"\n" in self.proxy_buf:
+            line, _, self.proxy_buf = self.proxy_buf.partition(b"\n")
+            self.handle_proxy_event(line.decode("utf-8", "replace").strip())
+
+    def handle_proxy_event(self, ev):
         if ev == "close" and self.started:
             log.info("window closed")
             self._async("ReportClose", self.iid)
@@ -112,8 +141,8 @@ class Session:
         elif ev == "action screenshot":
             self.screenshot()
         elif ev.startswith("action key "):
+            log.info("sending key %s", ev.split()[2])
             self._async("SendKey", self.iid, dbus.UInt32(int(ev.split()[2])))
-        return True
 
     def _async(self, method, *args, ok=None):
         try:

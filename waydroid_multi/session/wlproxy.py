@@ -27,6 +27,7 @@ Events are written to stdout, one per line: "ready", "close", "zoom <pct>", "act
 """
 import argparse
 import array
+import collections
 import errno
 import math
 import os
@@ -362,6 +363,23 @@ class Window:
 
 
 TRACE = os.environ.get("WDM_PROXY_TRACE") == "1"
+RECENT = collections.deque(maxlen=300)     # last messages, dumped with any error
+LOG_PATH = None
+
+
+def log_error(what):
+    """Append a traceback and the recent message history to the proxy log."""
+    import traceback
+    text = "{} {}\n{}recent messages (oldest first):\n{}\n\n".format(
+        time.strftime("%Y-%m-%d %H:%M:%S"), what, traceback.format_exc(),
+        "\n".join("  " + r for r in RECENT))
+    sys.stderr.write("wlproxy: " + what + "\n")
+    if LOG_PATH:
+        try:
+            with open(LOG_PATH, "a") as f:
+                f.write(text)
+        except OSError:
+            pass
 
 
 def trace(direction, obj, op, iface, note=""):
@@ -535,7 +553,12 @@ class Session:
 
     # -- client -> server -------------------------------------------------------------
     def on_request(self, obj, op, payload):
-        res = self._on_request(obj, op, payload)
+        RECENT.append(">> {}@{}.{} len={}".format(self.objs.get(obj) or self.mine.get(obj), obj, op, len(payload)))
+        try:
+            res = self._on_request(obj, op, payload)
+        except Exception:  # noqa: BLE001  fail open: forward the request unchanged
+            log_error("error handling request {}@{}.{}".format(self.objs.get(obj), obj, op))
+            res = None
         if TRACE:
             trace(">>", obj, op, self.objs.get(obj) or self.mine.get(obj),
                   "" if res is None else "rewritten->{}".format(len(res)))
@@ -758,7 +781,12 @@ class Session:
                     bad, self.objs.get(bad) or self.mine.get(bad), code, text))
             except ProtocolError:
                 pass
-        res = self._on_event(obj, op, payload)
+        RECENT.append("<< {}@{}.{} len={}".format(self.objs.get(obj) or self.mine.get(obj), obj, op, len(payload)))
+        try:
+            res = self._on_event(obj, op, payload)
+        except Exception:  # noqa: BLE001  fail open: forward the event unchanged
+            log_error("error handling event {}@{}.{}".format(self.objs.get(obj), obj, op))
+            res = [] if obj in self.mine else None
         if TRACE:
             trace("<<", obj, op, self.objs.get(obj) or self.mine.get(obj),
                   "" if res is None else "rewritten->{}".format(len(res)))
@@ -1422,8 +1450,13 @@ class Connection:
 
     def _event(self, obj, op, payload):
         """Translate to the HWC's id space first, then let the session decide."""
-        t = self.tr.event(obj, op, payload)
+        try:
+            t = self.tr.event(obj, op, payload)
+        except Exception:  # noqa: BLE001
+            log_error("error translating event {}.{}".format(obj, op))
+            return []
         if t is None:
+            RECENT.append("<< dropped untranslatable event on {}.{}".format(obj, op))
             return []
         cobj, cpayload = t
         res = self.session.on_event(cobj, op, cpayload)
@@ -1480,7 +1513,9 @@ class Connection:
                 data, fds = recv_with_fds(sock)
             except (BlockingIOError, InterruptedError):
                 data, fds = None, []
-            except (OSError, ProtocolError):
+            except (OSError, ProtocolError) as e:
+                if not isinstance(e, (ConnectionResetError, BrokenPipeError)):
+                    log_error("connection read error: {}".format(e))
                 self.close()
                 return
             if data is not None:
@@ -1494,7 +1529,8 @@ class Connection:
                     return
                 try:
                     stream.feed(data, fds)
-                except ProtocolError:
+                except ProtocolError as e:
+                    log_error("protocol error, closing connection: {}".format(e))
                     self.close()
                     return
         self.pump()
@@ -1590,15 +1626,24 @@ def main(argv=None):
     p.add_argument("--close-action", default="stop", choices=("stop", "freeze", "none"))
     o = p.parse_args(argv)
     cfg = Config(o.id, o.name, o.width, o.height, o.zoom, o.frame == "on", o.theme, o.close_action)
-    signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))
+    global LOG_PATH
+    cache = os.environ.get("XDG_CACHE_HOME") or os.path.expanduser("~/.cache")
+    os.makedirs(os.path.join(cache, "waydroid-multi"), exist_ok=True)
+    LOG_PATH = os.path.join(cache, "waydroid-multi", "wlproxy-{}.log".format(o.id))
+
+    def on_term(*_):
+        sys.exit(0)
+    signal.signal(signal.SIGTERM, on_term)
     signal.signal(signal.SIGPIPE, signal.SIG_IGN)
     try:
         Proxy(o.listen, o.upstream, cfg).run()
     except KeyboardInterrupt:
         pass
-    except OSError as e:
-        if e.errno != errno.EINTR:
-            raise
+    except SystemExit:
+        raise
+    except BaseException:
+        log_error("proxy crashed")
+        raise
 
 
 if __name__ == "__main__":
