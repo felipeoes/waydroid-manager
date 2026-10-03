@@ -152,7 +152,7 @@ Stock Waydroid is never modified.
 ```sh
 python3 -m unittest discover -s tests/unit -t .          # unit tests (no root)
 sudo install -m644 data/dbus/io.github.waydroidmulti.Manager.conf /etc/dbus-1/system.d/
-sudo systemd-run --unit=waydroid-multi-dev -p KillMode=process --setenv=PYTHONPATH=$PWD \
+sudo systemd-run --unit=waydroid-multi-dev -p KillMode=process --setenv=PYTHONPATH=$PWD --setenv=PYTHONDONTWRITEBYTECODE=1 \
      --setenv=WAYDROID_MULTI_DEBUG=1 python3 -m waydroid_multi.daemon.main
 python3 -m waydroid_multi list                           # CLI from the checkout
 tests/integration/smoke.sh                               # end-to-end test on a real host

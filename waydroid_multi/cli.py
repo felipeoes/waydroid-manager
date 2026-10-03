@@ -340,7 +340,7 @@ def cmd_adb(o):
 
 def reexec_as_root():
     if os.geteuid() != 0:
-        os.execvp("sudo", ["sudo", "env", "PYTHONPATH=" + os.path.dirname(paths.PKG_DIR),
+        os.execvp("sudo", ["sudo", "env", "PYTHONDONTWRITEBYTECODE=1", "PYTHONPATH=" + os.path.dirname(paths.PKG_DIR),
                            sys.executable, "-m", "waydroid_multi"] + sys.argv[1:])
 
 

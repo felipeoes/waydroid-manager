@@ -22,9 +22,11 @@ def copy_data(src, dst):
 def reset_ids_offline(data_dir):
     """Before first boot: drop the SSAID store so Android regenerates the
     per-app Android ID key. (Settings files are binary XML; never edit them.)"""
+    root = os.path.realpath(data_dir)
     for rel in SSAID_FILES:
         p = os.path.join(data_dir, rel)
-        if os.path.lexists(p):
+        # never follow a symlinked parent out of the data tree
+        if os.path.realpath(os.path.dirname(p)).startswith(root + os.sep) and os.path.lexists(p):
             os.unlink(p)
 
 
@@ -65,23 +67,28 @@ def delete_instance_files(inst):
 
 
 def install_apk(inst, fd, filename):
-    tmpdir = os.path.join(inst.data_dir, "waydroid_tmp")
-    os.makedirs(tmpdir, exist_ok=True)
-    os.chmod(tmpdir, 0o755)
-    target = os.path.join(tmpdir, "wdm-install.apk")
-    with os.fdopen(fd, "rb", closefd=True) as src, open(target, "wb") as dst:
-        shutil.copyfileobj(src, dst, 1024 * 1024)
-    os.chmod(target, 0o644)
+    """Stream the APK into 'pm install -S' over stdin.
+
+    Nothing is staged in the instance's data dir: its top level belongs to the
+    user, so a root write there could be redirected through a planted symlink.
+    """
+    import subprocess
+    from .util import android_attach_env
     try:
-        r = attach(inst.id, ["/system/bin/pm", "install", "-r", "/data/waydroid_tmp/wdm-install.apk"],
-                   check=False, timeout=600)
-        out = (r.stdout + r.stderr).strip()
-        log.info("%s: installed %s: %s", inst.id, filename, out)
-        if r.returncode != 0 or "Success" not in out:
-            raise RuntimeError("install failed: " + out[-500:])
-        return out
+        size = os.fstat(fd).st_size
+        env = android_attach_env(inst.id)
+        cmd = ["lxc-attach", "-P", paths.LXC_PATH, "-n", inst.container, "--clear-env"]
+        for k, v in env.items():
+            cmd += ["--set-var", "{}={}".format(k, v)]
+        cmd += ["--", "/system/bin/pm", "install", "-r", "-S", str(size)]
+        with os.fdopen(fd, "rb", closefd=True) as src:
+            fd = None
+            r = subprocess.run(cmd, stdin=src, capture_output=True, timeout=900)
     finally:
-        try:
-            os.unlink(target)
-        except OSError:
-            pass
+        if fd is not None:
+            os.close(fd)
+    out = (r.stdout + r.stderr).decode("utf-8", "replace").strip()
+    log.info("%s: install %s: %s", inst.id, filename, out)
+    if r.returncode != 0 or "Success" not in out:
+        raise RuntimeError("install failed: " + out[-500:])
+    return out
