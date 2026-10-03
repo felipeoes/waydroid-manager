@@ -212,6 +212,11 @@ class MainWindow(Adw.ApplicationWindow):
 
         self.stack = Gtk.Stack()
         page = Adw.PreferencesPage()
+        # Default (stock Waydroid, #0) first, then the instances
+        stock = Adw.PreferencesGroup(title="Default")
+        self.stock_row = StockRow(self)
+        stock.add(self.stock_row)
+        page.add(stock)
         self.group = Adw.PreferencesGroup(title="Instances")
         new_btn = Gtk.Button(child=Adw.ButtonContent(icon_name="list-add-symbolic", label="New Instance"),
                              valign=Gtk.Align.CENTER, css_classes=["flat"])
@@ -224,10 +229,6 @@ class MainWindow(Adw.ApplicationWindow):
         new_btn.connect("clicked", lambda *_: self.new_instance())
         self.empty_row.add_suffix(new_btn)
         self.group.add(self.empty_row)
-        stock = Adw.PreferencesGroup(title="Default")
-        self.stock_row = StockRow(self)
-        stock.add(self.stock_row)
-        page.add(stock)
         self.stack.add_named(page, "list")
 
         self.error_page = Adw.StatusPage(icon_name="dialog-error-symbolic", title="Daemon not available",
