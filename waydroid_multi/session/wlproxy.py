@@ -11,7 +11,7 @@ It gives every instance window an identity and a frame:
   to 1 (``wl_output.scale`` and fractional scale are rewritten), and configure
   sizes are hidden from it (any real size triggers an Android display hotplug).
 * **Frame** (full-UI window only): a title bar (move, minimize, close), an
-  attached side toolbar (Back, Home, Recents, volume, screenshot, zoom,
+  attached side toolbar (Back, Home, Recents, volume, screenshot,
   fullscreen) and an invisible resize border. These are proxy-owned
   subsurfaces; events for them are never forwarded to the HWC, which aborts on
   unknown object ids.
@@ -1378,13 +1378,11 @@ class Session:
         if action in self.KEYS:
             self.send_keys(self.KEYS[action])
         elif action == "recents":
-            self.send_keys([56, 15], release_order=[15, 56])     # Alt+Tab
+            # KEYCODE_APP_SWITCH (580) is dropped by the hwcomposer: the session
+            # asks the daemon to write it into Android's keyboard input instead
+            self.emit("action key 580")
         elif action == "screenshot":
             self.emit("action screenshot")
-        elif action == "zoom_in":
-            self.set_zoom(round(((self.zoom or 1) + 0.1) * 20) / 20)
-        elif action == "zoom_out":
-            self.set_zoom(round(((self.zoom or 1) - 0.1) * 20) / 20)
         elif action == "fullscreen":
             self.toggle_fullscreen()
         elif action == "minimize" and w:

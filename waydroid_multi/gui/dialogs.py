@@ -16,8 +16,6 @@ TABLET = [(960, 540, 160), (1280, 720, 240), (1600, 900, 240), (1920, 1080, 280)
 PHONE = [(540, 960, 240), (720, 1280, 320), (900, 1600, 320), (1080, 1920, 440), (1440, 2560, 560)]
 ACTIONS = [("stop", "Stop the instance"), ("freeze", "Freeze (pause)"), ("none", "Keep running")]
 IDLE = [("freeze", "Freeze (pause)"), ("none", "Keep running"), ("stop", "Stop the instance")]
-ZOOMS = [("auto", "Fit the screen"), ("50", "50 %"), ("67", "67 %"), ("75", "75 %"), ("100", "100 %"),
-         ("125", "125 %"), ("150", "150 %")]
 
 
 def cpu_options():
@@ -150,13 +148,9 @@ class InstanceDialog(_Dialog):
         # -- window
         g = Adw.PreferencesGroup(title="Window")
         page.add(g)
-        cur = self.info.get("zoom", "auto")
-        self.zoom_opts = _with_current(list(ZOOMS), cur, lambda v: "{} %".format(v))
-        self.zoom_row = _combo("Zoom", self.zoom_opts, subtitle="You can also resize the window by dragging its edges")
-        _select(self.zoom_row, self.zoom_opts, cur)
-        g.add(self.zoom_row)
         self.frame_row = Adw.SwitchRow(title="Title bar and toolbar",
-                                       subtitle="Move, resize and Android buttons (Back, Home, …)")
+                                       subtitle="Move and resize the window (its size is remembered), "
+                                                "Android buttons (Back, Home, …)")
         self.frame_row.set_active(self.info.get("window_frame", "true") == "true")
         g.add(self.frame_row)
 
@@ -202,7 +196,7 @@ class InstanceDialog(_Dialog):
         _select(self.idle_row, IDLE, self.info.get("idle_action", "freeze"))
         g.add(self.idle_row)
         self.labels_row = Adw.SwitchRow(title="Own dock icon and window title",
-                                        subtitle="Needed for the title bar, toolbar and zoom")
+                                        subtitle="Needed for the title bar and toolbar")
         self.labels_row.set_active(self.info.get("window_labels", "true") == "true")
         g.add(self.labels_row)
         if mode == "edit":
@@ -270,7 +264,6 @@ class InstanceDialog(_Dialog):
         else:
             _, w, h, dpi = self.presets[self.res_row.get_selected()]
         v["width"], v["height"], v["dpi"] = str(w), str(h), str(dpi)
-        v["zoom"] = self.zoom_opts[self.zoom_row.get_selected()][0]
         v["window_frame"] = "true" if self.frame_row.get_active() else "false"
         key = self.dev_keys[self.device_row.get_selected()]
         v["device_model"] = key

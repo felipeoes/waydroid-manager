@@ -55,6 +55,7 @@ class Manager(dbus.service.Object):
         self.helpers = {}        # id -> Popen
         self.last_close = {}
         self.stopping_by_us = set()
+        self.key_fds = {}        # id -> fd of the instance's keyboard FIFO (kept open while running)
         self.dbus_info = dbus.Interface(bus.get_object("org.freedesktop.DBus", "/org/freedesktop/DBus"),
                                         "org.freedesktop.DBus")
 
@@ -253,8 +254,46 @@ class Manager(dbus.service.Object):
         self.sessions[iid] = {"sender": sender, "uid": uid, "session": session, "watch": watch}
         return False
 
+    def _close_key_fd(self, iid):
+        fd = self.key_fds.pop(iid, None)
+        if fd is not None:
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+
+    def send_key(self, iid, code):
+        """Inject an evdev key straight into Android's keyboard input FIFO.
+
+        The hwcomposer drops key codes >= 239 (e.g. KEYCODE_APP_SWITCH, 580),
+        so these bypass Wayland. The writer stays open while the instance
+        runs, so Android never sees end-of-file on the FIFO.
+        """
+        import struct
+        for attempt in (0, 1):
+            fd = self.key_fds.get(iid)
+            if fd is None:
+                r = subprocess.run(["lxc-info", "-P", paths.LXC_PATH, "-n", paths.container_name(iid), "-pH"],
+                                   capture_output=True, text=True)
+                pid = r.stdout.strip()
+                if not pid.isdigit():
+                    raise Error("instance #{} is not running".format(iid), "NotRunning")
+                fd = os.open("/proc/{}/root/dev/input/wl_keyboard_events".format(pid), os.O_WRONLY | os.O_NONBLOCK)
+                self.key_fds[iid] = fd
+            try:
+                now = time.time()
+                sec, usec = int(now), int((now % 1) * 1e6)
+                os.write(fd, struct.pack("=qqHHi", sec, usec, 1, code, 1))
+                os.write(fd, struct.pack("=qqHHi", sec, usec + 1, 1, code, 0))
+                return
+            except OSError:
+                self._close_key_fd(iid)
+                if attempt:
+                    raise
+
     def _stop(self, iid):
         inst = Instance.load(iid)
+        self._close_key_fd(iid)
         self.set_transient(iid, "STOPPING")
         self.stopping_by_us.add(iid)
         try:
@@ -560,6 +599,18 @@ class Manager(dbus.service.Object):
                 raise Error("instance #{} is not running".format(inst.id), "NotRunning")
             return storage.install_apk(inst, raw, str(filename))
         self.run_async(inst.id, work, reply, error)
+
+    @dbus.service.method(paths.DBUS_IFACE, in_signature="su", out_signature="", sender_keyword="sender")
+    def SendKey(self, iid, code, sender):
+        """Press and release an evdev key in the instance (e.g. 580 = Recents)."""
+        inst = self.load(iid)
+        self.check_owner(inst, self.caller(sender))
+        if not 1 <= int(code) <= 767:
+            raise Error("invalid key code {}".format(code), "InvalidArgs")
+        try:
+            self.send_key(inst.id, int(code))
+        except OSError as e:
+            raise Error("could not send key: {}".format(e))
 
     @dbus.service.method(paths.DBUS_IFACE, in_signature="sh", out_signature="t",
                          sender_keyword="sender", async_callbacks=("reply", "error"))

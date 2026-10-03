@@ -23,8 +23,6 @@ TOOLBAR = [
     ("volume_down", "audio-volume-low-symbolic"),
     None,
     ("screenshot", "camera-photo-symbolic"),
-    ("zoom_in", "zoom-in-symbolic"),
-    ("zoom_out", "zoom-out-symbolic"),
     ("fullscreen", "view-fullscreen-symbolic"),
 ]
 SEPARATOR_H = 9

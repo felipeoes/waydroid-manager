@@ -111,6 +111,8 @@ class Session:
                 self._zoom_timer = GLib.timeout_add(1000, self._save_zoom)
         elif ev == "action screenshot":
             self.screenshot()
+        elif ev.startswith("action key "):
+            self._async("SendKey", self.iid, dbus.UInt32(int(ev.split()[2])))
         return True
 
     def _async(self, method, *args, ok=None):

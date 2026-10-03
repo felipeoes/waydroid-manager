@@ -222,6 +222,13 @@ class FrameTest(unittest.TestCase):
         for fd in h.c2s.fds:
             os.close(fd)
 
+    def test_recents_goes_through_daemon(self):
+        h = self.h
+        h.s.do_action("recents")
+        self.assertIn("action key 580", h.events)
+        for fd in h.c2s.fds:
+            os.close(fd)
+
     def test_close_not_forwarded(self):
         h = self.h
         out = h.ev(msg(TL, P.XDG_TOPLEVEL_EV_CLOSE))

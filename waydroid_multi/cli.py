@@ -397,8 +397,19 @@ def cmd_shell(o, logcat=False):
         mode = stat.S_IMODE(os.fstat(sys.stdout.fileno()).st_mode)
     except OSError:
         mode = None
+    interactive = sys.stdin.isatty() and sys.stdout.isatty()
     try:
-        rc = subprocess.run(cmd).returncode
+        if interactive:
+            rc = subprocess.run(cmd).returncode
+        else:
+            # lxc-attach chowns/chmods its stdio: give it pipes, not the caller's files
+            p = subprocess.Popen(cmd, stdin=subprocess.DEVNULL if sys.stdin.isatty() else subprocess.PIPE,
+                                 stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            out, err = p.communicate(None if sys.stdin.isatty() else sys.stdin.buffer.read())
+            sys.stdout.buffer.write(out)
+            sys.stdout.flush()
+            sys.stderr.buffer.write(err)
+            rc = p.returncode
     except KeyboardInterrupt:
         rc = 130
     finally:
