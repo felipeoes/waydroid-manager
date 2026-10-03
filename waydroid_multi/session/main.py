@@ -132,7 +132,10 @@ class Session:
     def handle_proxy_event(self, ev):
         if ev == "close" and self.started:
             log.info("window closed")
-            self._async("ReportClose", self.iid)
+            if Instance.load(self.iid).get("close_action") == "stop":
+                self.confirm_close()
+            else:
+                self._async("ReportClose", self.iid)
         elif ev.startswith("zoom "):
             # remember the window size the user picked (debounced)
             self.pending_zoom = ev.split()[1]
@@ -143,6 +146,30 @@ class Session:
         elif ev.startswith("action key "):
             log.info("sending key %s", ev.split()[2])
             self._async("SendKey", self.iid, dbus.UInt32(int(ev.split()[2])))
+
+    def confirm_close(self):
+        """Closing the window stops the instance: ask first (gui/confirm.py)."""
+        if getattr(self, "confirm", None) and self.confirm.poll() is None:
+            return                     # already asking
+        env = dict(os.environ)
+        env["PYTHONPATH"] = os.path.dirname(paths.PKG_DIR) + os.pathsep + env.get("PYTHONPATH", "")
+        self.confirm = subprocess.Popen(
+            [sys.executable, "-m", "waydroid_multi.gui.confirm", "--name", Instance.load(self.iid).name],
+            stdout=subprocess.PIPE, stdin=subprocess.DEVNULL, env=env)
+        proc, out = self.confirm, []
+
+        def readable(fd, _cond):
+            chunk = os.read(fd, 1024)
+            if chunk:
+                out.append(chunk)
+                return True
+            proc.stdout.close()
+            proc.wait()
+            if b"".join(out).strip() == b"stop":
+                log.info("stop confirmed")
+                self._async("ReportClose", self.iid)
+            return False
+        GLib.io_add_watch(proc.stdout.fileno(), GLib.PRIORITY_DEFAULT, GLib.IO_IN | GLib.IO_HUP, readable)
 
     def _async(self, method, *args, ok=None):
         try:
@@ -298,6 +325,8 @@ class Session:
         self.loop.run()
 
     def cleanup(self):
+        if getattr(self, "confirm", None) and self.confirm.poll() is None:
+            self.confirm.terminate()
         for s in self.services:
             try:
                 s.close()
