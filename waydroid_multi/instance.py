@@ -19,6 +19,13 @@ from . import devices, paths
 ID_RE = re.compile(r"^[1-9][0-9]{0,2}$")            # instance ids are their numbers
 LEGACY_ID_RE = re.compile(r"^[a-z][a-z0-9_]{0,30}$")  # 0.1 slug ids, migrated at daemon start
 PROP_KEY_RE = re.compile(r"^[A-Za-z0-9_.\-]{1,96}$")
+# Android properties only root may set. They would give the instance owner root inside
+# Android (adb root, a debuggable build), and Android runs in a privileged container
+# (as with stock Waydroid), so root there is close to root on the host.
+PROTECTED_PROP_RE = re.compile(
+    r"^(ro\.debuggable|ro\.force\.debuggable|ro\.secure|ro\.adb\..*|service\.adb\..*|persist\.adb\..*"
+    r"|persist\.service\.adb\..*|persist\.sys\.root_access|ro\.boot\..*|ro\.bootmode|ro\.kernel\..*"
+    r"|ctl\..*|sys\.powerctl|selinux\..*|ro\.build\.selinux|security\..*)$")
 CPUSET_RE = re.compile(r"^[0-9]+(-[0-9]+)?(,[0-9]+(-[0-9]+)?)*$")
 MEM_RE = re.compile(r"^[0-9]+[KMG]?$")
 MAX_INDEX = 240
@@ -168,11 +175,15 @@ def validate_setting(key, value):
     return SETTINGS[key][0](value)
 
 
-def validate_prop(key, value):
+def validate_prop(key, value, trusted=False):
+    """trusted: the caller is root (may set protected properties)."""
     if not PROP_KEY_RE.match(key):
         raise ValueError("invalid property name '{}'".format(key))
-    if any(c in value for c in "\n\r\0"):
-        raise ValueError("property values must be single-line")
+    if not trusted and PROTECTED_PROP_RE.match(key):
+        raise ValueError("property '{}' can only be set by root".format(key))
+    # no '%': stock Waydroid's config parser would read it as an interpolation
+    if any(c in value for c in "\n\r\0%"):
+        raise ValueError("property values must be single-line, without '%'")
     return value
 
 
@@ -194,7 +205,7 @@ class Instance:
 
     def __init__(self, iid, cfg=None, legacy=False):
         self.id = validate_id(iid, legacy=legacy)
-        self.cfg = cfg or configparser.ConfigParser()
+        self.cfg = cfg or configparser.ConfigParser(interpolation=None)
         for sec in ("waydroid", "properties", "instance"):
             if sec not in self.cfg:
                 self.cfg[sec] = {}
@@ -292,7 +303,7 @@ class Instance:
 
     @classmethod
     def load(cls, iid, path=None, legacy=False):
-        cfg = configparser.ConfigParser()
+        cfg = configparser.ConfigParser(interpolation=None)
         p = path or os.path.join(paths.instance_dir(validate_id(iid, legacy=legacy)), "instance.cfg")
         if not cfg.read(p):
             raise FileNotFoundError("instance #{} does not exist".format(iid))

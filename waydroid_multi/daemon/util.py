@@ -165,6 +165,21 @@ def chown_tree_top(path, uid, gid, mode):
     os.chmod(path, mode)
 
 
+def open_in_container(pid, rel, flags):
+    """Open rel inside a running container's root without following symlinks:
+    an absolute link planted inside would otherwise resolve against the host."""
+    fd = os.open("/proc/{}/root".format(int(pid)), os.O_PATH | os.O_DIRECTORY)
+    try:
+        parts = rel.split("/")
+        for part in parts[:-1]:
+            nfd = os.open(part, os.O_PATH | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=fd)
+            os.close(fd)
+            fd = nfd
+        return os.open(parts[-1], flags | os.O_NOFOLLOW, dir_fd=fd)
+    finally:
+        os.close(fd)
+
+
 # -- LXC ---------------------------------------------------------------------
 
 def lxc_state(iid):

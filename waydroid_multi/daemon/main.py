@@ -7,9 +7,11 @@ signals are delivered from the GLib main loop. The daemon never makes binder
 calls itself (see hwhelper.py).
 """
 import collections
+import fcntl
 import logging
 import os
 import pwd
+import stat
 import subprocess
 import sys
 import threading
@@ -27,7 +29,7 @@ from ..instance import (Instance, SETTINGS, legacy_ids, list_ids, validate_id, v
 from ..registry import allocate_index
 from . import container, images, storage
 from .network import Network
-from .util import log, lxc_state
+from .util import log, lxc_state, open_in_container
 
 ERR = "io.github.waydroidmulti.Error"
 ACTIVE = ("RUNNING", "FROZEN")
@@ -37,6 +39,21 @@ MAX_PER_USER = 64
 class Error(dbus.exceptions.DBusException):
     def __init__(self, msg, kind="Failed"):
         super().__init__(str(msg), name=ERR + "." + kind)
+
+
+def _regular_fd(fd, write):
+    """Take a passed file descriptor; it must be a regular file open for reading (or
+    writing). Pipes and the like could block a worker thread forever."""
+    raw = fd.take()
+    try:
+        acc = fcntl.fcntl(raw, fcntl.F_GETFL) & os.O_ACCMODE
+        if not stat.S_ISREG(os.fstat(raw).st_mode) or acc == (os.O_RDONLY if write else os.O_WRONLY):
+            raise Error("expected a regular file opened for {}".format("writing" if write else "reading"),
+                        "InvalidArgs")
+    except (OSError, Error):
+        os.close(raw)
+        raise
+    return raw
 
 
 def _s(d):
@@ -278,7 +295,11 @@ class Manager(dbus.service.Object):
                 pid = r.stdout.strip()
                 if not pid.isdigit():
                     raise Error("instance #{} is not running".format(iid), "NotRunning")
-                fd = os.open("/proc/{}/root/dev/input/wl_keyboard_events".format(pid), os.O_WRONLY | os.O_NONBLOCK)
+                # Android's /dev is writable from inside: don't follow its links to the host
+                fd = open_in_container(int(pid), "dev/input/wl_keyboard_events", os.O_WRONLY | os.O_NONBLOCK)
+                if not stat.S_ISFIFO(os.fstat(fd).st_mode):
+                    os.close(fd)
+                    raise Error("instance #{}: keyboard input is not a FIFO".format(iid))
                 self.key_fds[iid] = fd
             try:
                 now = time.time()
@@ -346,11 +367,20 @@ class Manager(dbus.service.Object):
         if clone_from == "0":
             clone_from = "default"
         reset_ids = opts.pop("reset_ids", "true") != "false"
-        src_data = None
+        # counted again here: the check in Create() races with parallel calls
+        if uid != 0 and sum(1 for i in self.all_instances() if i.owner_uid == uid) >= MAX_PER_USER:
+            raise Error("instance limit reached ({} per user)".format(MAX_PER_USER), "LimitReached")
+        src_data, src_fd = self._clone_source(clone_from, uid) if clone_from else (None, None)
+        try:
+            return self._create_from(uid, opts, clone_from, src_data, reset_ids)
+        finally:
+            if src_fd is not None:
+                os.close(src_fd)
+
+    def _create_from(self, uid, opts, clone_from, src_data, reset_ids):
         settings = {}
         props = {}
         if clone_from:
-            src_data = self._clone_source(clone_from, uid)
             if clone_from != "default":
                 # A clone starts with the source's settings; options override them
                 src = Instance.load(clone_from)
@@ -361,7 +391,7 @@ class Manager(dbus.service.Object):
         for k, v in opts.items():
             if k.startswith("prop:"):
                 if v:
-                    props[k[5:]] = validate_prop(k[5:], v)
+                    props[k[5:]] = validate_prop(k[5:], v, trusted=uid == 0)
                 else:
                     props.pop(k[5:], None)
             else:
@@ -380,24 +410,28 @@ class Manager(dbus.service.Object):
         inst.cfg["waydroid"]["images_path"] = images.image_dir(image_id)
         for k, v in settings.items():
             inst.cfg["instance"][k] = v
-        inst.save()
-        try:
-            container.ensure_dirs(inst)
+        # The instance becomes visible with save(): hold its lock (Start waits) and mark
+        # it busy until its data is complete
+        with self.locks[iid]:
             if src_data:
                 self.set_transient(iid, "CLONING")
-                storage.copy_data(src_data, inst.data_dir)
-                pw = pwd.getpwuid(uid)
-                os.chown(inst.data_dir, uid, pw.pw_gid)
-                if reset_ids:
-                    storage.reset_ids_offline(inst.data_dir)
-                    inst.cfg["instance"]["pending_id_reset"] = "true"
-                inst.cfg["instance"]["cloned_from"] = clone_from
-                inst.save()
-        except Exception:
-            storage.delete_instance_files(inst)
-            raise
-        finally:
-            self.set_transient(iid, None)
+            inst.save()
+            try:
+                container.ensure_dirs(inst)
+                if src_data:
+                    storage.copy_data(src_data, inst.data_dir)
+                    pw = pwd.getpwuid(uid)
+                    os.chown(inst.data_dir, uid, pw.pw_gid, follow_symlinks=False)
+                    if reset_ids:
+                        storage.reset_ids_offline(inst.data_dir)
+                        inst.cfg["instance"]["pending_id_reset"] = "true"
+                    inst.cfg["instance"]["cloned_from"] = clone_from
+                    inst.save()
+            except Exception:
+                storage.delete_instance_files(inst)
+                raise
+            finally:
+                self.set_transient(iid, None)
         self.net.reload_hosts(self.hosts())
         GLib.idle_add(lambda: (self.InstanceAdded(iid), False)[1])
         return iid
@@ -435,21 +469,36 @@ class Manager(dbus.service.Object):
                 log.error("migrating instance '%s' failed: %s", slug, e)
 
     def _clone_source(self, src, uid):
+        """Returns (path to copy from, fd to close afterwards or None)."""
         if src == "default":
             pw = pwd.getpwuid(uid)
-            data = os.path.join(pw.pw_dir, ".local/share/waydroid/data")
             r = subprocess.run(["lxc-info", "-P", paths.STOCK_WORK + "/lxc", "-n", "waydroid", "-sH"],
                                capture_output=True, text=True)
             if r.stdout.strip() not in ("", "STOPPED") or os.path.isdir("/sys/fs/cgroup/lxc.payload.waydroid"):
                 raise Error("stop the stock Waydroid session first ('waydroid session stop')", "Busy")
-            if not os.path.isdir(data) or os.path.islink(data) or os.stat(data).st_uid != uid:
-                raise Error("no stock Waydroid data found at {}".format(data), "NotFound")
-            return data
+            # The user controls everything below their home: open each step without
+            # following symlinks and copy through the fd, so nothing can be swapped in
+            # between this check and the copy.
+            rel = ".local/share/waydroid/data"
+            fd = None
+            try:
+                fd = os.open(os.path.realpath(pw.pw_dir), os.O_PATH | os.O_DIRECTORY)
+                for part in rel.split("/"):
+                    nfd = os.open(part, os.O_PATH | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=fd)
+                    os.close(fd)
+                    fd = nfd
+                if os.fstat(fd).st_uid != uid:
+                    raise OSError("not owned by the caller")
+            except OSError:
+                if fd is not None:
+                    os.close(fd)
+                raise Error("no stock Waydroid data found at {}".format(os.path.join(pw.pw_dir, rel)), "NotFound")
+            return "/proc/{}/fd/{}".format(os.getpid(), fd), fd
         sinst = self.load(src)
         self.check_owner(sinst, uid)
         if self.state(sinst.id) != "STOPPED":
             raise Error("stop instance #{} before cloning it".format(src), "Busy")
-        return sinst.data_dir
+        return sinst.data_dir, None
 
     def _delete(self, iid):
         inst = Instance.load(iid)
@@ -471,13 +520,17 @@ class Manager(dbus.service.Object):
                 "subnet": str(self.net.cfg.network), "bridge": self.net.cfg.bridge,
                 "image": images.current_id(), "stock_image": images.stock_image_id()}
 
-    @dbus.service.method(paths.DBUS_IFACE, in_signature="", out_signature="aa{ss}")
-    def List(self):
-        return [self.info(i) for i in self.all_instances()]
+    @dbus.service.method(paths.DBUS_IFACE, in_signature="", out_signature="aa{ss}", sender_keyword="sender")
+    def List(self, sender):
+        """The caller's instances (root: everyone's)."""
+        uid = self.caller(sender)
+        return [self.info(i) for i in self.all_instances() if uid == 0 or i.owner_uid == uid]
 
-    @dbus.service.method(paths.DBUS_IFACE, in_signature="s", out_signature="a{ss}")
-    def Get(self, iid):
-        return self.info(self.load(iid))
+    @dbus.service.method(paths.DBUS_IFACE, in_signature="s", out_signature="a{ss}", sender_keyword="sender")
+    def Get(self, iid, sender):
+        inst = self.load(iid)
+        self.check_owner(inst, self.caller(sender))
+        return self.info(inst)
 
     @dbus.service.method(paths.DBUS_IFACE, in_signature="a{ss}", out_signature="s",
                          sender_keyword="sender", async_callbacks=("reply", "error"))
@@ -502,7 +555,8 @@ class Manager(dbus.service.Object):
     @dbus.service.method(paths.DBUS_IFACE, in_signature="sa{ss}", out_signature="", sender_keyword="sender")
     def SetConfig(self, iid, values, sender):
         inst = self.load(iid)
-        self.check_owner(inst, self.caller(sender))
+        uid = self.caller(sender)
+        self.check_owner(inst, uid)
         with self.locks[inst.id]:
             inst = Instance.load(inst.id)
             try:
@@ -512,7 +566,7 @@ class Manager(dbus.service.Object):
                         if v == "":
                             inst.cfg["properties"].pop(key, None)
                         else:
-                            inst.cfg["properties"][key] = validate_prop(key, v)
+                            inst.cfg["properties"][key] = validate_prop(key, v, trusted=uid == 0)
                     else:
                         inst.set(k, v)
             except ValueError as e:
@@ -586,7 +640,7 @@ class Manager(dbus.service.Object):
         try:
             inst = self.load(iid)
             self.check_owner(inst, self.caller(sender))
-            raw = fd.take()
+            raw = _regular_fd(fd, write=False)
         except Error as e:
             return error(e)
 
@@ -619,7 +673,7 @@ class Manager(dbus.service.Object):
         try:
             inst = self.load(iid)
             self.check_owner(inst, self.caller(sender))
-            raw = fd.take()
+            raw = _regular_fd(fd, write=True)
         except Error as e:
             return error(e)
         st = lxc_state(inst.id)

@@ -150,9 +150,41 @@ class InstanceTest(unittest.TestCase):
 
     def test_props(self):
         self.assertEqual(validate_prop("ro.hardware.egl", "mesa"), "mesa")
-        for k, v in (("bad key", "x"), ("ro.x", "a\nb")):
+        for k, v in (("bad key", "x"), ("ro.x", "a\nb"), ("ro.x", "%(y)s")):
             with self.assertRaises(ValueError):
                 validate_prop(k, v)
+
+    def test_root_only_props(self):
+        for k in ("ro.debuggable", "ro.secure", "ro.adb.secure", "service.adb.root", "ro.boot.mode",
+                  "persist.sys.root_access", "ctl.start"):
+            with self.assertRaises(ValueError):
+                validate_prop(k, "1")
+            self.assertEqual(validate_prop(k, "1", trusted=True), "1")
+        for k in ("ro.product.model", "ro.build.tags", "persist.waydroid.multi_windows", "ro.debuggable.x"):
+            self.assertEqual(validate_prop(k, "1"), "1")
+
+    def test_percent_in_saved_values_is_literal(self):
+        inst = Instance.new("4", 4, 1000, "1-1", {}, {})
+        inst.cfg["instance"]["name"] = "100%(x)s"
+        with tempfile.TemporaryDirectory() as d:
+            p = os.path.join(d, "instance.cfg")
+            with open(p, "w") as f:
+                inst.cfg.write(f)
+            self.assertEqual(Instance.load("4", path=p).name, "100%(x)s")
+
+    def test_open_in_container_refuses_symlinks(self):
+        from waydroid_multi.daemon.util import open_in_container
+        with tempfile.TemporaryDirectory() as d:
+            os.makedirs(os.path.join(d, "real", "input"))
+            open(os.path.join(d, "real", "input", "f"), "w").close()
+            os.symlink(os.path.join(d, "real"), os.path.join(d, "dev"))
+            rel = d.lstrip("/")
+            os.close(open_in_container(os.getpid(), rel + "/real/input/f", os.O_RDONLY))
+            for target in ("/dev/input/f", "/real/input/link"):
+                if target.endswith("link"):
+                    os.symlink(os.path.join(d, "real", "input", "f"), os.path.join(d, "real", "input", "link"))
+                with self.assertRaises(OSError):
+                    open_in_container(os.getpid(), rel + target, os.O_RDONLY)
 
     def test_new_instance_layout_and_roundtrip(self):
         inst = Instance.new("3", 3, 1000, "100-200", {"arch": "x86_64", "vendor_type": "MAINLINE"}, {"a.b": "1"})

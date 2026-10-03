@@ -31,7 +31,7 @@ class NetConfig:
 
     @classmethod
     def load(cls, path=None):
-        cfg = configparser.ConfigParser()
+        cfg = configparser.ConfigParser(interpolation=None)
         cfg.read(path or paths.CONFIG_FILE)
         sec = cfg["network"] if "network" in cfg else {}
         get = lambda k: sec.get(k, DEFAULTS[k])  # noqa: E731

@@ -3,6 +3,7 @@
 import os
 import secrets
 import shutil
+import stat
 
 from .. import paths
 from .util import attach, log, run, umount_tree
@@ -12,11 +13,14 @@ GMS_PACKAGES = ("com.google.android.gsf", "com.google.android.gms")
 
 
 def copy_data(src, dst):
-    """Copy an Android /data tree preserving ownership, modes and xattrs."""
-    if os.path.exists(dst):
+    """Copy an Android /data tree preserving ownership, modes and xattrs.
+    src may be a /proc/<pid>/fd/<n> path: its contents are copied into dst."""
+    if os.path.lexists(dst):
         shutil.rmtree(dst)
-    os.makedirs(os.path.dirname(dst), exist_ok=True)
-    run(["cp", "-a", "--reflink=auto", src, dst], timeout=3600)
+    os.makedirs(dst)
+    run(["cp", "-a", "--reflink=auto", src + "/.", dst + "/"], timeout=3600)
+    if not stat.S_ISDIR(os.lstat(dst).st_mode):
+        raise RuntimeError("copy produced no data directory")
 
 
 def reset_ids_offline(data_dir):
@@ -114,7 +118,7 @@ def install_apk(inst, fd, filename):
     finally:
         src.close()
     out = (r.stdout + r.stderr).decode("utf-8", "replace").strip()
-    log.info("%s: install %s: %s", inst.id, filename, out)
+    log.info("%s: install %r: %s", inst.id, filename, out)
     if r.returncode != 0 or "Success" not in out:
         raise RuntimeError("install failed: " + out[-500:])
     return out

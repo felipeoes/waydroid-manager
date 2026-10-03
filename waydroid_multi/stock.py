@@ -88,7 +88,7 @@ def make_args(work, config, **extra):
 
 
 def load_stock_cfg():
-    cfg = configparser.ConfigParser()
+    cfg = configparser.ConfigParser(interpolation=None)
     if os.path.isfile(paths.STOCK_CFG):
         cfg.read(paths.STOCK_CFG)
     if "waydroid" not in cfg:

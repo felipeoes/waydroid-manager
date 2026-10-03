@@ -36,7 +36,7 @@ def emit(word):
 
 def main(argv=None):
     argv = argv if argv is not None else sys.argv[1:]
-    cfg = configparser.ConfigParser()
+    cfg = configparser.ConfigParser(interpolation=None)
     if not argv or not cfg.read(argv[0]):
         print("usage: hwhelper INSTANCE_CFG", file=sys.stderr)
         return 2

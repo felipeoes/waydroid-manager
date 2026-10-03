@@ -13,7 +13,7 @@ import shutil
 import time
 
 from .. import devices, lxcconfig, paths, stock
-from ..instance import Instance
+from ..instance import PROTECTED_PROP_RE, Instance
 from . import binder, images
 from .util import (CommandError, apparmor_profile_loaded, attach, bind, bind_file, chown_tree_top,
                    is_mount, log, lxc_state, mount_image, mount_overlay, run, stage_socket, umount_tree)
@@ -40,12 +40,17 @@ def stock_args(inst, config=None):
 
 
 def ensure_dirs(inst):
+    # Only root and the owner's group may enter the instance directory: inside data/,
+    # files belong to raw Android uids that can match other host users' uids.
+    pw = pwd.getpwuid(inst.owner_uid)
+    os.makedirs(inst.dir, exist_ok=True)
+    os.chown(inst.dir, 0, pw.pw_gid, follow_symlinks=False)
+    os.chmod(inst.dir, 0o710)
     for d in ("rootfs", "overlay/vendor", "overlay_rw/system", "overlay_rw/vendor",
               "overlay_work/system", "overlay_work/vendor"):
         os.makedirs(os.path.join(inst.dir, d), exist_ok=True)
     os.makedirs(inst.lxc_dir, exist_ok=True)
     if not os.path.isdir(inst.data_dir):
-        pw = pwd.getpwuid(inst.owner_uid)
         chown_tree_top(inst.data_dir, inst.owner_uid, pw.pw_gid, 0o771)
 
 
@@ -154,13 +159,16 @@ def detect_protocols(inst):
 def write_props(inst, session):
     """Generate waydroid_base.prop and waydroid.prop for this start."""
     # Effective config: stock [properties] overridden by the instance's own
-    eff = configparser.ConfigParser()
+    eff = configparser.ConfigParser(interpolation=None)
     eff.read_dict(inst.cfg)
     stock_props = stock.load_stock_cfg()["properties"]
     eff["properties"] = {}
     for k, v in stock_props.items():
         eff["properties"][k] = v
     for k, v in inst.cfg["properties"].items():
+        if inst.owner_uid != 0 and PROTECTED_PROP_RE.match(k):
+            log.warning("%s: ignoring property %s (only root may set it)", inst.id, k)
+            continue
         eff["properties"][k] = v
     eff_path = os.path.join(inst.dir, "effective.cfg")
     with open(eff_path, "w") as f:
