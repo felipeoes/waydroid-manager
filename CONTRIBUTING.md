@@ -299,8 +299,9 @@ Versions follow [Semantic Versioning](https://semver.org/). Releases are publish
    - in `CHANGELOG.md`, rename `## [Unreleased]` to `## [X.Y.Z] - YYYY-MM-DD`, add a new
      empty `## [Unreleased]` above it, and update the links at the bottom.
 2. **Open a release PR `dev` → `main`** titled "Release X.Y.Z". Merge it with **"Create a merge
-   commit"**, not squash or rebase, so `main` stays an ancestor of `dev` and the branches
-   never diverge.
+   commit"**, not squash or rebase. Every commit of `dev` then reaches `main` unchanged
+   (`dev` stays an ancestor of `main`), so the next release PR never conflicts. Squashing would
+   rewrite the commits, and later release PRs would conflict.
 3. **Tag the merge commit on `main`:**
    ```sh
    git switch main && git pull
