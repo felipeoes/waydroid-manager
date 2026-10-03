@@ -37,6 +37,25 @@ def wayland_socket():
     return os.path.join(xdg, disp)
 
 
+def color_scheme():
+    try:
+        out = subprocess.run(["gsettings", "get", "org.gnome.desktop.interface", "color-scheme"],
+                             capture_output=True, text=True, timeout=3).stdout
+        return "light" if "light" in out else ("dark" if "dark" in out else "light")
+    except (OSError, subprocess.TimeoutExpired):
+        return "dark"
+
+
+def notify(summary, body):
+    try:
+        n = dbus.Interface(dbus.SessionBus().get_object("org.freedesktop.Notifications",
+                                                        "/org/freedesktop/Notifications"),
+                           "org.freedesktop.Notifications")
+        n.Notify("waydroid-multi", 0, "camera-photo-symbolic", summary, body, [], {}, 4000)
+    except dbus.DBusException:
+        pass
+
+
 def pulse_socket():
     base = os.environ.get("PULSE_RUNTIME_PATH") or os.path.join(os.environ.get("XDG_RUNTIME_DIR", ""), "pulse")
     p = os.path.join(base, "native")
@@ -59,10 +78,17 @@ class Session:
         listen = os.path.join(paths.user_runtime_dir(self.iid), "wayland-0")
         env = dict(os.environ)
         env["PYTHONPATH"] = os.path.dirname(paths.PKG_DIR) + os.pathsep + env.get("PYTHONPATH", "")
+        inst = self.inst
+        os.makedirs(paths.user_runtime_dir(self.iid), mode=0o700, exist_ok=True)
         self.proxy = subprocess.Popen(
             [sys.executable, "-m", "waydroid_multi.session.wlproxy", "--listen", listen,
-             "--upstream", upstream, "--id", self.iid, "--name", self.inst.name],
-            stdout=subprocess.PIPE, stdin=subprocess.DEVNULL, env=env)
+             "--upstream", upstream, "--id", self.iid, "--name", inst.name,
+             "--width", inst.get("width"), "--height", inst.get("height"), "--zoom", inst.get("zoom"),
+             "--frame", "on" if inst.getbool("window_frame") else "off", "--theme", color_scheme(),
+             "--close-action", inst.get("close_action")],
+            stdout=subprocess.PIPE, stdin=subprocess.DEVNULL, env=env,
+            stderr=open(os.path.join(paths.user_runtime_dir(self.iid), "wlproxy.log"), "w")
+            if os.environ.get("WDM_PROXY_TRACE") == "1" else None)
         line = self.proxy.stdout.readline().decode().strip()
         if line != "ready":
             raise RuntimeError("Wayland proxy failed to start")
@@ -74,14 +100,51 @@ class Session:
         if not line:
             log.warning("Wayland proxy exited")
             return False
-        if line.decode().strip() == "close" and self.started:
+        ev = line.decode().strip()
+        if ev == "close" and self.started:
             log.info("window closed")
-            try:
-                self.daemon.iface.ReportClose(self.iid, reply_handler=lambda: None,
-                                              error_handler=lambda e: log.warning("ReportClose: %s", e))
-            except dbus.DBusException as e:
-                log.warning("ReportClose: %s", e)
+            self._async("ReportClose", self.iid)
+        elif ev.startswith("zoom "):
+            # remember the window size the user picked (debounced)
+            self.pending_zoom = ev.split()[1]
+            if not getattr(self, "_zoom_timer", None):
+                self._zoom_timer = GLib.timeout_add(1000, self._save_zoom)
+        elif ev == "action screenshot":
+            self.screenshot()
         return True
+
+    def _async(self, method, *args, ok=None):
+        try:
+            getattr(self.daemon.iface, method)(*args, reply_handler=ok or (lambda *a: None),
+                                               error_handler=lambda e: log.warning("%s: %s", method, e),
+                                               timeout=120)
+        except dbus.DBusException as e:
+            log.warning("%s: %s", method, e)
+
+    def _save_zoom(self):
+        self._zoom_timer = None
+        self._async("SetConfig", self.iid, dbus.Dictionary({"zoom": self.pending_zoom}, signature="ss"))
+        return False
+
+    def screenshot(self):
+        pics = GLib.get_user_special_dir(GLib.UserDirectory.DIRECTORY_PICTURES) or os.path.expanduser("~/Pictures")
+        folder = os.path.join(pics, "Waydroid")
+        os.makedirs(folder, exist_ok=True)
+        safe = "".join(c if c.isalnum() or c in "-_ " else "_" for c in self.inst.name).strip() or "instance"
+        path = os.path.join(folder, "{}-{}.png".format(safe, time.strftime("%Y%m%d-%H%M%S")))
+        f = open(path, "wb")
+
+        def done(*_):
+            f.close()
+            log.info("screenshot saved to %s", path)
+            notify("Screenshot saved", path)
+        try:
+            self.daemon.iface.Screenshot(self.iid, dbus.types.UnixFd(f), reply_handler=done,
+                                         error_handler=lambda e: (f.close(), log.warning("screenshot: %s", e)),
+                                         timeout=60)
+        except dbus.DBusException as e:
+            f.close()
+            log.warning("screenshot: %s", e)
 
     # -- lifecycle -----------------------------------------------------------------
     def session_dict(self, wl):

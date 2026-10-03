@@ -204,8 +204,12 @@ def cmd_config(o):
         print("Saved.")
 
 
-def show_full_ui(iid):
-    p = platform_service(iid)
+def show_full_ui(iid, timeout=15):
+    try:
+        p = platform_service(iid, timeout=timeout)
+    except DaemonError:
+        die("Android in #{0} is not responding (it may be booting or shutting down); try again, "
+            "or restart it with: waydroid-multi stop {0} && waydroid-multi start {0}".format(iid))
     p.setprop("waydroid.active_apps", "Waydroid")
     p.settingsPutString(2, "policy_control", "null*")
     sb = statusbar_service(iid)

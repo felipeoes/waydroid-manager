@@ -118,3 +118,24 @@ def install_apk(inst, fd, filename):
     if r.returncode != 0 or "Success" not in out:
         raise RuntimeError("install failed: " + out[-500:])
     return out
+
+
+def screenshot(inst, fd):
+    """Write a PNG of the Android screen to fd (never handed to lxc-attach itself)."""
+    import subprocess
+    out = os.fdopen(fd, "wb", closefd=True)
+    try:
+        cmd = ["lxc-attach", "-P", paths.LXC_PATH, "-n", inst.container, "--clear-env",
+               "--set-var", "PATH=/system/bin:/system/xbin:/vendor/bin", "--",
+               "/system/bin/screencap", "-p"]
+        p = subprocess.Popen(cmd, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+        size = 0
+        for chunk in iter(lambda: p.stdout.read(1024 * 1024), b""):
+            out.write(chunk)
+            size += len(chunk)
+        p.wait(timeout=30)
+        if p.returncode != 0 or size == 0:
+            raise RuntimeError("screencap failed")
+        return size
+    finally:
+        out.close()

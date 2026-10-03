@@ -40,7 +40,7 @@ class Backend:
 
     def _proxy(self):
         if self.iface is None:
-            obj = self.bus.get_object(paths.DBUS_NAME, paths.DBUS_PATH)
+            obj = self.bus.get_object(paths.DBUS_NAME, paths.DBUS_PATH, follow_name_owner_changes=True)
             self.iface = dbus.Interface(obj, paths.DBUS_IFACE)
         return self.iface
 

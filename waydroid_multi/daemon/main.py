@@ -561,6 +561,21 @@ class Manager(dbus.service.Object):
             return storage.install_apk(inst, raw, str(filename))
         self.run_async(inst.id, work, reply, error)
 
+    @dbus.service.method(paths.DBUS_IFACE, in_signature="sh", out_signature="t",
+                         sender_keyword="sender", async_callbacks=("reply", "error"))
+    def Screenshot(self, iid, fd, sender, reply, error):
+        """Write a PNG of the instance's screen into the passed file descriptor."""
+        try:
+            inst = self.load(iid)
+            self.check_owner(inst, self.caller(sender))
+            raw = fd.take()
+        except Error as e:
+            return error(e)
+        if lxc_state(inst.id) != "RUNNING":
+            os.close(raw)
+            return error(Error("instance #{} is not running".format(inst.id), "NotRunning"))
+        self.run_async(inst.id, lambda: dbus.UInt64(storage.screenshot(inst, raw)), reply, error, lock=False)
+
     @dbus.service.method(paths.DBUS_IFACE, in_signature="s", out_signature="s",
                          sender_keyword="sender", async_callbacks=("reply", "error"))
     def GetGsfId(self, iid, sender, reply, error):
