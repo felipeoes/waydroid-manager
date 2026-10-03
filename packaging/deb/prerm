@@ -1,0 +1,10 @@
+#!/bin/sh
+# SPDX-License-Identifier: GPL-3.0-or-later
+set -e
+# Only on removal: upgrades keep instances running (postinst restarts the daemon)
+if [ "$1" = remove ] && [ -x /usr/lib/waydroid-multi/uninstall.sh ]; then
+    /usr/lib/waydroid-multi/uninstall.sh --stop-only || true
+fi
+# byte-code caches made by postinst (or by Python itself): not in the package
+find /usr/lib/waydroid-multi -name __pycache__ -type d -prune -exec rm -rf {} + 2>/dev/null || true
+exit 0
