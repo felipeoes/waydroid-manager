@@ -7,6 +7,32 @@ checkout, and the hard-won lessons that are easy to break. For using the program
 Bug reports are most useful with: your distro, desktop, `waydroid --version`, the output of
 `waydroid-multi doctor`, and the logs listed under [Debugging](#debugging).
 
+**Quick links:** [Workflow](#workflow) · [Development](#development) ·
+[Packaging](#packaging) · [Releasing](#releasing) · [Code style](docs/code-style.md)
+
+## Workflow
+
+| Branch | Purpose |
+|---|---|
+| `main` | **Always the latest release.** It only changes through a release PR from `dev`. |
+| `dev` | Integration branch: the next release is assembled here. |
+| `feature/…`, `fix/…` | One branch per change, made from `dev`. |
+
+Both `main` and `dev` are protected: changes land only through pull requests (this applies to
+the maintainer too), and force-pushes and deletion are blocked.
+
+1. **Branch from `dev`:** `git switch dev && git pull && git switch -c fix/short-name`.
+2. **Make the change**, following the [code style](docs/code-style.md). Add tests, update the
+   README or this guide when behaviour changes, and add a line under `## [Unreleased]` in
+   [CHANGELOG.md](CHANGELOG.md).
+3. **Test:** run the unit tests, and also `tests/integration/smoke.sh` for daemon, container,
+   network or cloning changes.
+4. **Open a pull request against `dev`, not `main`.** GitHub proposes `main` (the default branch)
+   for new PRs, so change the base. Describe what changed, why, and how you tested it.
+5. **The PR is reviewed and merged into `dev`.** Small PRs are squash-merged.
+
+Releases are cut from `dev` by the maintainer, see [Releasing](#releasing).
+
 ## How it works
 
 Waydroid runs Android in an LXC container that talks to the host over binder. Stock Waydroid
@@ -87,7 +113,9 @@ names, launcher `waydroid-multi.N.desktop` and window app_id `waydroid-multi.N`.
 | `waydroid_multi/session/protocols/` | vendored Wayland protocol XML (MIT, see its README) |
 | `waydroid_multi/gui/` | GTK4/libadwaita manager app; `confirm.py` is the close confirmation |
 | `data/` | network script, LXC hooks, D-Bus policy and activation, systemd unit, desktop file |
-| `scripts/` | `install.sh`, `uninstall.sh`, `spike/` (original feasibility scripts) |
+| `scripts/` | `install.sh` (the installed file layout), `uninstall.sh`, `spike/` (original feasibility scripts) |
+| `packaging/deb/` | `.deb` build script, control template and maintainer scripts |
+| `.github/workflows/release.yml` | builds and publishes a release when a version tag is pushed |
 | `tests/unit/`, `tests/integration/smoke.sh` | unit tests; end-to-end test on a real host |
 | `docs/spike-findings.md` | verified design assumptions from the feasibility spike |
 
@@ -95,7 +123,8 @@ names, launcher `waydroid-multi.N.desktop` and window app_id `waydroid-multi.N`.
 
 | Path | Contents |
 |---|---|
-| `/usr/lib/waydroid-multi/` | the program, `data/` and `uninstall.sh` |
+| `/usr/lib/waydroid-multi/` | the program, `data/`, `uninstall.sh` and `install-method` (`script` or `deb`) |
+| `/usr/lib/systemd/system/waydroid-multi.service` | the daemon's unit |
 | `/etc/waydroid-multi/daemon.conf` | bridge name, subnet, instance isolation, nftables |
 | `/var/lib/waydroid-multi/instances/N/` | `instance.cfg`, `data/` (Android `/data`), overlays, generated props, `container.log` |
 | `/var/lib/waydroid-multi/lxc/wdm-N/` | generated LXC config |
@@ -225,13 +254,67 @@ instance started. After changing `session/`, reinstall and restart the instance.
 
 ### Style
 
-- Python 3, standard library plus the system packages above. No pip dependencies.
-- Match the surrounding code: short functions, comments that say *why*, no type-annotation noise.
-- Root-side code must treat every path below a user's home or inside a container as hostile.
-  It must not use `shell=True` with user data. It must pipe `lxc-attach` stdio (see below).
-- Keep `lxcconfig.py`/`netconfig.py` pure, and add unit tests for anything that generates config
-  or parses protocol messages.
-- Commits: one topic per commit, an imperative summary line.
+See [docs/code-style.md](docs/code-style.md): Python conventions, rules for the root daemon,
+the Wayland proxy, the GUI and shell scripts, tests, and commits.
+
+## Packaging
+
+The installed file layout has a single source: `scripts/install.sh`. It installs and starts the
+daemon for a source install. With `--destdir DIR --no-activate` it only stages the files, and
+that staged tree is what the package is built from. A new installed file therefore goes into
+`install.sh` only.
+
+```sh
+packaging/deb/build.sh                     # → dist/waydroid-multi_<version>_all.deb (no root needed)
+sudo apt install ./dist/waydroid-multi_*_all.deb
+```
+
+- **Version:** taken from `__version__` in `waydroid_multi/__init__.py`.
+- **Dependencies:** listed in `packaging/deb/control.in`. Keep them in sync with the code's
+  imports. libadwaita ≥ 1.5 means Ubuntu 24.04+ and Debian 13+.
+- **Maintainer scripts** (`packaging/deb/`):
+  - `preinst`: when moving from a source install, removes its `/etc` unit and an unmodified
+    `daemon.conf`, so nothing shadows the package or prompts.
+  - `postinst`: byte-compiles, then enables and restarts the daemon. A restarted daemon adopts
+    running instances, so **upgrades don't stop instances**.
+  - `prerm`: on removal, runs `uninstall.sh --stop-only` (stops instances, network and helpers,
+    removes per-user launchers). It always removes the byte-code caches.
+  - `postrm purge`: deletes `/var/lib/waydroid-multi`, but only if nothing is mounted there,
+    plus `/etc/waydroid-multi` and per-user caches.
+- **Uninstall from the app** runs `uninstall.sh` through pkexec. For a package install
+  (`install-method` = `deb`), that runs `apt-get remove` (or `purge`), so both install methods
+  share one entry point.
+
+To test a package change: install it over a running instance (upgrade), then `apt remove` (data
+kept), then `apt purge` with your real `/var/lib/waydroid-multi` moved aside first. After that,
+run `smoke.sh` against the installed package.
+
+## Releasing
+
+Versions follow [Semantic Versioning](https://semver.org/). Releases are published by
+`.github/workflows/release.yml` when a `vX.Y.Z` tag is pushed.
+
+1. **Prepare on `dev`** (through a PR, like any change):
+   - bump `__version__` in `waydroid_multi/__init__.py`;
+   - in `CHANGELOG.md`, rename `## [Unreleased]` to `## [X.Y.Z] - YYYY-MM-DD`, add a new
+     empty `## [Unreleased]` above it, and update the links at the bottom.
+2. **Open a release PR `dev` → `main`** titled "Release X.Y.Z". Merge it with **"Create a merge
+   commit"**, not squash or rebase, so `main` stays an ancestor of `dev` and the branches
+   never diverge.
+3. **Tag the merge commit on `main`:**
+   ```sh
+   git switch main && git pull
+   git tag -a vX.Y.Z -m "waydroid-multi X.Y.Z"
+   git push origin vX.Y.Z
+   ```
+4. **The workflow then:**
+   - checks that the tag matches `__version__`, is on `main` and has a CHANGELOG section;
+   - runs the unit tests;
+   - builds the `.deb`;
+   - publishes the GitHub release with the `.deb` attached and that CHANGELOG section as the
+     notes.
+
+   If it fails, fix the problem through `dev` → `main` again. Never move a published tag.
 
 ## Stock Waydroid pitfalls
 
