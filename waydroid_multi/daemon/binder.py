@@ -5,6 +5,7 @@ Binder contexts belong to each device node, so ``wdm<N>-binder`` etc. give
 every instance its own servicemanager without a second binderfs mount.
 Nodes are allocated idempotently at each start and never deleted.
 """
+import gc
 import os
 
 from .. import stock
@@ -18,7 +19,10 @@ def ensure_binderfs(args):
     """Load binder and mount binderfs the way stock does (creating the stock
     anbox-* nodes too), so stock Waydroid never stacks a second binderfs on
     top of ours later."""
-    stock.tools().helpers.drivers.probeBinderDriver(args)
+    if not all(os.path.exists("/dev/" + n) for n in ("anbox-binder", "anbox-vndbinder", "anbox-hwbinder")) \
+            or not os.path.exists(os.path.join(BINDERFS, "binder-control")):
+        stock.tools().helpers.drivers.probeBinderDriver(args)
+        gc.collect()  # stock's command runner leaks fds until collected
     if not os.path.exists(os.path.join(BINDERFS, "binder-control")):
         raise RuntimeError("binderfs is not available (is the binder_linux module loaded?)")
 

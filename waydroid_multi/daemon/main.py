@@ -87,6 +87,12 @@ class Manager(dbus.service.Object):
     def hosts(self):
         return [(i.mac, self.net.ip_for(i)) for i in self.all_instances()]
 
+    def images_in_use(self):
+        """Image sets loop-mounted by running instances (stopped ones switch
+        to the current set at their next start)."""
+        return [i.image_id for i in self.all_instances()
+                if i.image_id and (i.id in self.transient or lxc_state(i.id) in ACTIVE)]
+
     def set_transient(self, iid, st):
         if st:
             self.transient[iid] = st
@@ -192,7 +198,7 @@ class Manager(dbus.service.Object):
             return
         self.set_transient(iid, "STARTING")
         try:
-            container.start(inst, self.net, self.hosts(), session, uid)
+            container.start(inst, self.net, self.hosts(), session, uid, self.images_in_use())
             inst = Instance.load(iid)
             self.start_helper(inst)
             GLib.idle_add(self._attach_session, iid, uid, session, sender)
@@ -271,7 +277,7 @@ class Manager(dbus.service.Object):
         container.stop(inst)
         session = dict(s["session"])
         session["background_start"] = "false"
-        container.start(inst, self.net, self.hosts(), session, s["uid"])
+        container.start(inst, self.net, self.hosts(), session, s["uid"], self.images_in_use())
         self.start_helper(Instance.load(iid))
         GLib.idle_add(self._emit_state, iid)
 
@@ -291,10 +297,17 @@ class Manager(dbus.service.Object):
         clone_from = opts.pop("clone_from", "")
         reset_ids = opts.pop("reset_ids", "true") != "false"
         src_data = None
-        if clone_from:
-            src_data = self._clone_source(clone_from, uid)
         settings = {}
         props = {}
+        if clone_from:
+            src_data = self._clone_source(clone_from, uid)
+            if clone_from != "default":
+                # A clone starts with the source's settings; options override them
+                src = Instance.load(clone_from)
+                for k in SETTINGS:
+                    if k != "name" and k in src.cfg["instance"]:
+                        settings[k] = src.cfg["instance"][k]
+                props.update(src.cfg["properties"])
         for k, v in opts.items():
             if k.startswith("prop:"):
                 props[k[5:]] = validate_prop(k[5:], v)
@@ -302,7 +315,7 @@ class Manager(dbus.service.Object):
                 settings[k] = validate_setting(k, v)
         used = [i.index for i in self.all_instances()]
         index = allocate_index(used)
-        image_id = images.current_id() or images.sync()
+        image_id = images.ensure_synced(self.images_in_use())
         w = dict(stock.load_stock_cfg()["waydroid"])
         for k in ("binder", "vndbinder", "hwbinder", "images_path"):
             w.pop(k, None)
@@ -364,8 +377,6 @@ class Manager(dbus.service.Object):
     @dbus.service.method(paths.DBUS_IFACE, in_signature="", out_signature="a{ss}")
     def GetInfo(self):
         warn = stock.check_version() or ""
-        if images.stock_is_newer():
-            warn = (warn + "; " if warn else "") + "stock images are newer than the image store: run 'waydroid-multi images sync'"
         return {"version": __version__, "stock_version": stock.version(), "warnings": warn,
                 "subnet": str(self.net.cfg.network), "bridge": self.net.cfg.bridge,
                 "image": images.current_id(), "stock_image": images.stock_image_id()}
@@ -517,7 +528,7 @@ class Manager(dbus.service.Object):
     def SyncImages(self, sender, reply, error):
         def work():
             iid = images.sync()
-            images.gc(i.image_id for i in self.all_instances())
+            images.gc(self.images_in_use())
             return iid
         self.run_async("__images__", work, reply, error)
 
@@ -540,8 +551,18 @@ class Manager(dbus.service.Object):
     # -- background: state watcher, startup reconciliation ---------------------
     def watch_states(self):
         def loop():
+            ticks = 0
             while True:
                 time.sleep(3)
+                ticks += 1
+                if ticks % 10 == 1:   # every ~30 s
+                    try:
+                        if images.stock_is_newer() and not images.stock_busy():
+                            log.info("stock Waydroid images changed, syncing the image store")
+                            images.ensure_synced(self.images_in_use())
+                            log.info("image store now at %s", images.current_id())
+                    except Exception as e:  # noqa: BLE001
+                        log.warning("automatic image sync failed: %s", e)
                 for iid in list_ids():
                     if iid in self.transient or iid in self.stopping_by_us:
                         continue

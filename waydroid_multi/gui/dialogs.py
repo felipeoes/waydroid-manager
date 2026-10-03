@@ -73,9 +73,9 @@ def _spin(title, lo, hi, step, value, digits=0, subtitle=None):
 
 
 class InstanceDialog(Adw.Dialog):
-    """mode: 'create' (optionally preset clone source) or 'edit'."""
+    """mode: 'create' (fresh instance from the stock image) or 'edit'."""
 
-    def __init__(self, mode, instances, on_submit, info=None, clone_from=None):
+    def __init__(self, mode, on_submit, info=None):
         super().__init__()
         self.mode = mode
         self.on_submit = on_submit
@@ -114,17 +114,8 @@ class InstanceDialog(Adw.Dialog):
         self.name_row.set_text(self.info.get("name", ""))
         g.add(self.name_row)
         if mode == "create":
-            self.sources = [("", "Fresh Android (empty data)"), ("default", "Clone of stock Waydroid (default)")]
-            self.sources += [(i["id"], "Clone of " + i["name"]) for i in instances]
-            self.source_row = _combo("Start from", self.sources)
-            _select(self.source_row, self.sources, clone_from or "")
-            self.source_row.connect("notify::selected", self._source_changed)
-            g.add(self.source_row)
-            self.reset_row = Adw.SwitchRow(title="New device identity",
-                                           subtitle="Reset Android ID and Google services ID on the copy")
-            self.reset_row.set_active(True)
-            g.add(self.reset_row)
-            self._source_changed()
+            g.set_description("A fresh Android from the stock Waydroid image. "
+                              "To copy an existing instance, use Clone instead.")
 
         # -- display
         g = Adw.PreferencesGroup(title="Display", description="Takes effect at the next start")
@@ -209,10 +200,6 @@ class InstanceDialog(Adw.Dialog):
         self.prop_group.add(row)
         self.prop_rows.append(entry)
 
-    def _source_changed(self, *_):
-        cloning = self.sources[self.source_row.get_selected()][0] != ""
-        self.reset_row.set_visible(cloning)
-
     def _size_changed(self, *_):
         custom = self.presets[self.size_row.get_selected()][1] == -1
         self.width_row.set_visible(custom)
@@ -262,15 +249,89 @@ class InstanceDialog(Adw.Dialog):
     def _on_submit(self, *_):
         v = self.values()
         if self.mode == "create":
-            iid = self.id_row.get_text()
-            src = self.sources[self.source_row.get_selected()][0]
-            if src:
-                v["clone_from"] = src
-                v["reset_ids"] = "true" if self.reset_row.get_active() else "false"
-            self.on_submit(iid, v)
+            self.on_submit(self.id_row.get_text(), v)
         else:
             self.on_submit(self.info["id"], v)
         self.close()
 
     def show_error(self, msg):
         self.toast.add_toast(Adw.Toast(title=GLib.markup_escape_text(msg)))
+
+
+def suggest_id(base, taken):
+    base = "".join(c if (c.isalnum() and c.isascii()) or c == "_" else "_" for c in base.lower()).strip("_")
+    if not base or not base[0].isalpha():
+        base = "copy_" + base
+    base = base[:26]
+    for n in range(2, 1000):
+        cand = "{}_{}".format(base, n)
+        if cand not in taken:
+            return cand
+    return base
+
+
+class CloneDialog(Adw.Dialog):
+    """Copy an instance (or stock Waydroid) with its apps, data and settings."""
+
+    def __init__(self, source, taken_ids, on_submit):
+        super().__init__()
+        self.source = source          # dict with id, name, state
+        self.on_submit = on_submit
+        self.set_content_width(460)
+        self.set_title("Clone “{}”".format(source["name"]))
+
+        view = Adw.ToolbarView()
+        header = Adw.HeaderBar()
+        header.set_show_end_title_buttons(False)
+        header.set_show_start_title_buttons(False)
+        cancel = Gtk.Button(label="Cancel")
+        cancel.connect("clicked", lambda *_: self.close())
+        header.pack_start(cancel)
+        self.submit = Gtk.Button(label="Clone")
+        self.submit.add_css_class("suggested-action")
+        self.submit.connect("clicked", self._on_submit)
+        header.pack_end(self.submit)
+        view.add_top_bar(header)
+
+        page = Adw.PreferencesPage()
+        what = "apps, accounts and data" if source["id"] == "default" else "apps, accounts, data and settings"
+        g = Adw.PreferencesGroup(description="Creates a new instance with a copy of the {} of “{}”."
+                                 .format(what, source["name"]))
+        page.add(g)
+        self.id_row = Adw.EntryRow(title="New ID (a-z, 0-9, _)")
+        self.id_row.set_text(suggest_id(source["id"] if source["id"] != "default" else "stock", taken_ids))
+        self.id_row.connect("changed", self._validate)
+        g.add(self.id_row)
+        self.name_row = Adw.EntryRow(title="Display name")
+        self.name_row.set_text("{} (copy)".format(source["name"]))
+        g.add(self.name_row)
+        self.reset_row = Adw.SwitchRow(title="New device identity",
+                                       subtitle="New Android ID and Google services ID, so the copy "
+                                                "counts as a separate device")
+        self.reset_row.set_active(True)
+        g.add(self.reset_row)
+        if source.get("state") in ("RUNNING", "FROZEN"):
+            note = Adw.PreferencesGroup()
+            row = Adw.ActionRow(title="“{}” is running".format(source["name"]),
+                                subtitle="It will be stopped before copying.")
+            row.add_prefix(Gtk.Image(icon_name="dialog-warning-symbolic"))
+            note.add(row)
+            page.add(note)
+        view.set_content(page)
+        self.set_child(view)
+        self._validate()
+
+    def _validate(self, *_):
+        text = self.id_row.get_text()
+        ok = bool(ID_RE.match(text)) and text != "default"
+        (self.id_row.remove_css_class if ok or not text else self.id_row.add_css_class)("error")
+        self.submit.set_sensitive(ok)
+
+    def _on_submit(self, *_):
+        values = {"clone_from": self.source["id"],
+                  "reset_ids": "true" if self.reset_row.get_active() else "false"}
+        name = self.name_row.get_text().strip()
+        if name:
+            values["name"] = name
+        self.on_submit(self.source, self.id_row.get_text(), values)
+        self.close()

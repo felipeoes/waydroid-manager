@@ -22,9 +22,9 @@ It comes with a CLI and a GTK4/libadwaita manager app ("Waydroid Multi-Instance 
 ## Features
 
 - Any number of instances running at the same time, next to stock Waydroid
-- **Create fresh**, or **clone** an instance or your stock Waydroid (apps, logins, settings).
-  Clones get a **new device identity** by default (new Android ID / SSAID and Google
-  Services Framework ID)
+- **Create** a fresh Android from the stock image, or **clone** an instance or your stock
+  Waydroid (apps, logins, data and settings). Clones get a **new device identity** by default
+  (new Android ID / SSAID and Google Services Framework ID)
 - **Per-instance window size and DPI**, plus **CPU and memory limits** (cgroup v2)
 - Windows are **labelled per instance** ("Waydroid · Farm account 1") and get their own dock
   icon and app-grid launcher
@@ -57,8 +57,10 @@ stock Waydroid:
   hardcodes the window title and app_id to "Waydroid"; the proxy relabels them per instance
   and detects window close.
 - **Image store**: instances run from copies of the stock `system.img`/`vendor.img` in
-  `/var/lib/waydroid-multi/images`. `waydroid upgrade` rewrites the stock images in place,
-  which would corrupt running instances.
+  `/var/lib/waydroid-multi/images`, because `waydroid upgrade` rewrites the stock images in
+  place and would corrupt running instances. The daemon notices stock upgrades and copies the
+  new images automatically once they have settled. Each instance switches at its next start,
+  and image sets nothing uses any more are removed.
 - Stock Waydroid's own helpers are reused at runtime (device-node list, prop generation,
   binder interface wrappers), so new hardware support upstream is picked up automatically.
 
@@ -76,18 +78,18 @@ See [docs/spike-findings.md](docs/spike-findings.md) for the verified design ass
 ## Install
 
 ```sh
-git clone <this repo> && cd waydroid-multi-instances
+git clone https://github.com/felipeoes/waydroid-multi-instances.git
+cd waydroid-multi-instances
 sudo scripts/install.sh            # installs to /usr/lib/waydroid-multi, enables waydroid-multi.service
 waydroid-multi doctor              # checks the setup
-waydroid-multi images sync         # copy the stock images into the image store (~3 GB, once per Waydroid upgrade)
 ```
 
 ## Usage
 
 ```sh
 waydroid-multi create game1 --name "Farm account 1" --width 960 --height 540 --cpus 2 --memory 4G
-waydroid-multi clone default game2           # copy your stock Waydroid (stop it first: waydroid session stop)
-waydroid-multi clone game1 game3 --keep-ids  # exact copy, same device identity
+waydroid-multi clone default game2           # copy your stock Waydroid (it is stopped first)
+waydroid-multi clone game1 game3 --keep-ids  # exact copy incl. settings, same device identity
 waydroid-multi start game1                   # opens "Waydroid · Farm account 1"
 waydroid-multi start game2 --background --wait
 waydroid-multi show game2                    # bring its window back
@@ -100,9 +102,18 @@ waydroid-multi shell game1 -- getprop ro.build.version.release   # root (sudo)
 waydroid-multi stop --all
 waydroid-multi delete game3
 waydroid-multi gsf-id game2                  # GSF ID to register at google.com/android/uncertified
+waydroid-multi start default                 # stock Waydroid too (also recovers a wedged session)
 ```
 
-Or open **Waydroid Multi-Instance Manager** from the app grid (`waydroid-multi gui`).
+### Manager app
+
+Open **Waydroid Multi-Instance Manager** from the app grid (`waydroid-multi gui`). It
+lists your instances with live state, IP, size and limits.
+- **▶ / 👁** starts an instance or brings its window back; **■** stops it.
+- **+** creates a fresh instance. The size presets fit your monitor.
+- The **⋮** menu has *Settings* (display, CPU and memory, close and idle behaviour, Android
+  properties), *Clone*, *Install APK*, *Add to/Remove from app grid* and *Delete*.
+- Stock Waydroid appears as the **Default** row, where you can start, show, stop and clone it.
 
 ### Settings
 
@@ -126,9 +137,13 @@ Network settings live in `/etc/waydroid-multi/daemon.conf`: bridge, subnet, isol
 
 ## Things to know
 
-- **Upgrading Waydroid images**: after `waydroid upgrade`, run `waydroid-multi images sync`.
-  Each instance switches to the new image at its next start, and its `/system` overlay is reset.
-- **Cloning** needs the source stopped (`waydroid session stop` for `default`).
+- **Upgrading Waydroid**: just run `waydroid upgrade` as usual. The new images are picked up
+  automatically, and each instance switches at its next start, which resets its `/system`
+  overlay. `waydroid-multi images sync` forces a sync.
+- **Cloning** stops the source first. Clones of an instance inherit its settings.
+- **Polling stock Waydroid**: stock 1.6.x leaks two file descriptors per `waydroid status` call
+  in its container service, and after ~500 calls it can no longer start or stop anything. Avoid
+  polling `waydroid status` in scripts; waydroid-multi reads the stock state from cgroups instead.
 - **GAPPS clones** get a new GSF ID, so register it once at
   <https://www.google.com/android/uncertified> before the Play Store works.
 - **No title bar on GNOME**: Waydroid windows have no decorations on GNOME (no server-side

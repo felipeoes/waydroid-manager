@@ -5,14 +5,22 @@
 (zip extraction truncates the same inode), which would corrupt any instance
 that has those files loop-mounted. Instances therefore run from copies in
 /var/lib/waydroid-multi/images/<system_datetime>-<vendor_datetime>/.
+
+The daemon keeps the store in sync automatically: whenever the stock image
+ids change (``waydroid upgrade`` / ``waydroid init -f``) and the stock files
+have settled, the new images are copied. Running instances keep their old
+set; each instance switches at its next start, and unused sets are removed.
 """
 import os
 import shutil
+import threading
+import time
 
 from .. import paths, stock
 from .util import log, run
 
 CURRENT = os.path.join(paths.IMAGES_DIR, "current")
+_lock = threading.RLock()
 
 
 def stock_image_id(cfg=None):
@@ -42,7 +50,13 @@ def available():
 
 
 def sync():
-    """Copy the stock images into the store if they changed. Returns the image id."""
+    """Copy the stock images into the store (if not there yet) and make them
+    the current set. Returns the image id."""
+    with _lock:
+        return _sync()
+
+
+def _sync():
     cfg = stock.load_stock_cfg()
     iid = stock_image_id(cfg)
     src = stock.stock_images_path(cfg)
@@ -70,7 +84,48 @@ def sync():
 
 def stock_is_newer():
     cur = current_id()
-    return bool(cur) and cur != stock_image_id()
+    return cur != stock_image_id()
+
+
+def stock_busy():
+    """True while stock Waydroid may be rewriting its images."""
+    for pid in os.listdir("/proc"):
+        if not pid.isdigit():
+            continue
+        try:
+            with open("/proc/{}/cmdline".format(pid), "rb") as f:
+                argv = f.read().split(b"\0")
+        except OSError:
+            continue
+        if any(a.endswith(b"waydroid") or a.endswith(b"waydroid.py") for a in argv[:2]) and \
+                any(a in (b"upgrade", b"init") for a in argv):
+            return True
+    now = time.time()
+    cfg = stock.load_stock_cfg()
+    src = stock.stock_images_path(cfg)
+    for p in (paths.STOCK_CFG, os.path.join(src, "system.img"), os.path.join(src, "vendor.img")):
+        try:
+            if now - os.stat(p).st_mtime < 30:
+                return True
+        except OSError:
+            return True
+    return False
+
+
+def ensure_synced(in_use=()):
+    """Sync if the stock images changed and are stable. Returns the current id.
+
+    Never raises for a busy stock install: the previous set stays current.
+    """
+    with _lock:
+        if current_id() and not stock_is_newer():
+            return current_id()
+        if current_id() and stock_busy():
+            log.info("stock images are changing; keeping image set %s for now", current_id())
+            return current_id()
+        iid = sync()
+        gc(in_use)
+        return iid
 
 
 def gc(in_use):

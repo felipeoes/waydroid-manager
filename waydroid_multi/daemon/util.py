@@ -89,6 +89,47 @@ def umount_tree(path):
             pass
 
 
+# Our own mount helpers. Stock tools.helpers.mount runs commands through
+# run_core.foreground_pipe, which leaks a pipe and an epoll fd per call.
+
+def mount_image(image, target):
+    os.makedirs(target, exist_ok=True)
+    run(["mount", "-o", "ro", image, target])
+    if not is_mount(target):
+        raise RuntimeError("mount failed: {} -> {}".format(image, target))
+
+
+def mount_overlay(lowers, target, upper, work):
+    for d in (upper, work):
+        os.makedirs(d, exist_ok=True)
+    opts = ["ro", "lowerdir=" + ":".join(lowers), "upperdir=" + upper, "workdir=" + work, "xino=off"]
+    run(["mount", "-t", "overlay", "-o", ",".join(opts), "overlay", target])
+
+
+def bind(src, dst):
+    if is_mount(dst):
+        return
+    os.makedirs(dst, exist_ok=True)
+    bind_mount(src, dst)
+
+
+def bind_file(src, dst):
+    if is_mount(dst):
+        return
+    if not os.path.exists(dst):
+        with open(dst, "a"):
+            pass
+    bind_mount(src, dst)
+
+
+def apparmor_profile_loaded(name):
+    try:
+        with open("/sys/kernel/security/apparmor/profiles") as f:
+            return any(line.split(" ")[0] == name for line in f)
+    except OSError:
+        return False
+
+
 def stage_socket(src_path, dst_path, uid):
     """Validate a user's socket and bind it at a root-owned path.
 

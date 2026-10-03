@@ -47,14 +47,8 @@ def wait_state(d, iid, wanted, timeout=120):
 
 
 def stock_state():
-    try:
-        import dbus
-        cm = dbus.Interface(dbus.SystemBus().get_object("id.waydro.Container", "/ContainerManager"),
-                            "id.waydro.ContainerManager")
-        s = cm.GetSession(timeout=5)
-        return str(s.get("state", "RUNNING")) if s else "STOPPED"
-    except Exception:  # noqa: BLE001
-        return "STOPPED"
+    from . import stockctl
+    return stockctl.state()
 
 
 # -- commands --------------------------------------------------------------------
@@ -103,10 +97,23 @@ def cmd_create(o):
         die(e)
     d = daemon()
     opts = settings_from_args(o)
-    if o.clone_from:
-        opts["clone_from"] = o.clone_from
+    clone_from = getattr(o, "clone_from", None)
+    if clone_from:
+        opts["clone_from"] = clone_from
         opts["reset_ids"] = "false" if o.keep_ids else "true"
-        print("Cloning {} into '{}'...".format(o.clone_from, o.id))
+        if clone_from == "default":
+            from . import stockctl
+            if stockctl.status()["session"] == "RUNNING":
+                print("Stopping stock Waydroid first...")
+                stockctl.stop()
+        else:
+            info = d.get(clone_from)
+            if info["state"] != "STOPPED":
+                print("Stopping '{}' first...".format(clone_from))
+                stop_session(clone_from)
+                if d.get(clone_from)["state"] != "STOPPED":
+                    d.stop(clone_from)
+        print("Cloning {} into '{}'...".format(clone_from, o.id))
     try:
         d.create(o.id, opts)
     except DaemonError as e:
@@ -116,7 +123,7 @@ def cmd_create(o):
         from .session import desktop
         desktop.write_launcher(o.id, info["name"])
     print("Created instance '{}' (IP {}).".format(o.id, info["ip"]))
-    if o.clone_from and not o.keep_ids:
+    if clone_from and not o.keep_ids:
         print("Device identity will be reset on first start. If this is a GAPPS image, register the new\n"
               "GSF ID afterwards: waydroid-multi gsf-id {}  ->  https://www.google.com/android/uncertified".format(o.id))
     print("Start it with: waydroid-multi start {}".format(o.id))
@@ -213,6 +220,11 @@ def ensure_running(d, iid, background=False):
 
 
 def cmd_start(o):
+    if o.id == "default":
+        from . import stockctl
+        if not stockctl.start_or_show():
+            die("stock Waydroid did not start; try 'waydroid show-full-ui' for details")
+        return
     d = daemon()
     info = d.get(o.id)
     if info["state"] in ACTIVE:
@@ -231,6 +243,8 @@ def cmd_start(o):
 
 
 def cmd_show(o):
+    if o.id == "default":
+        return cmd_start(o)
     d = daemon()
     started = ensure_running(d, o.id)
     if not started:
@@ -245,6 +259,11 @@ def cmd_stop(o):
             die("give an instance id or --all")
         return
     for iid in ids:
+        if iid == "default":
+            from . import stockctl
+            stockctl.stop()
+            print("Stopped stock Waydroid.")
+            continue
         stop_session(iid)
         try:
             if d.get(iid)["state"] != "STOPPED":
@@ -465,17 +484,16 @@ def parser():
 
     sub.add_parser("list", help="list instances").set_defaults(fn=cmd_list)
 
-    c = sub.add_parser("create", help="create an instance")
+    c = sub.add_parser("create", help="create a fresh instance from the stock Android image")
     c.add_argument("id")
-    c.add_argument("--clone-from", metavar="SRC", help="copy data from an instance or 'default' (stock)")
-    c.add_argument("--keep-ids", action="store_true", help="keep the source's device identity when cloning")
     add_settings(c)
     c.set_defaults(fn=cmd_create)
 
-    c = sub.add_parser("clone", help="clone an instance (or 'default') into a new one")
+    c = sub.add_parser("clone", help="copy an instance (or 'default' = stock Waydroid) with its apps, "
+                                     "data and settings into a new one")
     c.add_argument("src")
     c.add_argument("new")
-    c.add_argument("--keep-ids", action="store_true")
+    c.add_argument("--keep-ids", action="store_true", help="keep the source's device identity")
     add_settings(c)
     c.set_defaults(fn=cmd_clone)
 
@@ -490,7 +508,7 @@ def parser():
     c.add_argument("args", nargs="*")
     c.set_defaults(fn=cmd_config)
 
-    c = sub.add_parser("start", help="start an instance and open its window")
+    c = sub.add_parser("start", help="start an instance and open its window ('default' = stock Waydroid)")
     c.add_argument("id")
     c.add_argument("--background", action="store_true", help="don't open the window")
     c.add_argument("--wait", action="store_true", help="wait until Android has booted")

@@ -128,14 +128,6 @@ def seccomp_profile():
     return os.path.join(tools().config.tools_src, "data", "configs", "waydroid.seccomp")
 
 
-def apparmor_profile(args):
-    """Name of the LXC AppArmor profile if it is loaded, else None."""
-    lxc = tools().helpers.lxc
-    if lxc.get_apparmor_status(args):
-        return lxc.LXC_APPARMOR_PROFILE
-    return None
-
-
 def android_env():
     return dict(tools().helpers.lxc.ANDROID_ENV)
 

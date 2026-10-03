@@ -15,8 +15,8 @@ import time
 from .. import lxcconfig, paths, stock
 from ..instance import Instance
 from . import binder, images
-from .util import (CommandError, attach, chown_tree_top, log, lxc_state, run,
-                   stage_socket, umount_tree)
+from .util import (CommandError, apparmor_profile_loaded, attach, bind, bind_file, chown_tree_top,
+                   is_mount, log, lxc_state, mount_image, mount_overlay, run, stage_socket, umount_tree)
 
 DEVICE_NODES = [
     "/dev/ashmem", "/dev/sw_sync", "/sys/kernel/debug/sync/sw_sync",
@@ -54,11 +54,9 @@ def wipe_overlay_rw(inst):
         shutil.rmtree(os.path.join(inst.dir, d), ignore_errors=True)
 
 
-def select_image(inst):
+def select_image(inst, in_use=()):
     """Make the instance use the current image set; returns its directory."""
-    cur = images.current_id()
-    if not cur:
-        cur = images.sync()
+    cur = images.ensure_synced(in_use)
     if inst.image_id != cur:
         if inst.image_id:
             log.info("%s: switching image set %s -> %s", inst.id, inst.image_id, cur)
@@ -83,7 +81,9 @@ def write_lxc_config(inst, net):
         stock.lxc_snippets(),
         rootfs=inst.rootfs, lxc_dir=inst.lxc_dir, bridge=net.cfg.bridge, mac=inst.mac,
         veth=inst.veth, uts_name="waydroid-" + inst.id.replace("_", "-"), arch=platform.machine(),
-        apparmor_profile=stock.apparmor_profile(a), poststop_hook=paths.POSTSTOP_SCRIPT,
+        apparmor_profile=stock.tools().helpers.lxc.LXC_APPARMOR_PROFILE
+        if apparmor_profile_loaded(stock.tools().helpers.lxc.LXC_APPARMOR_PROFILE) else None,
+        poststop_hook=paths.POSTSTOP_SCRIPT,
         netup_hook=paths.NET_UP_SCRIPT if net.cfg.isolate else None, limits=limits)
     _write(os.path.join(inst.lxc_dir, "config"), text)
     shutil.copy(stock.seccomp_profile(), os.path.join(inst.lxc_dir, "waydroid.seccomp"))
@@ -112,31 +112,28 @@ def set_device_permissions():
 
 
 def mount_rootfs(inst, images_dir):
-    m = stock.tools().helpers.mount
-    a = stock_args(inst)
+    """system.img + overlays, vendor.img + overlays, like stock mount_rootfs."""
     rootfs = inst.rootfs
     umount_tree(rootfs)
-    m.mount(a, os.path.join(images_dir, "system.img"), rootfs)
+    mount_image(os.path.join(images_dir, "system.img"), rootfs)
     lowers = [os.path.join(inst.dir, "overlay")]
     if os.path.isdir(paths.STOCK_OVERLAY):
         lowers.append(paths.STOCK_OVERLAY)
-    m.mount_overlay(a, lowers + [rootfs], rootfs,
-                    upper_dir=os.path.join(inst.dir, "overlay_rw/system"),
-                    work_dir=os.path.join(inst.dir, "overlay_work/system"))
-    m.mount(a, os.path.join(images_dir, "vendor.img"), rootfs + "/vendor")
+    mount_overlay(lowers + [rootfs], rootfs, os.path.join(inst.dir, "overlay_rw/system"),
+                  os.path.join(inst.dir, "overlay_work/system"))
+    mount_image(os.path.join(images_dir, "vendor.img"), rootfs + "/vendor")
     vlowers = [os.path.join(inst.dir, "overlay/vendor")]
     if os.path.isdir(paths.STOCK_OVERLAY + "/vendor"):
         vlowers.append(paths.STOCK_OVERLAY + "/vendor")
-    m.mount_overlay(a, vlowers + [rootfs + "/vendor"], rootfs + "/vendor",
-                    upper_dir=os.path.join(inst.dir, "overlay_rw/vendor"),
-                    work_dir=os.path.join(inst.dir, "overlay_work/vendor"))
+    mount_overlay(vlowers + [rootfs + "/vendor"], rootfs + "/vendor",
+                  os.path.join(inst.dir, "overlay_rw/vendor"), os.path.join(inst.dir, "overlay_work/vendor"))
     for egl_path in ("/vendor/lib/egl", "/vendor/lib64/egl"):
         if os.path.isdir(egl_path):
-            m.bind(a, egl_path, rootfs + egl_path)
-    if m.ismount("/odm"):
-        m.bind(a, "/odm", rootfs + "/odm_extra")
+            bind(egl_path, rootfs + egl_path)
+    if is_mount("/odm"):
+        bind("/odm", rootfs + "/odm_extra")
     elif os.path.isdir("/vendor/odm"):
-        m.bind(a, "/vendor/odm", rootfs + "/odm_extra")
+        bind("/vendor/odm", rootfs + "/odm_extra")
 
 
 def detect_protocols(inst):
@@ -187,13 +184,13 @@ def write_props(inst, session):
         extra.append("persist.waydroid.height=" + inst.get("height"))
     with open(full, "a") as f:
         f.write("\n".join(extra) + "\n")
-    t.helpers.mount.bind_file(a, full, inst.rootfs + "/vendor/waydroid.prop")
+    bind_file(full, inst.rootfs + "/vendor/waydroid.prop")
 
 
-def start(inst, net, hosts, session_in, uid):
+def start(inst, net, hosts, session_in, uid, images_in_use=()):
     """Bring the container up. session_in: validated dict from the session process."""
     pw = pwd.getpwuid(uid)
-    images_dir = select_image(inst)
+    images_dir = select_image(inst, images_in_use)
     ensure_dirs(inst)
     a = stock_args(inst)
     binder.ensure_binderfs(a)

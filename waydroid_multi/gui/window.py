@@ -1,7 +1,6 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 """Main window: the instance list."""
 import os
-import subprocess
 
 import gi
 
@@ -11,17 +10,19 @@ from gi.repository import Adw, Gio, GLib, Gtk  # noqa: E402
 
 from ..session import desktop  # noqa: E402
 from .backend import Backend  # noqa: E402
-from .dialogs import InstanceDialog  # noqa: E402
+from .dialogs import CloneDialog, InstanceDialog  # noqa: E402
 
 ACTIVE = ("RUNNING", "FROZEN")
+BUSY = ("STARTING", "STOPPING", "CLONING", "DELETING")
 STATE_STYLE = {"RUNNING": "success", "FROZEN": "warning", "STOPPED": "dim-label"}
 STATE_LABEL = {"RUNNING": "Running", "FROZEN": "Paused", "STOPPED": "Stopped", "STARTING": "Starting…",
                "STOPPING": "Stopping…", "CLONING": "Cloning…", "DELETING": "Deleting…"}
+STOCK = {"id": "default", "name": "Stock Waydroid"}
 
 
 def describe(info):
     parts = [STATE_LABEL.get(info["state"], info["state"].title())]
-    if info["state"] in ACTIVE:
+    if info["state"] in ACTIVE and info.get("ip"):
         parts.append(info["ip"])
     if info.get("width", "0") != "0":
         size = "{}×{}".format(info["width"], info["height"])
@@ -38,61 +39,52 @@ def describe(info):
     return " · ".join(parts)
 
 
-class InstanceRow(Adw.ActionRow):
+def _flat_button(icon, tooltip, cb):
+    b = Gtk.Button(icon_name=icon, valign=Gtk.Align.CENTER, tooltip_text=tooltip)
+    b.add_css_class("flat")
+    b.connect("clicked", lambda *_: cb())
+    return b
+
+
+class BaseRow(Adw.ActionRow):
+    """Status dot, spinner, start/show and stop buttons, and a ⋮ menu built on demand."""
+
     def __init__(self, win, info):
         super().__init__()
         self.win = win
         self.info = info
         self.dot = Gtk.Label(label="●", valign=Gtk.Align.CENTER)
         self.add_prefix(self.dot)
-
-        self.spinner = Adw.Spinner(valign=Gtk.Align.CENTER)
-        self.spinner.set_visible(False)
+        self.spinner = Adw.Spinner(valign=Gtk.Align.CENTER, visible=False)
         self.add_suffix(self.spinner)
-        self.play = Gtk.Button(valign=Gtk.Align.CENTER)
-        self.play.add_css_class("flat")
-        self.play.connect("clicked", lambda *_: win.start_or_show(self.info["id"]))
+        self.play = _flat_button("media-playback-start-symbolic", "Start", lambda: win.start_or_show(self.info))
         self.add_suffix(self.play)
-        self.stop = Gtk.Button(icon_name="media-playback-stop-symbolic", valign=Gtk.Align.CENTER,
-                               tooltip_text="Stop")
-        self.stop.add_css_class("flat")
-        self.stop.connect("clicked", lambda *_: win.stop(self.info["id"]))
+        self.stop = _flat_button("media-playback-stop-symbolic", "Stop", lambda: win.stop(self.info))
         self.add_suffix(self.stop)
+        self.more = Gtk.MenuButton(icon_name="view-more-symbolic", valign=Gtk.Align.CENTER, tooltip_text="More")
+        self.more.add_css_class("flat")
+        # Rebuilt every time it opens so labels reflect the current state
+        self.more.set_create_popup_func(lambda btn: btn.set_menu_model(self.menu()))
+        self.add_suffix(self.more)
+        self.actions = Gio.SimpleActionGroup()
+        self.insert_action_group("row", self.actions)
 
-        menu = Gio.Menu()
-        menu.append("Settings…", "row.settings")
-        menu.append("Clone…", "row.clone")
-        menu.append("Install APK…", "row.install")
-        menu.append("Add/remove app grid launcher", "row.launcher")
-        section = Gio.Menu()
-        section.append("Delete…", "row.delete")
-        menu.append_section(None, section)
-        more = Gtk.MenuButton(icon_name="view-more-symbolic", menu_model=menu, valign=Gtk.Align.CENTER,
-                              tooltip_text="More")
-        more.add_css_class("flat")
-        self.add_suffix(more)
+    def add_action(self, name, cb):
+        a = Gio.SimpleAction.new(name, None)
+        a.connect("activate", lambda *_: cb())
+        self.actions.add_action(a)
 
-        group = Gio.SimpleActionGroup()
-        for name, cb in (("settings", lambda: win.edit(self.info["id"])),
-                         ("clone", lambda: win.new_instance(clone_from=self.info["id"])),
-                         ("install", lambda: win.install_apk(self.info["id"])),
-                         ("launcher", lambda: win.toggle_launcher(self.info)),
-                         ("delete", lambda: win.delete(self.info))):
-            a = Gio.SimpleAction.new(name, None)
-            a.connect("activate", lambda _a, _p, cb=cb: cb())
-            group.add_action(a)
-        self.insert_action_group("row", group)
-        self.update(info)
+    def menu(self):
+        return Gio.Menu()
 
     def update(self, info):
         self.info = info
         st = info["state"]
-        self.set_title(GLib.markup_escape_text(info["name"]))
-        self.set_subtitle(GLib.markup_escape_text(describe(info)))
+        self.set_subtitle(GLib.markup_escape_text(self.subtitle()))
         for c in ("success", "warning", "dim-label", "accent"):
             self.dot.remove_css_class(c)
         self.dot.add_css_class(STATE_STYLE.get(st, "accent"))
-        busy = st in ("STARTING", "STOPPING", "CLONING", "DELETING") or info["id"] in self.win.busy
+        busy = st in BUSY or info["id"] in self.win.busy
         self.spinner.set_visible(busy)
         self.play.set_visible(not busy)
         self.stop.set_visible(st in ACTIVE and not busy)
@@ -102,6 +94,54 @@ class InstanceRow(Adw.ActionRow):
         else:
             self.play.set_icon_name("media-playback-start-symbolic")
             self.play.set_tooltip_text("Start")
+
+    def subtitle(self):
+        return describe(self.info)
+
+
+class InstanceRow(BaseRow):
+    def __init__(self, win, info):
+        super().__init__(win, info)
+        self.add_action("settings", lambda: win.edit(self.info["id"]))
+        self.add_action("clone", lambda: win.clone(self.info))
+        self.add_action("install", lambda: win.install_apk(self.info["id"]))
+        self.add_action("launcher", lambda: win.toggle_launcher(self.info))
+        self.add_action("delete", lambda: win.delete(self.info))
+        self.update(info)
+
+    def menu(self):
+        m = Gio.Menu()
+        m.append("Settings…", "row.settings")
+        m.append("Clone…", "row.clone")
+        m.append("Install APK…", "row.install")
+        has = os.path.exists(desktop.launcher_path(self.info["id"]))
+        m.append("Remove from app grid" if has else "Add to app grid", "row.launcher")
+        danger = Gio.Menu()
+        danger.append("Delete…", "row.delete")
+        m.append_section(None, danger)
+        return m
+
+    def update(self, info):
+        self.set_title(GLib.markup_escape_text(info["name"]))
+        super().update(info)
+
+
+class StockRow(BaseRow):
+    """The stock Waydroid instance, controlled through Waydroid's own CLI."""
+
+    def __init__(self, win):
+        super().__init__(win, dict(STOCK, state="STOPPED"))
+        self.set_title("Stock Waydroid")
+        self.add_action("clone", lambda: win.clone(self.info))
+        self.update(self.info)
+
+    def menu(self):
+        m = Gio.Menu()
+        m.append("Clone…", "row.clone")
+        return m
+
+    def subtitle(self):
+        return "{} · default instance, managed by Waydroid".format(STATE_LABEL.get(self.info["state"], "Stopped"))
 
 
 class MainWindow(Adw.ApplicationWindow):
@@ -116,50 +156,36 @@ class MainWindow(Adw.ApplicationWindow):
         self.toasts = Adw.ToastOverlay()
         view = Adw.ToolbarView()
         header = Adw.HeaderBar()
-        new = Gtk.Button(icon_name="list-add-symbolic", tooltip_text="New instance")
-        new.connect("clicked", lambda *_: self.new_instance())
-        header.pack_start(new)
+        header.pack_start(_flat_button("list-add-symbolic", "New instance", self.new_instance))
         menu = Gio.Menu()
         menu.append("Start all", "app.start-all")
         menu.append("Stop all", "app.stop-all")
-        menu.append("Sync images from stock Waydroid", "app.sync")
         about = Gio.Menu()
         about.append("About", "app.about")
         menu.append_section(None, about)
         header.pack_end(Gtk.MenuButton(icon_name="open-menu-symbolic", menu_model=menu, tooltip_text="Menu"))
         view.add_top_bar(header)
-        self.banner = Adw.Banner()
-        self.banner.connect("button-clicked", lambda *_: self.sync_images())
-        view.add_top_bar(self.banner)
 
         self.stack = Gtk.Stack()
-        self.empty = Adw.StatusPage(icon_name="waydroid", title="No instances yet",
-                                    description="Create an instance to run another Android next to stock Waydroid.")
-        btn = Gtk.Button(label="New Instance", halign=Gtk.Align.CENTER)
-        btn.add_css_class("pill")
-        btn.add_css_class("suggested-action")
-        btn.connect("clicked", lambda *_: self.new_instance())
-        self.empty.set_child(btn)
-        self.stack.add_named(self.empty, "empty")
-
         page = Adw.PreferencesPage()
         self.group = Adw.PreferencesGroup(title="Instances")
+        self.group.set_header_suffix(_flat_button("list-add-symbolic", "New instance", self.new_instance))
         page.add(self.group)
-        stock = Adw.PreferencesGroup(title="Stock Waydroid")
-        self.stock_row = Adw.ActionRow(title="Default instance", subtitle="Managed by Waydroid itself")
-        show = Gtk.Button(icon_name="view-reveal-symbolic", valign=Gtk.Align.CENTER, tooltip_text="Show")
-        show.add_css_class("flat")
-        show.connect("clicked", lambda *_: subprocess.Popen(["waydroid", "show-full-ui"],
-                                                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL))
-        self.stock_row.add_suffix(show)
+        self.empty_row = Adw.ActionRow(title="No instances yet",
+                                       subtitle="Create one to run another Android next to stock Waydroid")
+        new_btn = Gtk.Button(label="New Instance", valign=Gtk.Align.CENTER, css_classes=["suggested-action"])
+        new_btn.connect("clicked", lambda *_: self.new_instance())
+        self.empty_row.add_suffix(new_btn)
+        self.group.add(self.empty_row)
+        stock = Adw.PreferencesGroup(title="Default")
+        self.stock_row = StockRow(self)
         stock.add(self.stock_row)
         page.add(stock)
         self.stack.add_named(page, "list")
 
         self.error_page = Adw.StatusPage(icon_name="dialog-error-symbolic", title="Daemon not available",
                                          description="Start it with: sudo systemctl start waydroid-multi")
-        retry = Gtk.Button(label="Retry", halign=Gtk.Align.CENTER)
-        retry.add_css_class("pill")
+        retry = Gtk.Button(label="Retry", halign=Gtk.Align.CENTER, css_classes=["pill"])
         retry.connect("clicked", lambda *_: self.refresh())
         self.error_page.set_child(retry)
         self.stack.add_named(self.error_page, "error")
@@ -176,22 +202,12 @@ class MainWindow(Adw.ApplicationWindow):
         return True
 
     def refresh(self):
-        self.backend.call("List", ok=self._got_list, fail=self._list_failed, timeout=30)
-        self.backend.call("GetInfo", ok=self._got_info, fail=lambda m: None, timeout=30)
-
-    def _list_failed(self, msg):
-        self.stack.set_visible_child_name("error")
-
-    def _got_info(self, info):
-        warn = info.get("warnings", "")
-        if "images sync" in warn:
-            self.banner.set_title("Stock Waydroid has newer images.")
-            self.banner.set_button_label("Sync images")
-            self.banner.set_revealed(True)
-        else:
-            self.banner.set_revealed(False)
+        self.backend.call("List", ok=self._got_list, fail=lambda m: self.stack.set_visible_child_name("error"),
+                          timeout=30)
+        self._update_stock()
 
     def _got_list(self, items):
+        self.stack.set_visible_child_name("list")
         self.instances = sorted(items, key=lambda i: int(i["index"]))
         ids = {i["id"] for i in self.instances}
         for iid in list(self.rows):
@@ -205,97 +221,98 @@ class MainWindow(Adw.ApplicationWindow):
                 row = InstanceRow(self, info)
                 self.rows[info["id"]] = row
                 self.group.add(row)
-        self.stack.set_visible_child_name("list" if self.instances else "empty")
-        self._update_stock()
+        self.empty_row.set_visible(not self.instances)
 
     def _update_stock(self):
-        try:
-            launcher = Gio.SubprocessLauncher.new(Gio.SubprocessFlags.STDOUT_PIPE | Gio.SubprocessFlags.STDERR_SILENCE)
-            proc = launcher.spawnv(["waydroid", "status"])
-        except GLib.Error:
-            return
-
-        def done(p, res):
-            try:
-                _, out, _ = p.communicate_utf8_finish(res)
-            except GLib.Error:
-                return
-            state = "Stopped"
-            for line in (out or "").splitlines():
-                if line.startswith("Container:"):
-                    state = STATE_LABEL.get(line.split(":", 1)[1].strip(), "Running")
-            self.stock_row.set_subtitle("{} · managed by Waydroid itself".format(state))
-        proc.communicate_utf8_async(None, None, done)
+        from .. import stockctl
+        if "default" not in self.busy:
+            self.stock_row.update(dict(STOCK, state=stockctl.state()))
 
     def toast(self, msg, timeout=4):
         t = Adw.Toast(title=GLib.markup_escape_text(msg))
         t.set_timeout(timeout)
         self.toasts.add_toast(t)
 
+    def row_for(self, iid):
+        return self.stock_row if iid == "default" else self.rows.get(iid)
+
     def set_busy(self, iid, on):
         (self.busy.add if on else self.busy.discard)(iid)
-        row = self.rows.get(iid)
+        row = self.row_for(iid)
         if row:
             row.update(row.info)
 
+    def _cli(self, iid, args, fail_msg, then=None):
+        self.set_busy(iid, True)
+
+        def done(ok, out):
+            self.set_busy(iid, False)
+            if not ok:
+                self.toast(out.splitlines()[-1] if out else fail_msg)
+            self.refresh()
+            if then:
+                then(ok)
+        self.backend.run_cli(args, done)
+
     # -- actions -----------------------------------------------------------------
-    def start_or_show(self, iid):
-        self.set_busy(iid, True)
+    def start_or_show(self, info):
+        self._cli(info["id"], ["start", info["id"]], "Failed to start " + info["name"])
 
-        def done(ok, out):
-            self.set_busy(iid, False)
-            if not ok:
-                self.toast(out.splitlines()[-1] if out else "Failed to start " + iid)
-            self.refresh()
-        self.backend.run_cli(["start", iid], done)
-
-    def stop(self, iid):
-        self.set_busy(iid, True)
-
-        def done(ok, out):
-            self.set_busy(iid, False)
-            if not ok:
-                self.toast(out.splitlines()[-1] if out else "Failed to stop " + iid)
-            self.refresh()
-        self.backend.run_cli(["stop", iid], done)
+    def stop(self, info):
+        self._cli(info["id"], ["stop", info["id"]], "Failed to stop " + info["name"])
 
     def start_all(self):
         for i in self.instances:
             if i["state"] == "STOPPED":
-                self.start_or_show(i["id"])
+                self.start_or_show(i)
 
     def stop_all(self):
         for i in self.instances:
             if i["state"] in ACTIVE:
-                self.stop(i["id"])
+                self.stop(i)
 
-    def new_instance(self, clone_from=None):
-        if clone_from:
-            info = next((i for i in self.instances if i["id"] == clone_from), None)
-            if info and info["state"] != "STOPPED":
-                self.toast("Stop '{}' before cloning it".format(info["name"]))
-                return
-        dlg = InstanceDialog("create", self.instances, self._create, clone_from=clone_from)
-        dlg.present(self)
+    def new_instance(self):
+        InstanceDialog("create", self._create).present(self)
 
     def _create(self, iid, values):
-        cloning = "clone_from" in values
-        self.toast("Cloning into '{}'…".format(iid) if cloning else "Creating '{}'…".format(iid))
+        self.toast("Creating '{}'…".format(values.get("name") or iid))
 
         def ok(*_):
-            name = values.get("name") or iid
             if values.get("window_labels", "true") == "true":
-                desktop.write_launcher(iid, name)
-            msg = "Created '{}'".format(name)
-            if cloning and values.get("reset_ids") == "true":
-                msg += " — new device identity on first start"
-            self.toast(msg)
+                desktop.write_launcher(iid, values.get("name") or iid)
+            self.toast("Created '{}'".format(values.get("name") or iid))
             self.refresh()
         self.backend.call("Create", iid, values, ok=ok, fail=self.toast)
 
+    def clone(self, info):
+        taken = {i["id"] for i in self.instances}
+        CloneDialog(info, taken, self._clone).present(self)
+
+    def _clone(self, source, iid, values):
+        name = values.get("name") or iid
+
+        def do_clone(ok=True):
+            if not ok:
+                return
+            self.toast("Copying “{}” into “{}”…".format(source["name"], name), timeout=10)
+
+            def done(*_):
+                desktop.write_launcher(iid, name)
+                msg = "Cloned into “{}”".format(name)
+                if values.get("reset_ids") == "true":
+                    msg += " — new device identity on first start"
+                self.toast(msg, timeout=6)
+                self.refresh()
+            self.backend.call("Create", iid, values, ok=done, fail=self.toast)
+
+        if source["state"] in ACTIVE:
+            self._cli(source["id"], ["stop", source["id"]], "Could not stop " + source["name"], then=do_clone)
+        else:
+            do_clone()
+
     def edit(self, iid):
         def got(info):
-            InstanceDialog("edit", self.instances, self._save, info=info).present(self)
+            InstanceDialog("edit", self._save, info=info).present(self)
         self.backend.call("Get", iid, ok=got, fail=self.toast, timeout=30)
 
     def _save(self, iid, values):
@@ -353,26 +370,19 @@ class MainWindow(Adw.ApplicationWindow):
             except GLib.Error:
                 return
             path = gfile.get_path()
-            self.toast("Installing {}…".format(os.path.basename(path)), timeout=8)
-            self.set_busy(iid, True)
+            name = os.path.basename(path)
+            self.toast("Installing {}…".format(name), timeout=8)
 
-            def done(ok, out):
-                self.set_busy(iid, False)
-                self.toast("Installed {}".format(os.path.basename(path)) if ok
-                           else (out.splitlines()[-1] if out else "Install failed"))
-                self.refresh()
-            self.backend.run_cli(["app", "install", iid, path], done)
+            def then(ok):
+                if ok:
+                    self.toast("Installed {}".format(name))
+            self._cli(iid, ["app", "install", iid, path], "Install failed", then=then)
         fd.open(self, None, picked)
 
     def toggle_launcher(self, info):
         if os.path.exists(desktop.launcher_path(info["id"])):
             desktop.remove_launcher(info["id"])
-            self.toast("Removed launcher for '{}'".format(info["name"]))
+            self.toast("Removed “{}” from the app grid".format(info["name"]))
         else:
             desktop.write_launcher(info["id"], info["name"])
-            self.toast("Added '{}' to the app grid".format(info["name"]))
-
-    def sync_images(self):
-        self.toast("Syncing images from stock Waydroid…", timeout=10)
-        self.backend.call("SyncImages", ok=lambda iid: (self.toast("Image set " + iid + " ready"), self.refresh()),
-                          fail=self.toast)
+            self.toast("Added “{}” to the app grid".format(info["name"]))

@@ -3,5 +3,4 @@
 
 __version__ = "0.1.0"
 
-# Set once the public repository URL is known
-HOMEPAGE = ""
+HOMEPAGE = "https://github.com/felipeoes/waydroid-multi-instances"

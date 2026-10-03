@@ -63,7 +63,9 @@ rm -f /etc/dbus-1/system.d/io.github.waydroidmulti.Manager.conf
 
 systemctl daemon-reload
 systemctl reload dbus 2>/dev/null || true
-systemctl enable --now waydroid-multi.service
+systemctl enable waydroid-multi.service
+# (re)start: a restarted daemon adopts running instances
+systemctl restart waydroid-multi.service
 echo "Done. Next steps:"
 echo "  waydroid-multi images sync      # copy the stock images into the image store (once per Waydroid upgrade)"
 echo "  waydroid-multi create game1     # create an instance"

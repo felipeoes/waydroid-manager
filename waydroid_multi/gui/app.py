@@ -24,7 +24,7 @@ class Application(Adw.Application):
             from .window import MainWindow
             self.win = MainWindow(self)
             for name, cb in (("start-all", self.win.start_all), ("stop-all", self.win.stop_all),
-                             ("sync", self.win.sync_images), ("about", self.about)):
+                             ("about", self.about)):
                 a = Gio.SimpleAction.new(name, None)
                 a.connect("activate", lambda _a, _p, cb=cb: cb())
                 self.add_action(a)
