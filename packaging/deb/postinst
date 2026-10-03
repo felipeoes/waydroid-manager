@@ -1,0 +1,15 @@
+#!/bin/sh
+# SPDX-License-Identifier: GPL-3.0-or-later
+set -e
+# byte-compile now (prerm removes the caches again), so nothing unowned appears later
+if [ "$1" = configure ]; then
+    python3 -m compileall -q /usr/lib/waydroid-multi/waydroid_multi >/dev/null 2>&1 || true
+fi
+if [ "$1" = configure ] && [ -d /run/systemd/system ]; then
+    systemctl daemon-reload
+    systemctl reload dbus >/dev/null 2>&1 || true
+    systemctl enable waydroid-multi.service >/dev/null 2>&1 || true
+    # also on upgrades: a restarted daemon adopts the running instances
+    systemctl restart waydroid-multi.service || true
+fi
+exit 0
