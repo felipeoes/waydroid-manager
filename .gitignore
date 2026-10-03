@@ -1,0 +1,9 @@
+__pycache__/
+*.pyc
+*.egg-info/
+build/
+dist/
+.venv/
+.pytest_cache/
+SUDO_SETUP.txt
+SUDO_REMOVE_LATER.txt
