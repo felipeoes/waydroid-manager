@@ -160,7 +160,7 @@ tests/integration/smoke.sh                               # end-to-end test on a 
 
 Layout: `waydroid_multi/daemon` (root daemon), `session` (per-instance user session,
 Wayland proxy), `gui` (GTK app), `cli.py`, `lxcconfig.py` (pure config generation),
-`data/` (network script, LXC hooks, D-Bus/polkit/systemd files).
+`data/` (network script, LXC hooks, D-Bus/systemd files).
 
 ## License
 

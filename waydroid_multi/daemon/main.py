@@ -31,7 +31,7 @@ from .util import log, lxc_state
 
 ERR = "io.github.waydroidmulti.Error"
 ACTIVE = ("RUNNING", "FROZEN")
-POLKIT_CREATE = "io.github.waydroidmulti.create"
+MAX_PER_USER = 64
 
 
 class Error(dbus.exceptions.DBusException):
@@ -123,28 +123,6 @@ class Manager(dbus.service.Object):
                 err = e if isinstance(e, Error) else Error(e)
                 GLib.idle_add(lambda: (error(err), False)[1])
         threading.Thread(target=work, daemon=True, name="op-" + str(iid)).start()
-
-    def polkit_check(self, sender, action):
-        try:
-            pid = int(self.dbus_info.GetConnectionUnixProcessID(sender))
-            authority = dbus.Interface(self.bus.get_object("org.freedesktop.PolicyKit1",
-                                                           "/org/freedesktop/PolicyKit1/Authority"),
-                                       "org.freedesktop.PolicyKit1.Authority")
-            with open("/proc/{}/stat".format(pid)) as f:
-                start_time = int(f.read().rsplit(")", 1)[1].split()[19])
-            subject = ("unix-process", {"pid": dbus.UInt32(pid, variant_level=1),
-                                        "start-time": dbus.UInt64(start_time, variant_level=1)})
-            ok, _, _ = authority.CheckAuthorization(subject, action, {"AllowUserInteraction": "true"},
-                                                    dbus.UInt32(1), "", timeout=300)
-            return bool(ok)
-        except dbus.DBusException as e:
-            if "ServiceUnknown" in (e.get_dbus_name() or ""):
-                log.warning("polkit unavailable, allowing %s", action)
-                return True
-            if "No policy" in str(e) or "not registered" in str(e):
-                log.warning("polkit action %s not installed, allowing", action)
-                return True
-            raise Error("authorization failed: {}".format(e), "AccessDenied")
 
     # -- hardware helper -----------------------------------------------------
     def start_helper(self, inst):
@@ -408,8 +386,8 @@ class Manager(dbus.service.Object):
             iid = validate_id(str(iid))
         except ValueError as e:
             return error(Error(e, "InvalidArgs"))
-        if uid != 0 and not self.polkit_check(sender, POLKIT_CREATE):
-            return error(Error("not authorized to create instances", "AccessDenied"))
+        if uid != 0 and sum(1 for i in self.all_instances() if i.owner_uid == uid) >= MAX_PER_USER:
+            return error(Error("instance limit reached ({} per user)".format(MAX_PER_USER), "LimitReached"))
         self.run_async(iid, lambda: self._create(iid, uid, _s(opts)), reply, error)
 
     @dbus.service.method(paths.DBUS_IFACE, in_signature="s", out_signature="",
@@ -537,10 +515,6 @@ class Manager(dbus.service.Object):
     @dbus.service.method(paths.DBUS_IFACE, in_signature="", out_signature="s",
                          sender_keyword="sender", async_callbacks=("reply", "error"))
     def SyncImages(self, sender, reply, error):
-        uid = self.caller(sender)
-        if uid != 0 and not self.polkit_check(sender, POLKIT_CREATE):
-            return error(Error("not authorized", "AccessDenied"))
-
         def work():
             iid = images.sync()
             images.gc(i.image_id for i in self.all_instances())

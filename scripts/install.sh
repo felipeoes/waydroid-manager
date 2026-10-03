@@ -41,7 +41,6 @@ chmod 755 "$BINDIR/waydroid-multi" "$BINDIR/waydroid-multi-gui" "$BINDIR/waydroi
 install -Dm644 "$SRC/data/dbus/io.github.waydroidmulti.Manager.conf" /usr/share/dbus-1/system.d/io.github.waydroidmulti.Manager.conf
 install -Dm644 "$SRC/data/dbus/system-services/io.github.waydroidmulti.Manager.service" \
     /usr/share/dbus-1/system-services/io.github.waydroidmulti.Manager.service
-install -Dm644 "$SRC/data/polkit/io.github.waydroidmulti.policy" /usr/share/polkit-1/actions/io.github.waydroidmulti.policy
 sed "s|@BINDIR@|$BINDIR|g" "$SRC/data/systemd/waydroid-multi.service" > /etc/systemd/system/waydroid-multi.service
 install -Dm644 "$SRC/data/applications/io.github.waydroidmulti.desktop" /usr/share/applications/io.github.waydroidmulti.desktop
 if [ ! -f /etc/waydroid-multi/daemon.conf ]; then

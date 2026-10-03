@@ -44,9 +44,15 @@ sh_in smk1 /system/bin/ping -c1 -W2 "$ip2" | grep -q " 0% packet loss" && fail "
 
 if [ -n "$APK" ]; then
     echo "== app install isolation"
-    pkg=$($W app install smk1 "$APK" >/dev/null && $W app list smk1 | awk '{print $1}' | sort > /tmp/wdm-smk1.apps; \
-          $W app list smk2 | awk '{print $1}' | sort | comm -23 /tmp/wdm-smk1.apps - | head -1)
-    [ -n "$pkg" ] && pass "app $pkg only in smk1" || fail "app isolation"
+    before=$($W app list smk1 | awk '{print $1}' | sort)
+    $W app install smk1 "$APK" >/dev/null && pass "app install" || fail "app install"
+    pkg=$($W app list smk1 | awk '{print $1}' | sort | while read -r p; do
+              echo "$before" | grep -qx "$p" || echo "$p"; done | head -1)
+    if [ -n "$pkg" ] && ! $W app list smk2 | awk '{print $1}' | grep -qx "$pkg"; then
+        pass "new app $pkg is only in smk1"
+    else
+        fail "app isolation (pkg='$pkg')"
+    fi
 fi
 
 echo "== clone with identity reset"
@@ -72,8 +78,8 @@ else
 fi
 
 echo "== stop and delete"
-$W stop --all >/dev/null
-[ "$(state smk2)" = "STOPPED" ] && pass "stop --all" || fail "stop --all"
+$W stop smk1 smk2 smk3 >/dev/null 2>&1
+[ "$(state smk2)" = "STOPPED" ] && [ "$(state smk3)" = "STOPPED" ] && pass "stop" || fail "stop"
 findmnt -rn -o TARGET | grep -q "waydroid-multi/instances/smk" && fail "mounts left" || pass "no mounts left"
 $W delete -y smk1 smk2 smk3 >/dev/null && pass "delete" || fail "delete"
 sudo test -d /var/lib/waydroid-multi/instances/smk1 && fail "instance dir left" || pass "instance dirs removed"

@@ -73,20 +73,46 @@ def install_apk(inst, fd, filename):
     user, so a root write there could be redirected through a planted symlink.
     """
     import subprocess
+    import threading
     from .util import android_attach_env
+    # lxc-attach chowns/chmods its stdio, so it must never get the caller's
+    # file descriptor directly: feed the APK through a pipe instead.
+    src = os.fdopen(fd, "rb", closefd=True)
     try:
-        size = os.fstat(fd).st_size
+        size = os.fstat(src.fileno()).st_size
         env = android_attach_env(inst.id)
         cmd = ["lxc-attach", "-P", paths.LXC_PATH, "-n", inst.container, "--clear-env"]
         for k, v in env.items():
             cmd += ["--set-var", "{}={}".format(k, v)]
         cmd += ["--", "/system/bin/pm", "install", "-r", "-S", str(size)]
-        with os.fdopen(fd, "rb", closefd=True) as src:
-            fd = None
-            r = subprocess.run(cmd, stdin=src, capture_output=True, timeout=900)
+        p = subprocess.Popen(cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        chunks = {"out": b"", "err": b""}
+
+        def drain(stream, key):
+            chunks[key] = stream.read()
+        readers = [threading.Thread(target=drain, args=(p.stdout, "out"), daemon=True),
+                   threading.Thread(target=drain, args=(p.stderr, "err"), daemon=True)]
+        for t in readers:
+            t.start()
+        try:
+            shutil.copyfileobj(src, p.stdin, 1024 * 1024)
+        except (BrokenPipeError, OSError):
+            pass  # pm exited early; its output says why
+        finally:
+            try:
+                p.stdin.close()
+            except OSError:
+                pass
+        try:
+            p.wait(timeout=900)
+        except subprocess.TimeoutExpired:
+            p.kill()
+            p.wait()
+        for t in readers:
+            t.join(5)
+        r = subprocess.CompletedProcess(cmd, p.returncode, chunks["out"], chunks["err"])
     finally:
-        if fd is not None:
-            os.close(fd)
+        src.close()
     out = (r.stdout + r.stderr).decode("utf-8", "replace").strip()
     log.info("%s: install %s: %s", inst.id, filename, out)
     if r.returncode != 0 or "Success" not in out:
