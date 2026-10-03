@@ -20,7 +20,8 @@ for f in preinst postinst prerm postrm; do
     install -m755 "$HERE/$f" "$STAGE/DEBIAN/$f"
 done
 echo /etc/waydroid-multi/daemon.conf > "$STAGE/DEBIAN/conffiles"
-SIZE="$(du -sk --exclude=DEBIAN "$STAGE" | cut -f1)"
+# apparent size: block-based sizes differ between filesystems (local vs. CI builds)
+SIZE="$(du -sk --apparent-size --exclude=DEBIAN "$STAGE" | cut -f1)"
 sed -e "s/@VERSION@/$VERSION/" -e "s/@SIZE@/$SIZE/" "$HERE/control.in" > "$STAGE/DEBIAN/control"
 (cd "$STAGE" && find . -path ./DEBIAN -prune -o -type f -print | sed 's|^\./||' | LC_ALL=C sort |
     xargs -d '\n' md5sum > DEBIAN/md5sums)

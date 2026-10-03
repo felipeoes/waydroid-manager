@@ -6,6 +6,9 @@ All notable changes to waydroid-multi are listed here. The format follows
 
 ## [Unreleased]
 
+### Fixed
+- The `.deb`'s Installed-Size no longer depends on the filesystem it was built on.
+
 ## [0.1.0] - 2026-10-03
 
 First release.
