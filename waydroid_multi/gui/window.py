@@ -20,10 +20,23 @@ STATE_LABEL = {"RUNNING": "Running", "FROZEN": "Paused", "STOPPED": "Stopped", "
 STOCK = {"id": "default", "name": "Stock Waydroid"}
 
 
+def human_bytes(n):
+    try:
+        n = int(n)
+    except (TypeError, ValueError):
+        return ""
+    return "{:.1f} GB".format(n / 1024 ** 3) if n >= 1024 ** 3 else "{} MB".format(n // 1024 ** 2)
+
+
 def describe(info):
-    parts = [STATE_LABEL.get(info["state"], info["state"].title())]
+    parts = []
+    if info.get("index"):
+        parts.append("#" + info["index"])
+    parts.append(STATE_LABEL.get(info["state"], info["state"].title()))
     if info["state"] in ACTIVE and info.get("ip"):
         parts.append(info["ip"])
+    if info["state"] in ACTIVE and info.get("mem_used"):
+        parts.append(human_bytes(info["mem_used"]) + " RAM")
     if info.get("width", "0") != "0":
         size = "{}×{}".format(info["width"], info["height"])
         if info.get("dpi", "0") != "0":
@@ -102,6 +115,9 @@ class BaseRow(Adw.ActionRow):
 class InstanceRow(BaseRow):
     def __init__(self, win, info):
         super().__init__(win, info)
+        self.check = Gtk.CheckButton(valign=Gtk.Align.CENTER, visible=False)
+        self.check.connect("toggled", lambda *_: win.selection_changed())
+        self.add_prefix(self.check)
         self.add_action("settings", lambda: win.edit(self.info["id"]))
         self.add_action("clone", lambda: win.clone(self.info))
         self.add_action("install", lambda: win.install_apk(self.info["id"]))
@@ -124,6 +140,13 @@ class InstanceRow(BaseRow):
     def update(self, info):
         self.set_title(GLib.markup_escape_text(info["name"]))
         super().update(info)
+
+    def set_selecting(self, on):
+        self.check.set_visible(on)
+        self.dot.set_visible(not on)
+        self.set_activatable_widget(self.check if on else None)
+        if not on:
+            self.check.set_active(False)
 
 
 class StockRow(BaseRow):
@@ -156,7 +179,6 @@ class MainWindow(Adw.ApplicationWindow):
         self.toasts = Adw.ToastOverlay()
         view = Adw.ToolbarView()
         header = Adw.HeaderBar()
-        header.pack_start(_flat_button("list-add-symbolic", "New instance", self.new_instance))
         menu = Gio.Menu()
         menu.append("Start all", "app.start-all")
         menu.append("Stop all", "app.stop-all")
@@ -164,12 +186,37 @@ class MainWindow(Adw.ApplicationWindow):
         about.append("About", "app.about")
         menu.append_section(None, about)
         header.pack_end(Gtk.MenuButton(icon_name="open-menu-symbolic", menu_model=menu, tooltip_text="Menu"))
+        self.select_btn = Gtk.ToggleButton(icon_name="selection-mode-symbolic", tooltip_text="Select instances")
+        self.select_btn.connect("toggled", lambda b: self.set_selecting(b.get_active()))
+        header.pack_end(self.select_btn)
         view.add_top_bar(header)
+
+        # Batch actions (selection mode)
+        self.action_bar = Gtk.ActionBar(revealed=False)
+        self.select_all = Gtk.CheckButton(label="Select all")
+        self.select_all.connect("toggled", self._toggle_all)
+        self.action_bar.pack_start(self.select_all)
+        self.sel_label = Gtk.Label(css_classes=["dim-label"])
+        self.action_bar.set_center_widget(self.sel_label)
+        self.batch_delete = Gtk.Button(label="Delete", css_classes=["destructive-action"])
+        self.batch_delete.connect("clicked", lambda *_: self.delete_selected())
+        self.action_bar.pack_end(self.batch_delete)
+        self.batch_stop = Gtk.Button(label="Stop")
+        self.batch_stop.connect("clicked", lambda *_: self.stop_selected())
+        self.action_bar.pack_end(self.batch_stop)
+        self.batch_start = Gtk.Button(label="Start", css_classes=["suggested-action"])
+        self.batch_start.connect("clicked", lambda *_: self.start_selected())
+        self.action_bar.pack_end(self.batch_start)
+        view.add_bottom_bar(self.action_bar)
+        self.selecting = False
 
         self.stack = Gtk.Stack()
         page = Adw.PreferencesPage()
         self.group = Adw.PreferencesGroup(title="Instances")
-        self.group.set_header_suffix(_flat_button("list-add-symbolic", "New instance", self.new_instance))
+        new_btn = Gtk.Button(child=Adw.ButtonContent(icon_name="list-add-symbolic", label="New Instance"),
+                             valign=Gtk.Align.CENTER, css_classes=["flat"])
+        new_btn.connect("clicked", lambda *_: self.new_instance())
+        self.group.set_header_suffix(new_btn)
         page.add(self.group)
         self.empty_row = Adw.ActionRow(title="No instances yet",
                                        subtitle="Create one to run another Android next to stock Waydroid")
@@ -219,9 +266,13 @@ class MainWindow(Adw.ApplicationWindow):
                 row.update(info)
             else:
                 row = InstanceRow(self, info)
+                row.set_selecting(self.selecting)
                 self.rows[info["id"]] = row
                 self.group.add(row)
         self.empty_row.set_visible(not self.instances)
+        self.select_btn.set_sensitive(bool(self.instances))
+        if self.selecting:
+            self.selection_changed()
 
     def _update_stock(self):
         from .. import stockctl
@@ -254,6 +305,71 @@ class MainWindow(Adw.ApplicationWindow):
                 then(ok)
         self.backend.run_cli(args, done)
 
+    # -- selection / batch -------------------------------------------------------
+    def set_selecting(self, on):
+        self.selecting = on
+        if self.select_btn.get_active() != on:
+            self.select_btn.set_active(on)
+        for row in self.rows.values():
+            row.set_selecting(on)
+        self.action_bar.set_revealed(on)
+        self.selection_changed()
+
+    def selected(self):
+        return [r.info for r in self.rows.values() if r.check.get_active()]
+
+    def selection_changed(self):
+        sel = self.selected()
+        n = len(sel)
+        self.sel_label.set_label("{} selected".format(n) if n else "Select instances")
+        self.batch_start.set_sensitive(any(i["state"] == "STOPPED" for i in sel))
+        self.batch_stop.set_sensitive(any(i["state"] in ACTIVE for i in sel))
+        self.batch_delete.set_sensitive(n > 0)
+        all_on = bool(self.rows) and n == len(self.rows)
+        if self.select_all.get_active() != all_on:
+            self.select_all.handler_block_by_func(self._toggle_all)
+            self.select_all.set_active(all_on)
+            self.select_all.handler_unblock_by_func(self._toggle_all)
+
+    def _toggle_all(self, btn):
+        for row in self.rows.values():
+            row.check.set_active(btn.get_active())
+
+    def start_selected(self, interval=3):
+        """Start one instance every few seconds, like LDPlayer, to avoid a load spike."""
+        todo = [i for i in self.selected() if i["state"] == "STOPPED"]
+        for n, info in enumerate(todo):
+            GLib.timeout_add_seconds(n * interval, lambda info=info: (self.start_or_show(info), False)[1])
+        if todo:
+            self.toast("Starting {} instance{}…".format(len(todo), "s" if len(todo) > 1 else ""))
+        self.set_selecting(False)
+
+    def stop_selected(self):
+        for info in self.selected():
+            if info["state"] in ACTIVE:
+                self.stop(info)
+        self.set_selecting(False)
+
+    def delete_selected(self):
+        sel = self.selected()
+        if not sel:
+            return
+        names = ", ".join("“{}”".format(i["name"]) for i in sel[:5]) + ("…" if len(sel) > 5 else "")
+        dlg = Adw.AlertDialog(heading="Delete {} instance{}?".format(len(sel), "s" if len(sel) > 1 else ""),
+                              body="{} and all their Android data will be permanently removed.".format(names))
+        dlg.add_response("cancel", "Cancel")
+        dlg.add_response("delete", "Delete")
+        dlg.set_response_appearance("delete", Adw.ResponseAppearance.DESTRUCTIVE)
+        dlg.set_default_response("cancel")
+
+        def respond(_d, resp):
+            if resp == "delete":
+                for info in sel:
+                    self._delete_now(info)
+                self.set_selecting(False)
+        dlg.connect("response", respond)
+        dlg.present(self)
+
     # -- actions -----------------------------------------------------------------
     def start_or_show(self, info):
         self._cli(info["id"], ["start", info["id"]], "Failed to start " + info["name"])
@@ -261,10 +377,10 @@ class MainWindow(Adw.ApplicationWindow):
     def stop(self, info):
         self._cli(info["id"], ["stop", info["id"]], "Failed to stop " + info["name"])
 
-    def start_all(self):
-        for i in self.instances:
-            if i["state"] == "STOPPED":
-                self.start_or_show(i)
+    def start_all(self, interval=3):
+        todo = [i for i in self.instances if i["state"] == "STOPPED"]
+        for n, info in enumerate(todo):
+            GLib.timeout_add_seconds(n * interval, lambda info=info: (self.start_or_show(info), False)[1])
 
     def stop_all(self):
         for i in self.instances:
@@ -337,23 +453,25 @@ class MainWindow(Adw.ApplicationWindow):
         dlg.set_default_response("cancel")
 
         def respond(_d, resp):
-            if resp != "delete":
-                return
-            iid = info["id"]
-            self.set_busy(iid, True)
-
-            def ok(*_):
-                desktop.remove_launcher(iid)
-                self.busy.discard(iid)
-                self.toast("Deleted '{}'".format(info["name"]))
-                self.refresh()
-
-            def fail(msg):
-                self.set_busy(iid, False)
-                self.toast(msg)
-            self.backend.run_cli(["stop", iid], lambda *_: self.backend.call("Delete", iid, ok=ok, fail=fail))
+            if resp == "delete":
+                self._delete_now(info)
         dlg.connect("response", respond)
         dlg.present(self)
+
+    def _delete_now(self, info):
+        iid = info["id"]
+        self.set_busy(iid, True)
+
+        def ok(*_):
+            desktop.remove_launcher(iid)
+            self.busy.discard(iid)
+            self.toast("Deleted “{}”".format(info["name"]))
+            self.refresh()
+
+        def fail(msg):
+            self.set_busy(iid, False)
+            self.toast(msg)
+        self.backend.run_cli(["stop", iid], lambda *_: self.backend.call("Delete", iid, ok=ok, fail=fail))
 
     def install_apk(self, iid):
         fd = Gtk.FileDialog(title="Install APK")

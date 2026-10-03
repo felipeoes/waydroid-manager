@@ -112,6 +112,13 @@ class Manager(dbus.service.Object):
         d["ip"] = self.net.ip_for(inst)
         d["session"] = "yes" if inst.id in self.sessions else "no"
         d["pending_id_reset"] = inst.cfg["instance"].get("pending_id_reset", "false")
+        d["mem_used"] = ""
+        if d["state"] in ACTIVE:
+            try:
+                with open("/sys/fs/cgroup/lxc.payload.{}/memory.current".format(inst.container)) as f:
+                    d["mem_used"] = f.read().strip()
+            except OSError:
+                pass
         return d
 
     def run_async(self, iid, fn, reply, error, lock=True):

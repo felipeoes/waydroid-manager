@@ -8,15 +8,20 @@ from gi.repository import Adw, Gdk, GLib, Gtk  # noqa: E402
 
 from ..instance import ID_RE  # noqa: E402
 
-LANDSCAPE = [(1920, 1080), (1600, 900), (1280, 720), (1024, 576), (960, 540), (854, 480), (640, 360)]
-PORTRAIT = [(1080, 1920), (900, 1600), (720, 1280), (540, 960), (450, 800), (405, 720), (360, 640)]
-MEMORY = [("", "Unlimited"), ("2G", "2 GB"), ("3G", "3 GB"), ("4G", "4 GB"), ("6G", "6 GB"), ("8G", "8 GB")]
+# LDPlayer-style presets: (width, height, dpi)
+TABLET = [(960, 540, 160), (1280, 720, 240), (1600, 900, 240), (1920, 1080, 280), (2560, 1440, 360)]
+PHONE = [(540, 960, 240), (720, 1280, 320), (900, 1600, 320), (1080, 1920, 440), (1440, 2560, 560)]
+CPUS = [("", "Unlimited"), ("1", "1 core"), ("2", "2 cores"), ("3", "3 cores"), ("4", "4 cores"),
+        ("6", "6 cores"), ("8", "8 cores")]
+MEMORY = [("", "Unlimited"), ("1G", "1 GB"), ("1536M", "1.5 GB"), ("2G", "2 GB"), ("3G", "3 GB"),
+          ("4G", "4 GB"), ("6G", "6 GB"), ("8G", "8 GB")]
 ACTIONS = [("stop", "Stop the instance"), ("freeze", "Freeze (pause)"), ("none", "Keep running")]
 IDLE = [("freeze", "Freeze (pause)"), ("none", "Keep running"), ("stop", "Stop the instance")]
 
 
 def monitor_area():
-    """Logical size of the largest monitor, minus room for panels/decorations."""
+    """Logical size of the largest monitor minus room for a desktop panel.
+    (Waydroid windows have no title bar, so only the panel matters.)"""
     w, h = 1366, 768
     display = Gdk.Display.get_default()
     if display:
@@ -28,25 +33,37 @@ def monitor_area():
                 best = (g.width, g.height)
         if best:
             w, h = best
-    return w - 40, h - 90
+    return w, h - 48
 
 
-def size_presets():
-    """[(label, width, height)] that fit the screen; (0, 0) = Android default."""
+def resolution_presets(kind):
+    """[(label, width, height, dpi)] for 'phone' or 'tablet'."""
     aw, ah = monitor_area()
-    out = [("Automatic (fills the screen)", 0, 0)]
-    for w, h in LANDSCAPE:
-        if w <= aw and h <= ah:
-            out.append(("Landscape {}×{}".format(w, h), w, h))
-    fit_h = ah - ah % 2
-    fit_w = (fit_h * 9 // 16) & ~1
-    portrait = [(w, h) for w, h in PORTRAIT if w <= aw and h <= ah]
-    if (fit_w, fit_h) not in portrait:
-        portrait.insert(0, (fit_w, fit_h))
-    for w, h in portrait:
-        out.append(("Portrait {}×{}".format(w, h), w, h))
-    out.append(("Custom", -1, -1))
+    out = []
+    if kind == "tablet":
+        out.append(("Fill the screen (automatic)", 0, 0, 0))
+        presets = TABLET
+    else:
+        fh = ah - ah % 2
+        fw = (fh * 9 // 16) & ~1
+        dpi = max(120, round(320 * fh / 1280 / 10) * 10)
+        out.append(("Fit the screen — {} × {} · {} dpi".format(fw, fh, dpi), fw, fh, dpi))
+        presets = PHONE
+    for w, h, dpi in presets:
+        label = "{} × {} · {} dpi".format(w, h, dpi)
+        if w > aw or h > ah:
+            label += "  (larger than your screen)"
+        out.append((label, w, h, dpi))
     return out
+
+
+def classify(width, height, dpi):
+    """Which form factor/preset index an existing size belongs to."""
+    for kind in ("tablet", "phone"):
+        for i, (_, w, h, d) in enumerate(resolution_presets(kind)):
+            if (w, h) == (width, height) and (d == dpi or (w == 0 and dpi == 0)):
+                return kind, i
+    return "custom", 0
 
 
 def _combo(title, options, subtitle=None):
@@ -120,34 +137,42 @@ class InstanceDialog(Adw.Dialog):
         # -- display
         g = Adw.PreferencesGroup(title="Display", description="Takes effect at the next start")
         page.add(g)
-        self.presets = size_presets()
-        self.size_row = Adw.ComboRow(title="Window size")
-        self.size_row.set_model(Gtk.StringList.new([p[0] for p in self.presets]))
-        self.size_row.connect("notify::selected", self._size_changed)
-        g.add(self.size_row)
         cw, ch = int(self.info.get("width", "0")), int(self.info.get("height", "0"))
-        self.width_row = _spin("Width", 240, 7680, 2, cw or 960)
-        self.height_row = _spin("Height", 240, 7680, 2, ch or 540)
-        g.add(self.width_row)
-        g.add(self.height_row)
-        idx = len(self.presets) - 1
-        for i, (_, w, h) in enumerate(self.presets):
-            if (w, h) == (cw, ch):
-                idx = i
-        self.size_row.set_selected(idx)
-        self._size_changed()
-        self.dpi_row = _spin("Density (DPI)", 0, 640, 10, int(self.info.get("dpi", "0")),
-                             subtitle="0 = automatic")
-        g.add(self.dpi_row)
+        cdpi = int(self.info.get("dpi", "0"))
+        kind, idx = classify(cw, ch, cdpi) if mode == "edit" else ("tablet", 2)
+        type_row = Adw.ActionRow(title="Device type")
+        self.kind = Adw.ToggleGroup(valign=Gtk.Align.CENTER)
+        for name, label in (("phone", "Phone"), ("tablet", "Tablet"), ("custom", "Custom")):
+            self.kind.add(Adw.Toggle(name=name, label=label))
+        type_row.add_suffix(self.kind)
+        g.add(type_row)
+        self.res_row = Adw.ComboRow(title="Resolution")
+        g.add(self.res_row)
+        self.width_row = _spin("Width", 240, 7680, 2, cw or 1280)
+        self.height_row = _spin("Height", 240, 7680, 2, ch or 720)
+        self.dpi_row = _spin("Density (DPI)", 0, 640, 10, cdpi, subtitle="0 = automatic")
+        for r in (self.width_row, self.height_row, self.dpi_row):
+            g.add(r)
+        self.kind.set_active_name(kind)
+        self._kind_changed(select=idx)
+        self.kind.connect("notify::active-name", lambda *_: self._kind_changed())
 
         # -- performance
         g = Adw.PreferencesGroup(title="Performance", description="Limits apply at the next start")
         page.add(g)
-        cpus = self.info.get("cpus", "") or "0"
-        self.cpu_row = _spin("CPU cores", 0, 64, 0.5, float(cpus), digits=1, subtitle="0 = unlimited")
+        self.cpu_opts = list(CPUS)
+        cur = self.info.get("cpus", "")
+        if cur and cur not in dict(self.cpu_opts):
+            self.cpu_opts.append((cur, "{} cores".format(cur)))
+        self.cpu_row = _combo("CPU", self.cpu_opts)
+        _select(self.cpu_row, self.cpu_opts, cur)
         g.add(self.cpu_row)
-        self.mem_row = _combo("Memory (soft limit)", MEMORY)
-        _select(self.mem_row, MEMORY, self.info.get("memory", ""))
+        self.mem_opts = list(MEMORY)
+        cur = self.info.get("memory", "")
+        if cur and cur not in dict(self.mem_opts):
+            self.mem_opts.append((cur, cur.replace("G", " GB").replace("M", " MB")))
+        self.mem_row = _combo("Memory", self.mem_opts, subtitle="Soft limit: Android is slowed, not killed")
+        _select(self.mem_row, self.mem_opts, cur)
         g.add(self.mem_row)
 
         # -- behavior
@@ -200,10 +225,18 @@ class InstanceDialog(Adw.Dialog):
         self.prop_group.add(row)
         self.prop_rows.append(entry)
 
-    def _size_changed(self, *_):
-        custom = self.presets[self.size_row.get_selected()][1] == -1
-        self.width_row.set_visible(custom)
-        self.height_row.set_visible(custom)
+    def _kind_changed(self, select=None):
+        kind = self.kind.get_active_name() or "tablet"
+        custom = kind == "custom"
+        self.res_row.set_visible(not custom)
+        for r in (self.width_row, self.height_row, self.dpi_row):
+            r.set_visible(custom)
+        if not custom:
+            self.presets = resolution_presets(kind)
+            self.res_row.set_model(Gtk.StringList.new([p[0] for p in self.presets]))
+            if select is None:
+                select = 2 if kind == "tablet" else 0   # 1280x720 tablet / fit-screen phone
+            self.res_row.set_selected(min(select, len(self.presets) - 1))
 
     def _validate(self, *_):
         ok = True
@@ -221,14 +254,14 @@ class InstanceDialog(Adw.Dialog):
         name = self.name_row.get_text().strip()
         if name:
             v["name"] = name
-        _, w, h = self.presets[self.size_row.get_selected()]
-        if w == -1:
-            w, h = int(self.width_row.get_value()), int(self.height_row.get_value())
-        v["width"], v["height"] = str(w), str(h)
-        v["dpi"] = str(int(self.dpi_row.get_value()))
-        cpus = self.cpu_row.get_value()
-        v["cpus"] = ("%g" % cpus) if cpus > 0 else ""
-        v["memory"] = MEMORY[self.mem_row.get_selected()][0]
+        if self.kind.get_active_name() == "custom":
+            w, h, dpi = (int(self.width_row.get_value()), int(self.height_row.get_value()),
+                         int(self.dpi_row.get_value()))
+        else:
+            _, w, h, dpi = self.presets[self.res_row.get_selected()]
+        v["width"], v["height"], v["dpi"] = str(w), str(h), str(dpi)
+        v["cpus"] = self.cpu_opts[self.cpu_row.get_selected()][0]
+        v["memory"] = self.mem_opts[self.mem_row.get_selected()][0]
         v["close_action"] = ACTIONS[self.close_row.get_selected()][0]
         v["idle_action"] = IDLE[self.idle_row.get_selected()][0]
         v["window_labels"] = "true" if self.labels_row.get_active() else "false"
