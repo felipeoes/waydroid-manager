@@ -14,6 +14,10 @@ All notable changes to waydroid-multi are listed here. The format follows
 - The "Own dock icon and window title" switch is gone from the instance dialog (the `window_labels` setting remains in the CLI; turning on "Title bar and toolbar" turns it back on).
 
 ### Fixed
+- Instances under load no longer show as "not responding": a CPU-limited instance without a
+  `cpuset` is now pinned at start to as many host CPUs as its `cpus` limit, the ones running
+  instances use least, instead of a quota spread over every host CPU that stalled the whole
+  container, UI included.
 - The `.deb`'s Installed-Size no longer depends on the filesystem it was built on.
 
 ## [0.1.0] - 2026-10-03

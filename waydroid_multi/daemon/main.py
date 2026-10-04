@@ -114,6 +114,14 @@ class Manager(dbus.service.Object):
         return [i.image_id for i in self.all_instances()
                 if i.image_id and (i.id in self.transient or lxc_state(i.id) in ACTIVE)]
 
+    def cpus_busy(self, exclude):
+        """CPUs pinned by the other running or starting instances, one entry per pin.
+        ponytail: two starts in the same instant can still pick the same CPUs; add a pick
+        lock if that ever matters (start-all staggers its starts)."""
+        return [c for i in self.all_instances()
+                if i.id != exclude and (i.id in self.transient or lxc_state(i.id) in ACTIVE)
+                for c in container.pinned_cpus(i)]
+
     def set_transient(self, iid, st):
         if st:
             self.transient[iid] = st
@@ -134,12 +142,14 @@ class Manager(dbus.service.Object):
         d["session"] = "yes" if inst.id in self.sessions else "no"
         d["pending_id_reset"] = inst.cfg["instance"].get("pending_id_reset", "false")
         d["mem_used"] = ""
+        d["pinned"] = ""  # CPUs in use: the cpuset setting, or the ones picked at start
         if d["state"] in ACTIVE:
-            try:
-                with open("/sys/fs/cgroup/lxc.payload.{}/memory.current".format(inst.container)) as f:
-                    d["mem_used"] = f.read().strip()
-            except OSError:
-                pass
+            for key, name in (("mem_used", "memory.current"), ("pinned", "cpuset.cpus")):
+                try:
+                    with open("/sys/fs/cgroup/lxc.payload.{}/{}".format(inst.container, name)) as f:
+                        d[key] = f.read().strip()
+                except OSError:
+                    pass
         return d
 
     def run_async(self, iid, fn, reply, error, lock=True):
@@ -226,7 +236,8 @@ class Manager(dbus.service.Object):
             return
         self.set_transient(iid, "STARTING")
         try:
-            container.start(inst, self.net, self.hosts(), session, uid, self.images_in_use())
+            container.start(inst, self.net, self.hosts(), session, uid, self.images_in_use(),
+                            self.cpus_busy(iid))
             inst = Instance.load(iid)
             self.start_helper(inst)
             GLib.idle_add(self._attach_session, iid, uid, session, sender)
@@ -347,7 +358,8 @@ class Manager(dbus.service.Object):
         container.stop(inst)
         session = dict(s["session"])
         session["background_start"] = "false"
-        container.start(inst, self.net, self.hosts(), session, s["uid"], self.images_in_use())
+        container.start(inst, self.net, self.hosts(), session, s["uid"], self.images_in_use(),
+                        self.cpus_busy(iid))
         self.start_helper(Instance.load(iid))
         GLib.idle_add(self._emit_state, iid)
 

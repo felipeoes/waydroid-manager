@@ -79,9 +79,40 @@ def select_image(inst, in_use=()):
     return d
 
 
-def write_lxc_config(inst, net):
+CPUSET_LINE = "lxc.cgroup2.cpuset.cpus = "
+
+
+def host_cpus():
+    """CPUs the containers' cgroups (children of the root one) can be pinned to; [] when the
+    cpuset controller isn't enabled for them, so no pin is written that would fail the start."""
+    try:
+        with open("/sys/fs/cgroup/cgroup.subtree_control") as f:
+            if "cpuset" not in f.read().split():
+                return []
+        with open("/sys/fs/cgroup/cpuset.cpus.effective") as f:
+            return lxcconfig.parse_cpus(f.read())
+    except OSError:
+        return []
+
+
+def pinned_cpus(inst):
+    """CPUs a running instance was pinned to at its start ([] = not pinned)."""
+    try:
+        with open(os.path.join(inst.lxc_dir, "config")) as f:
+            for line in f:
+                if line.startswith(CPUSET_LINE):
+                    return lxcconfig.parse_cpus(line[len(CPUSET_LINE):])
+    except OSError:
+        pass
+    return []
+
+
+def write_lxc_config(inst, net, cpus_busy=()):
     a = stock_args(inst)
-    limits = lxcconfig.cgroup_limits(inst.get("cpus"), inst.get("cpuset"), inst.get("memory"))
+    cpuset = inst.get("cpuset")
+    if inst.get("cpus") and not cpuset:
+        cpuset = lxcconfig.pick_cpus(inst.get("cpus"), host_cpus(), cpus_busy)
+    limits = lxcconfig.cgroup_limits(inst.get("cpus"), cpuset, inst.get("memory"))
     text = lxcconfig.build_config(
         stock.lxc_snippets(),
         rootfs=inst.rootfs, lxc_dir=inst.lxc_dir, bridge=net.cfg.bridge, mac=inst.mac,
@@ -209,15 +240,16 @@ def write_props(inst, session):
     bind_file(full, inst.rootfs + "/vendor/waydroid.prop")
 
 
-def start(inst, net, hosts, session_in, uid, images_in_use=()):
-    """Bring the container up. session_in: validated dict from the session process."""
+def start(inst, net, hosts, session_in, uid, images_in_use=(), cpus_busy=()):
+    """Bring the container up. session_in: validated dict from the session process.
+    cpus_busy: CPUs pinned by the other running instances, one entry per pin."""
     pw = pwd.getpwuid(uid)
     images_dir = select_image(inst, images_in_use)
     ensure_dirs(inst)
     a = stock_args(inst)
     binder.ensure_binderfs(a)
     binder.ensure_nodes(a, inst.index)
-    write_lxc_config(inst, net)
+    write_lxc_config(inst, net, cpus_busy)
     net.ensure_up(hosts)
     set_device_permissions()
 

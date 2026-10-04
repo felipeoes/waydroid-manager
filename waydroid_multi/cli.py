@@ -64,8 +64,8 @@ def cmd_list(o):
     for i in items:
         screen = "{}x{}@{}".format(i["width"], i["height"], i["dpi"])
         lim = "{} cpu, {}".format(i["cpus"], i["memory"])
-        if i["cpuset"]:
-            lim += ", cpus " + i["cpuset"]
+        if i.get("pinned") or i["cpuset"]:
+            lim += ", cpus " + (i.get("pinned") or i["cpuset"])
         rows.append((i["id"], i["name"], i["state"], i["ip"], screen, devices.label(i["device_model"]), lim))
     widths = [max(len(r[c]) for r in rows) for c in range(len(rows[0]))]
     for r in rows:
