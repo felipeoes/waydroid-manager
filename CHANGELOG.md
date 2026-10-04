@@ -20,6 +20,9 @@ All notable changes to waydroid-multi are listed here. The format follows
   are starting or stopping. A malformed CPU pin in one instance no longer fails other instances'
   starts. When the host doesn't enable the cgroup cpuset controller, the daemon enables it, or
   logs a warning if it can't.
+- Instance windows no longer show as "not responding" when the app that owns the clipboard is
+  slow to hand over its text, or after copying text inside Android: the window proxy now
+  fetches the clipboard for Android instead of letting Android's display service wait for it.
 
 ## [0.2.0] - 2026-10-04
 
