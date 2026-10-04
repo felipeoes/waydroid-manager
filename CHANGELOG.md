@@ -11,6 +11,15 @@ All notable changes to waydroid-multi are listed here. The format follows
   (resolution, device model, CPU and memory, root, writable system, …), Install APK, app grid entry,
   and every `waydroid-multi` command. It runs on stock Waydroid's own data, in place. Plain
   `waydroid` is paused while #0 runs and works as before once #0 stops or waydroid-multi is uninstalled.
+- `cpuset all` leaves an instance unpinned (any host CPU, within its `cpus` limit).
+
+### Fixed
+- Automatic CPU pinning picks one thread per physical core before sharing a core, leaves CPU 0
+  for last and skips CPUs isolated with `isolcpus=`. It weighs the other instances' pins by their
+  `cpus` limit (a wide or no pin counts less per CPU), and ignores the old pins of instances that
+  are starting or stopping. A malformed CPU pin in one instance no longer fails other instances'
+  starts. When the host doesn't enable the cgroup cpuset controller, the daemon enables it, or
+  logs a warning if it can't.
 
 ## [0.2.0] - 2026-10-04
 

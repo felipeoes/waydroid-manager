@@ -66,8 +66,9 @@ def cmd_list(o):
     for i in items:
         screen = "{}x{}@{}".format(i["width"], i["height"], i["dpi"])
         lim = "{} cpu, {}".format(i["cpus"], i["memory"])
-        if i.get("pinned") or i["cpuset"]:
-            lim += ", cpus " + (i.get("pinned") or i["cpuset"])
+        pin = i.get("pinned") or i["cpuset"]
+        if pin:
+            lim += ", cpus " + pin
         rows.append((i["id"], i["name"], i["state"], i["ip"], screen, devices.label(i["device_model"]), lim))
     widths = [max(len(r[c]) for r in rows) for c in range(len(rows[0]))]
     for r in rows:
@@ -496,7 +497,7 @@ def add_settings(p, create=True):
     p.add_argument("--height", type=int, help="window height in px")
     p.add_argument("--dpi", type=int, help="screen density")
     p.add_argument("--cpus", help="CPU limit in cores (default 2)")
-    p.add_argument("--cpuset", help="pin to host CPUs (e.g. 0-3)")
+    p.add_argument("--cpuset", help="pin to host CPUs (e.g. 0-3; all = not pinned)")
     p.add_argument("--memory", help="memory limit (default 4G)")
     p.add_argument("--device", dest="device_model", help="device model preset (see 'waydroid-multi devices')")
     p.add_argument("--zoom", help="window zoom in %% or 'auto'")

@@ -188,6 +188,13 @@ def open_in_container(pid, rel, flags):
 
 # -- LXC ---------------------------------------------------------------------
 
+def active_ids():
+    """Ids of the instances whose container isn't stopped (one lxc-ls for all)."""
+    r = run(["lxc-ls", "-P", paths.LXC_PATH, "--active", "-1"], check=False)
+    return {n[len(paths.container_name("")):] for n in r.stdout.split()
+            if n.startswith(paths.container_name(""))}
+
+
 def lxc_state(iid):
     r = run(["lxc-info", "-P", paths.LXC_PATH, "-n", paths.container_name(iid), "-sH"], check=False)
     s = r.stdout.strip()

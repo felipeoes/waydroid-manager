@@ -29,7 +29,7 @@ from ..instance import (Instance, SETTINGS, legacy_ids, list_ids, validate_id, v
 from ..registry import allocate_index
 from . import container, images, storage
 from .network import Network
-from .util import log, lxc_state, open_in_container
+from .util import active_ids, log, lxc_state, open_in_container
 
 ERR = "io.github.waydroidmulti.Error"
 ACTIVE = ("RUNNING", "FROZEN")
@@ -67,6 +67,7 @@ class Manager(dbus.service.Object):
         self.net = Network()
         self.locks = collections.defaultdict(threading.Lock)
         self.transient = {}      # id -> STARTING/STOPPING/CLONING/DELETING
+        self.picked = set()      # ids starting whose CPUs are picked (see cpus_busy)
         self.known = {}          # id -> last observed state
         self.sessions = {}       # id -> dict(sender, pid, uid, watch, session)
         self.helpers = {}        # id -> Popen
@@ -133,14 +134,19 @@ class Manager(dbus.service.Object):
     def images_in_use(self):
         """Image sets loop-mounted by running instances (stopped ones switch
         to the current set at their next start)."""
+        up = active_ids()
         return [i.image_id for i in self.all_instances()
-                if i.image_id and (i.id in self.transient or lxc_state(i.id) in ACTIVE)]
+                if i.image_id and (i.id in self.transient or i.id in up)]
 
-    def cpus_busy(self, exclude):
-        """CPUs pinned by the other running or starting instances, one entry per pin."""
-        return [c for i in self.all_instances()
-                if i.id != exclude and (i.id in self.transient or lxc_state(i.id) in ACTIVE)
-                for c in container.pinned_cpus(i)]
+    def cpus_busy(self, iid):
+        """The other instances' (cpus limit, pinned CPUs), for iid's pick: called under
+        container._pin_lock right before iid's pick is written. A starting instance counts
+        once its pick is written (until then its config holds its last run's pin), a stopping
+        or deleting one no longer does."""
+        up = active_ids()
+        self.picked.add(iid)
+        return [(i.get("cpus"), container.pinned_cpus(i)) for i in self.all_instances()
+                if i.id != iid and (i.id in self.picked or i.id in up and i.id not in self.transient)]
 
     def disk_used(self, inst):
         """Bytes the instance's directory takes (data, writable layers); measured with du in a
@@ -280,6 +286,7 @@ class Manager(dbus.service.Object):
             GLib.idle_add(self._attach_session, iid, uid, session, sender)
         finally:
             self.set_transient(iid, None)
+            self.picked.discard(iid)
         if inst.cfg["instance"].get("pending_id_reset") == "true":
             threading.Thread(target=self._finish_id_reset, args=(iid,), daemon=True).start()
 
@@ -395,8 +402,11 @@ class Manager(dbus.service.Object):
         container.stop(inst)
         session = dict(s["session"])
         session["background_start"] = "false"
-        container.start(inst, self.net, self.hosts(), session, s["uid"], self.images_in_use(),
-                        lambda: self.cpus_busy(iid))
+        try:
+            container.start(inst, self.net, self.hosts(), session, s["uid"], self.images_in_use(),
+                            lambda: self.cpus_busy(iid))
+        finally:
+            self.picked.discard(iid)
         self.start_helper(Instance.load(iid))
         GLib.idle_add(self._emit_state, iid)
 

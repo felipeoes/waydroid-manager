@@ -91,9 +91,9 @@ def _cpus(v):
 
 
 def _cpuset(v):
-    s = str(v).strip()
-    if s and not CPUSET_RE.match(s):
-        raise ValueError("cpuset must look like 0-3,8")
+    s = str(v).strip().lower()
+    if s and s != "all" and not CPUSET_RE.match(s):
+        raise ValueError("cpuset must look like 0-3,8, or be all")
     return s
 
 
@@ -148,7 +148,8 @@ SETTINGS = {
     "height": (_uint(16384), "720", "Android screen height in pixels"),
     "dpi": (_uint(1000), "240", "screen density"),
     "cpus": (_cpus, default_cpus, "CPU limit in cores, e.g. 2"),
-    "cpuset": (_cpuset, "", "pin to host CPUs, e.g. 0-3 (empty = as many as cpus, the least used at start)"),
+    "cpuset": (_cpuset, "", "pin to host CPUs, e.g. 0-3; all = not pinned; empty = as many as cpus, the "
+               "least used at start (unless cpus covers every host CPU)"),
     "memory": (_memory, default_memory, "memory limit, e.g. 4G"),
     "device_model": (_device, "waydroid", "device model preset (see 'waydroid-multi devices')"),
     "zoom": (_zoom, "auto", "window zoom in % (25-200) or auto (fit the screen)"),
