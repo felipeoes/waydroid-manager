@@ -6,6 +6,8 @@ like BlueStacks or LDPlayer multi-instance, but on Linux.
 Each instance is a separate Android device with its own apps, accounts, settings and
 window. Your normal Waydroid keeps working exactly as before.
 
+![Three instances side by side, each one a different device: a Galaxy S24 Ultra, a Pixel 8 Pro and a Xiaomi 14](docs/screenshots/multi-instance.png)
+
 ## What you can do
 
 - Run as many Android instances as your computer can handle, side by side
@@ -55,12 +57,16 @@ before, you can switch to the `.deb` at any time; your instances are kept.
 
 ## Using the manager app
 
+![The manager: your normal Waydroid as #0 under Default, the other instances below, and an instance's ⋮ menu](docs/screenshots/manager.png)
+
 - **+ New Instance** creates an instance. Instances are numbered automatically: your normal
   Waydroid is **#0**, new ones get the next free number (#1, #2, …).
 - **▶** starts an instance, **👁** brings its window back, and **■** stops it.
 - **⋮** opens a menu with Settings, Clone, Install APK, Add to/Remove from app grid, and Delete.
 - Tick instances' checkboxes (or **Select all**) to start, stop or delete several at once.
-- Your normal Waydroid appears under **Default**. You can start, stop, or clone it from there.
+- Your normal Waydroid appears under **Default** as #0. It works like any other instance:
+  window with title bar and toolbar, Settings, Install APK, app grid entry and Clone. It runs on
+  your normal Waydroid's own apps and data, in place.
 
 ## The instance window
 
@@ -115,7 +121,14 @@ Run `waydroid-multi --help` to see all commands.
   `waydroid-multi gsf-id <instance>` and enter the number at
   <https://www.google.com/android/uncertified>.
 - **Memory:** each running instance uses about 1.5–3 GB of RAM.
+- **Your normal Waydroid (#0):** #0 and plain `waydroid` use the same Android data, so only one
+  of them runs at a time: starting #0 stops `waydroid` first, and while #0 runs, `waydroid` can't
+  start. Stopping #0 (or uninstalling waydroid-multi) gives it back. #0's settings live in
+  waydroid-multi only; plain `waydroid` keeps its own. Two things carry over, because they're stored
+  in Android's data: with Root on, Magisk leaves `/data/adb` behind (harmless without it), and a
+  different device model makes Google services see a different device when you switch between them.
 - **Several users on one computer:** each user sees and controls only their own instances.
+  Only the first user who opens waydroid-multi gets their normal Waydroid as #0.
 - Running several accounts may be against some apps' or games' terms of service.
 
 ## Uninstall

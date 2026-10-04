@@ -16,7 +16,7 @@ import time
 
 from . import devices, paths
 
-ID_RE = re.compile(r"^[1-9][0-9]{0,2}$")            # instance ids are their numbers
+ID_RE = re.compile(r"^(0|[1-9][0-9]{0,2})$")        # instance ids are their numbers (#0: stock Waydroid)
 LEGACY_ID_RE = re.compile(r"^[a-z][a-z0-9_]{0,30}$")  # 0.1 slug ids, migrated at daemon start
 PROP_KEY_RE = re.compile(r"^[A-Za-z0-9_.\-]{1,96}$")
 # Android properties only root may set. They would give the instance owner root inside
@@ -33,12 +33,12 @@ ACTIONS = ("stop", "freeze", "none")
 
 
 def validate_id(iid, legacy=False):
-    iid = str(iid or "")
+    iid = "" if iid is None else str(iid)
     if ID_RE.match(iid) and int(iid) <= MAX_INDEX:
         return iid
     if legacy and LEGACY_ID_RE.match(iid) and iid != "default":
         return iid
-    raise ValueError("invalid instance id '{}': instances are numbered 1-{}".format(iid, MAX_INDEX))
+    raise ValueError("invalid instance id '{}': instances are numbered 0-{}".format(iid, MAX_INDEX))
 
 
 def host_memory_bytes():
@@ -91,9 +91,9 @@ def _cpus(v):
 
 
 def _cpuset(v):
-    s = str(v).strip()
-    if s and not CPUSET_RE.match(s):
-        raise ValueError("cpuset must look like 0-3,8")
+    s = str(v).strip().lower()
+    if s and s != "all" and not CPUSET_RE.match(s):
+        raise ValueError("cpuset must look like 0-3,8, or be all")
     return s
 
 
@@ -148,7 +148,8 @@ SETTINGS = {
     "height": (_uint(16384), "720", "Android screen height in pixels"),
     "dpi": (_uint(1000), "240", "screen density"),
     "cpus": (_cpus, default_cpus, "CPU limit in cores, e.g. 2"),
-    "cpuset": (_cpuset, "", "pin to host CPUs, e.g. 0-3 (empty = as many as cpus, the least used at start)"),
+    "cpuset": (_cpuset, "", "pin to host CPUs, e.g. 0-3; all = not pinned; empty = as many as cpus, the "
+               "least used at start (unless cpus covers every host CPU)"),
     "memory": (_memory, default_memory, "memory limit, e.g. 4G"),
     "device_model": (_device, "waydroid", "device model preset (see 'waydroid-multi devices')"),
     "zoom": (_zoom, "auto", "window zoom in % (25-200) or auto (fit the screen)"),
@@ -190,7 +191,9 @@ def validate_prop(key, value, trusted=False):
 
 
 def mac_for_index(index):
-    # Locally administered, unicast ("WDM" in the middle bytes)
+    # Locally administered, unicast ("WDM" in the middle bytes); :00:00 is the bridge's
+    if index == 0:
+        return "02:57:44:4d:ff:00"
     return "02:57:44:4d:{:02x}:{:02x}".format(index // 256, index % 256)
 
 

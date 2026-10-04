@@ -46,9 +46,12 @@ def wait_state(d, iid, wanted, timeout=120):
     return last
 
 
-def stock_state():
+def stop_stock():
+    """#0 runs on stock Waydroid's data: stock Waydroid itself must not run alongside it."""
     from . import stockctl
-    return stockctl.state()
+    if stockctl.status()["session"] == "RUNNING" or stockctl.state() != "STOPPED":
+        print("Stopping stock Waydroid (waydroid session stop)...")
+        stockctl.stop()
 
 
 # -- commands --------------------------------------------------------------------
@@ -59,13 +62,13 @@ def cmd_list(o):
     from .session import desktop
     desktop.cleanup_launchers([i["id"] for i in items])
     rows = [("#", "NAME", "STATE", "IP", "SCREEN", "DEVICE", "LIMITS")]
-    rows.append(("0", "Stock Waydroid (default)", stock_state(), "192.168.240.x", "-", "-", "-"))
     from . import devices
     for i in items:
         screen = "{}x{}@{}".format(i["width"], i["height"], i["dpi"])
         lim = "{} cpu, {}".format(i["cpus"], i["memory"])
-        if i.get("pinned") or i["cpuset"]:
-            lim += ", cpus " + (i.get("pinned") or i["cpuset"])
+        pin = i.get("pinned") or i["cpuset"]
+        if pin:
+            lim += ", cpus " + pin
         rows.append((i["id"], i["name"], i["state"], i["ip"], screen, devices.label(i["device_model"]), lim))
     widths = [max(len(r[c]) for r in rows) for c in range(len(rows[0]))]
     for r in rows:
@@ -118,11 +121,9 @@ def cmd_clone(o):
     opts = settings_from_args(o)
     opts["clone_from"] = src
     opts["reset_ids"] = "false" if o.keep_ids else "true"
+    if src in ("0", "default"):
+        stop_stock()
     if src == "default":
-        from . import stockctl
-        if stockctl.status()["session"] == "RUNNING" or stockctl.state() != "STOPPED":
-            print("Stopping stock Waydroid first...")
-            stockctl.stop()
         label = "stock Waydroid"
     else:
         info = d.get(src)
@@ -149,6 +150,8 @@ def cmd_devices(o):
 
 def cmd_delete(o):
     d = daemon()
+    if any(iid in ("0", "default") for iid in o.ids):
+        die("#0 is your stock Waydroid; it can't be deleted")
     for iid in o.ids:
         if not o.yes:
             ans = input("Delete instance #{} and ALL its data? [y/N] ".format(iid))
@@ -228,6 +231,8 @@ def ensure_running(d, iid, background=False):
         return False
     if info["state"] not in ("STOPPED",):
         die("instance #{} is {}".format(iid, info["state"]))
+    if iid == "0":
+        stop_stock()
     start_session(iid, background=background)
     st = wait_state(d, iid, ACTIVE)
     if st not in ACTIVE:
@@ -237,11 +242,6 @@ def ensure_running(d, iid, background=False):
 
 
 def cmd_start(o):
-    if o.id == "default":
-        from . import stockctl
-        if not stockctl.start_or_show():
-            die("stock Waydroid did not start; try 'waydroid show-full-ui' for details")
-        return
     d = daemon()
     info = d.get(o.id)
     if info["state"] in ACTIVE:
@@ -260,8 +260,6 @@ def cmd_start(o):
 
 
 def cmd_show(o):
-    if o.id == "default":
-        return cmd_start(o)
     d = daemon()
     started = ensure_running(d, o.id)
     if not started:
@@ -276,11 +274,8 @@ def cmd_stop(o):
             die("give an instance id or --all")
         return
     for iid in ids:
-        if iid == "default":
-            from . import stockctl
-            stockctl.stop()
-            print("Stopped stock Waydroid.")
-            continue
+        if iid == "0":
+            stop_stock()
         stop_session(iid)
         try:
             if d.get(iid)["state"] != "STOPPED":
@@ -507,7 +502,7 @@ def add_settings(p, create=True):
     p.add_argument("--height", type=int, help="window height in px")
     p.add_argument("--dpi", type=int, help="screen density")
     p.add_argument("--cpus", help="CPU limit in cores (default 2)")
-    p.add_argument("--cpuset", help="pin to host CPUs (e.g. 0-3)")
+    p.add_argument("--cpuset", help="pin to host CPUs (e.g. 0-3; all = not pinned)")
     p.add_argument("--memory", help="memory limit (default 4G)")
     p.add_argument("--device", dest="device_model", help="device model preset (see 'waydroid-multi devices')")
     p.add_argument("--zoom", help="window zoom in %% or 'auto'")
@@ -530,9 +525,9 @@ def parser():
     add_settings(c)
     c.set_defaults(fn=cmd_create)
 
-    c = sub.add_parser("clone", help="copy an instance (or 'default' = stock Waydroid) with its apps, "
+    c = sub.add_parser("clone", help="copy an instance (0 or 'default' = stock Waydroid) with its apps, "
                                      "data and settings into a new one")
-    c.add_argument("src", help="instance number or name, or 'default' (stock Waydroid)")
+    c.add_argument("src", help="instance number or name; 0 or 'default' is stock Waydroid")
     c.add_argument("--keep-ids", action="store_true", help="keep the source's device identity")
     add_settings(c)
     c.set_defaults(fn=cmd_clone)
@@ -548,7 +543,7 @@ def parser():
     c.add_argument("args", nargs="*")
     c.set_defaults(fn=cmd_config)
 
-    c = sub.add_parser("start", help="start an instance and open its window ('default' = stock Waydroid)")
+    c = sub.add_parser("start", help="start an instance and open its window (0 or 'default' = stock Waydroid)")
     c.add_argument("id")
     c.add_argument("--background", action="store_true", help="don't open the window")
     c.add_argument("--wait", action="store_true", help="wait until Android has booted")

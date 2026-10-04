@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 """Instance data operations (root): clone, identity reset, delete, APK install."""
 import os
+import pwd
 import secrets
 import shutil
 import stat
@@ -10,6 +11,34 @@ from .util import attach, log, run, umount_tree
 
 SSAID_FILES = ("system/users/0/settings_ssaid.xml", "system/users/0/settings_ssaid.xml.fallback")
 GMS_PACKAGES = ("com.google.android.gsf", "com.google.android.gms")
+
+
+STOCK_DATA = ".local/share/waydroid/data"
+AID_SYSTEM = 1000
+
+
+def stock_data_path(uid):
+    return os.path.join(pwd.getpwuid(uid).pw_dir, STOCK_DATA)
+
+
+def open_stock_data(uid):
+    """O_PATH fd of the user's stock Waydroid data dir (raises OSError if missing).
+
+    The user controls everything below their home: open each step without
+    following symlinks and use the fd, so nothing can be swapped in between."""
+    fd = os.open(os.path.realpath(pwd.getpwuid(uid).pw_dir), os.O_PATH | os.O_DIRECTORY)
+    try:
+        for part in STOCK_DATA.split("/"):
+            nfd = os.open(part, os.O_PATH | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=fd)
+            os.close(fd)
+            fd = nfd
+        # Android's init chowns /data, this directory, to its system uid at every boot
+        if os.fstat(fd).st_uid not in (uid, AID_SYSTEM):
+            raise OSError("{} is not owned by uid {}".format(stock_data_path(uid), uid))
+    except OSError:
+        os.close(fd)
+        raise
+    return fd
 
 
 def copy_data(src, dst):

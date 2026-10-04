@@ -44,7 +44,7 @@ class NetConfig:
         return self.network.network_address + 1
 
     def ip_for_index(self, index):
-        if not 1 <= index <= MAX_INDEX:
+        if not 0 <= index <= MAX_INDEX:
             raise ValueError("index out of range")
         return self.network.network_address + 10 + index
 
