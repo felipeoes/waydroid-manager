@@ -41,6 +41,7 @@ def stock_args(inst, config=None):
 
 
 STOCK_UNIT = "waydroid-container.service"
+STOCK_WAS_ACTIVE = os.path.join(paths.RUN_DIR, "stock-was-active")  # release_stock starts it again
 
 
 def _stock_stopped():
@@ -53,6 +54,8 @@ def mount_stock_data(inst):
     changed by us). Stock's container service is masked until #0 stops, so stock
     Waydroid can't boot the same data alongside it; the mask is --runtime, so a
     reboot clears it even if we never get to."""
+    if run(["systemctl", "is-active", STOCK_UNIT], check=False).stdout.strip() == "active":
+        open(STOCK_WAS_ACTIVE, "w").close()
     run(["systemctl", "mask", "--runtime", STOCK_UNIT])
     run(["systemctl", "stop", STOCK_UNIT], check=False)
     _stock_stopped()  # also catches a start between start()'s check and the mask
@@ -65,12 +68,16 @@ def mount_stock_data(inst):
 
 
 def release_stock():
-    """Undo mount_stock_data's mask (only if it is ours) and restart stock's service."""
+    """Undo mount_stock_data's mask (only if it is ours) and start stock's service again if
+    it was running before."""
     if run(["systemctl", "is-enabled", STOCK_UNIT], check=False).stdout.strip() != "masked-runtime":
         return
     run(["systemctl", "unmask", "--runtime", STOCK_UNIT], check=False)
-    if run(["systemctl", "is-enabled", STOCK_UNIT], check=False).stdout.strip() == "enabled":
-        run(["systemctl", "start", STOCK_UNIT], check=False)
+    try:
+        os.remove(STOCK_WAS_ACTIVE)
+    except FileNotFoundError:
+        return
+    run(["systemctl", "start", STOCK_UNIT], check=False)
 
 
 def ensure_dirs(inst):
@@ -170,9 +177,10 @@ def write_lxc_config(inst, net, cpus_busy=()):
     cpuset = inst.get("cpuset")
     if cpuset == "all":
         cpuset = ""
-    elif inst.get("cpus") and not cpuset:
-        cpus = host_cpus()
-        cpuset = lxcconfig.pick_cpus(inst.get("cpus"), cpus, cpus_busy, host_cores(cpus))
+    else:
+        cpus = host_cpus()  # also enables the cpuset controller, which a set cpuset needs too
+        if inst.get("cpus") and not cpuset:
+            cpuset = lxcconfig.pick_cpus(inst.get("cpus"), cpus, cpus_busy, host_cores(cpus))
     limits = lxcconfig.cgroup_limits(inst.get("cpus"), cpuset, inst.get("memory"))
     text = lxcconfig.build_config(
         stock.lxc_snippets(),
@@ -362,20 +370,25 @@ def start(inst, net, hosts, session_in, uid, images_in_use=(), cpus_busy=list):
         raise
 
 
-def stop(inst):
+def stop(inst, keep_stock=False):
     if lxc_state(inst.id) != "STOPPED":
         run(["lxc-stop", "-P", paths.LXC_PATH, "-n", inst.container, "-k"], check=False)
         run(["lxc-wait", "-P", paths.LXC_PATH, "-n", inst.container, "-s", "STOPPED", "-t", "15"], check=False)
-    cleanup(inst)
+    cleanup(inst, keep_stock)
 
 
-def cleanup(inst):
-    """Unmount everything belonging to a stopped instance."""
+def cleanup(inst, keep_stock=False):
+    """Unmount everything belonging to a stopped instance. #0 gives stock Waydroid its data
+    back, unless keep_stock (a reboot) or its container is somehow still up."""
     umount_tree(inst.rootfs)
     umount_tree(paths.staging_dir(inst.id))
     if inst.index == 0:
+        if lxc_state(inst.id) != "STOPPED":
+            log.error("%s: the container didn't stop; stock Waydroid stays paused", inst.id)
+            return
         umount_tree(inst.data_dir)
-        release_stock()
+        if not keep_stock:
+            release_stock()
 
 
 def freeze(inst):

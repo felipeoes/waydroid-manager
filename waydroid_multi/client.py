@@ -68,6 +68,8 @@ class Daemon:
         if num.isdigit():
             if any(i["id"] == num for i in items):
                 return num
+            if num == "0":
+                return "default"  # the caller's stock Waydroid, while #0 is another user's
             raise DaemonError("no instance #{}".format(num))
         hits = [i for i in items if i["name"].lower() == ref.lower()]
         if len(hits) == 1:
@@ -125,9 +127,13 @@ def platform_service(iid, timeout=60):
     import gbinder
     args, inst = instance_args(iid)
     w = inst.cfg["waydroid"]
-    sm = gbinder.ServiceManager("/dev/" + w["binder"], w["service_manager_protocol"], w["binder_protocol"])
     deadline = time.time() + timeout
     while time.time() < deadline:
+        # A new one each time: without a running GLib main loop libgbinder never notices a
+        # service manager that comes up later (and the old one must go first, or its
+        # per-device cache hands it back)
+        sm = None
+        sm = gbinder.ServiceManager("/dev/" + w["binder"], w["service_manager_protocol"], w["binder_protocol"])
         if sm.is_present():
             remote, _ = sm.get_service_sync(t.interfaces.IPlatform.SERVICE_NAME)
             if remote:

@@ -137,6 +137,7 @@ class InstanceTest(unittest.TestCase):
     def test_ids_are_numbers(self):
         for ok in ("0", "1", "2", "99", "240"):
             self.assertEqual(validate_id(ok), ok)
+        self.assertEqual(validate_id(0), "0")
         for bad in ("", "00", "default", "241", "01", "t1", "-1", "1a", "../x"):
             with self.assertRaises(ValueError):
                 validate_id(bad)

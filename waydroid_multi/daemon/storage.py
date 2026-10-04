@@ -14,6 +14,7 @@ GMS_PACKAGES = ("com.google.android.gsf", "com.google.android.gms")
 
 
 STOCK_DATA = ".local/share/waydroid/data"
+AID_SYSTEM = 1000
 
 
 def stock_data_path(uid):
@@ -31,7 +32,8 @@ def open_stock_data(uid):
             nfd = os.open(part, os.O_PATH | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=fd)
             os.close(fd)
             fd = nfd
-        if os.fstat(fd).st_uid != uid:
+        # Android's init chowns /data, this directory, to its system uid at every boot
+        if os.fstat(fd).st_uid not in (uid, AID_SYSTEM):
             raise OSError("{} is not owned by uid {}".format(stock_data_path(uid), uid))
     except OSError:
         os.close(fd)

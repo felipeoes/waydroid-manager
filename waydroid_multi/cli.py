@@ -121,15 +121,18 @@ def cmd_clone(o):
     opts = settings_from_args(o)
     opts["clone_from"] = src
     opts["reset_ids"] = "false" if o.keep_ids else "true"
-    if src == "0":
+    if src in ("0", "default"):
         stop_stock()
-    info = d.get(src)
-    label = "#{} “{}”".format(src, info["name"])
-    if info["state"] != "STOPPED":
-        print("Stopping {} first...".format(label))
-        stop_session(src)
-        if d.get(src)["state"] != "STOPPED":
-            d.stop(src)
+    if src == "default":
+        label = "stock Waydroid"
+    else:
+        info = d.get(src)
+        label = "#{} “{}”".format(src, info["name"])
+        if info["state"] != "STOPPED":
+            print("Stopping {} first...".format(label))
+            stop_session(src)
+            if d.get(src)["state"] != "STOPPED":
+                d.stop(src)
     print("Cloning {}...".format(label))
     try:
         iid = d.create(opts)
@@ -147,6 +150,8 @@ def cmd_devices(o):
 
 def cmd_delete(o):
     d = daemon()
+    if any(iid in ("0", "default") for iid in o.ids):
+        die("#0 is your stock Waydroid; it can't be deleted")
     for iid in o.ids:
         if not o.yes:
             ans = input("Delete instance #{} and ALL its data? [y/N] ".format(iid))

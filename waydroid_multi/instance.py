@@ -33,7 +33,7 @@ ACTIONS = ("stop", "freeze", "none")
 
 
 def validate_id(iid, legacy=False):
-    iid = str(iid or "")
+    iid = "" if iid is None else str(iid)
     if ID_RE.match(iid) and int(iid) <= MAX_INDEX:
         return iid
     if legacy and LEGACY_ID_RE.match(iid) and iid != "default":

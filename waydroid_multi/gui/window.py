@@ -346,7 +346,8 @@ class MainWindow(Adw.ApplicationWindow):
 
     def start_all(self):
         for i in self.instances:
-            if i["state"] == "STOPPED":
+            # not #0: starting it closes a plain Waydroid session the user may have open
+            if i["state"] == "STOPPED" and i["id"] != "0":
                 self.start_or_show(i)
 
     def stop_all(self):

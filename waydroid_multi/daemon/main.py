@@ -7,10 +7,12 @@ signals are delivered from the GLib main loop. The daemon never makes binder
 calls itself (see hwhelper.py).
 """
 import collections
+import contextlib
 import fcntl
 import logging
 import os
 import pwd
+import shutil
 import stat
 import subprocess
 import sys
@@ -23,7 +25,7 @@ import dbus.mainloop.glib
 import dbus.service
 from gi.repository import GLib
 
-from .. import __version__, paths, stock
+from .. import __version__, paths, stock, stockctl
 from ..instance import (Instance, SETTINGS, legacy_ids, list_ids, validate_id, validate_prop,
                         validate_setting)
 from ..registry import allocate_index
@@ -58,6 +60,14 @@ def _regular_fd(fd, write):
 
 def _s(d):
     return {str(k): str(v) for k, v in d.items()}
+
+
+def stock_waydroid_cfg():
+    """Stock's [waydroid] section without what each instance has its own of."""
+    w = dict(stock.load_stock_cfg()["waydroid"])
+    for k in ("binder", "vndbinder", "hwbinder", "images_path"):
+        w.pop(k, None)
+    return w
 
 
 class Manager(dbus.service.Object):
@@ -96,20 +106,22 @@ class Manager(dbus.service.Object):
             return
         try:
             os.close(storage.open_stock_data(uid))
-        except OSError:
-            return  # no stock Waydroid set up for this user
+        except (OSError, KeyError):
+            return  # no stock Waydroid set up for this user (or no such user)
         # ponytail: one #0 owner per host, first user wins; per-user #0 needs a per-user index
         try:
             os.mkdir(paths.instance_dir("0"), 0o700)
         except FileExistsError:
             return
-        w = dict(stock.load_stock_cfg()["waydroid"])
-        for k in ("binder", "vndbinder", "hwbinder", "images_path"):
-            w.pop(k, None)
-        inst = Instance.new("0", 0, uid, "", w, {})  # the image set is picked at start
-        inst.cfg["instance"]["name"] = "Stock Waydroid"
-        inst.save()
-        container.ensure_dirs(inst)
+        try:
+            inst = Instance.new("0", 0, uid, "", stock_waydroid_cfg(), {})  # image set picked at start
+            inst.cfg["instance"]["name"] = "Stock Waydroid"
+            inst.save()
+            container.ensure_dirs(inst)
+        except Exception:  # noqa: BLE001 - List works without #0; the next List tries again
+            log.exception("creating #0 failed")
+            shutil.rmtree(paths.instance_dir("0"), ignore_errors=True)
+            return
         self.net.reload_hosts(self.hosts())
 
     def check_owner(self, inst, uid):
@@ -399,12 +411,15 @@ class Manager(dbus.service.Object):
             return self._stop(iid)
         inst = Instance.load(iid)
         self.stop_helper(iid)
-        container.stop(inst)
+        container.stop(inst, keep_stock=True)  # #0: stock Waydroid stays paused across the reboot
         session = dict(s["session"])
         session["background_start"] = "false"
         try:
             container.start(inst, self.net, self.hosts(), session, s["uid"], self.images_in_use(),
                             lambda: self.cpus_busy(iid))
+        except Exception:
+            container.cleanup(inst)  # #0 didn't come back: give stock Waydroid back
+            raise
         finally:
             self.picked.discard(iid)
         self.start_helper(Instance.load(iid))
@@ -429,12 +444,15 @@ class Manager(dbus.service.Object):
         # counted again here: the check in Create() races with parallel calls
         if uid != 0 and sum(1 for i in self.all_instances() if i.owner_uid == uid and i.index) >= MAX_PER_USER:
             raise Error("instance limit reached ({} per user)".format(MAX_PER_USER), "LimitReached")
-        src_data, src_fd = self._clone_source(clone_from, uid) if clone_from else (None, None)
-        try:
-            return self._create_from(uid, opts, clone_from, src_data, reset_ids)
-        finally:
-            if src_fd is not None:
-                os.close(src_fd)
+        sid = self._source_id(clone_from, uid) if clone_from else None
+        # the source's lock: it can't start (and change its data) while it's copied
+        with self.locks[sid] if sid else contextlib.nullcontext():
+            src_data, src_fd = self._clone_source(clone_from, uid, sid) if clone_from else (None, None)
+            try:
+                return self._create_from(uid, opts, clone_from, src_data, reset_ids)
+            finally:
+                if src_fd is not None:
+                    os.close(src_fd)
 
     def _create_from(self, uid, opts, clone_from, src_data, reset_ids):
         settings = {}
@@ -462,10 +480,7 @@ class Manager(dbus.service.Object):
             raise Error("instance #{} already exists on disk".format(iid), "Exists")
         settings.setdefault("name", "Instance {}".format(iid))
         image_id = images.ensure_synced(self.images_in_use())
-        w = dict(stock.load_stock_cfg()["waydroid"])
-        for k in ("binder", "vndbinder", "hwbinder", "images_path"):
-            w.pop(k, None)
-        inst = Instance.new(iid, index, uid, image_id, w, props)
+        inst = Instance.new(iid, index, uid, image_id, stock_waydroid_cfg(), props)
         inst.cfg["waydroid"]["images_path"] = images.image_dir(image_id)
         for k, v in settings.items():
             inst.cfg["instance"][k] = v
@@ -530,14 +545,21 @@ class Manager(dbus.service.Object):
             except Exception as e:  # noqa: BLE001
                 log.error("migrating instance '%s' failed: %s", slug, e)
 
-    def _clone_source(self, src, uid):
+    def _source_id(self, src, uid):
+        """Instance whose data a clone of src copies: 'default' is #0's if #0 is the caller's."""
+        if src != "default":
+            return src
+        try:
+            return "0" if Instance.load("0").owner_uid == uid else src
+        except FileNotFoundError:
+            return src
+
+    def _clone_source(self, src, uid, sid):
         """Returns (path to copy from, fd to close afterwards or None)."""
         if src == "default":
-            r = subprocess.run(["lxc-info", "-P", paths.STOCK_WORK + "/lxc", "-n", "waydroid", "-sH"],
-                               capture_output=True, text=True)
-            if r.stdout.strip() not in ("", "STOPPED") or os.path.isdir("/sys/fs/cgroup/lxc.payload.waydroid"):
+            if stockctl.container_state() != "STOPPED":
                 raise Error("stop the stock Waydroid session first ('waydroid session stop')", "Busy")
-            if lxc_state("0") != "STOPPED":  # #0 runs on the same data
+            if sid == "0" and lxc_state("0") != "STOPPED":  # #0 runs on the same data
                 raise Error("stop instance #0 before cloning it", "Busy")
             try:
                 fd = storage.open_stock_data(uid)

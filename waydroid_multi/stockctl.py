@@ -49,7 +49,10 @@ def state():
 
 
 def stop(timeout=60):
-    subprocess.run(["waydroid", "session", "stop"], capture_output=True, timeout=timeout)
+    try:
+        subprocess.run(["waydroid", "session", "stop"], capture_output=True, timeout=timeout)
+    except subprocess.TimeoutExpired:
+        pass  # a hung stock session; #0's start refuses while stock's container still runs
     subprocess.run(["systemctl", "--user", "stop", UNIT], capture_output=True)
     _wait(lambda: container_state() == "STOPPED", 30)
 

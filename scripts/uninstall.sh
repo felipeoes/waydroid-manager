@@ -72,8 +72,8 @@ stop_all() {
     if [ "$(systemctl is-enabled waydroid-container.service 2>/dev/null)" = masked-runtime ]; then
         echo "Re-enabling stock Waydroid"
         systemctl unmask --runtime waydroid-container.service
-        [ "$(systemctl is-enabled waydroid-container.service 2>/dev/null)" != enabled ] ||
-            systemctl start waydroid-container.service
+        [ ! -e "$RUNDIR/stock-was-active" ] || systemctl start waydroid-container.service
+        rm -f "$RUNDIR/stock-was-active"
     fi
 }
 
