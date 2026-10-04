@@ -17,7 +17,7 @@ window. Your normal Waydroid keeps working exactly as before.
   - drag the title bar to move it, drag an edge to **resize** (the picture scales, and the size
     is remembered)
   - double-click the title bar to maximize
-  - **◁ ○ □** Back / Home / Recents, volume buttons, screenshots and fullscreen
+  - **◁ ○ □** Back / Home / Recents, volume buttons, screenshots, Install APK and fullscreen
 - Find each instance in the dock and app grid under its own name
 - Install APKs, launch apps, and connect with `adb`, per instance
 
@@ -59,7 +59,7 @@ before, you can switch to the `.deb` at any time; your instances are kept.
   Waydroid is **#0**, new ones get the next free number (#1, #2, …).
 - **▶** starts an instance, **👁** brings its window back, and **■** stops it.
 - **⋮** opens a menu with Settings, Clone, Install APK, Add to/Remove from app grid, and Delete.
-- The **☑** button switches to selection mode: start, stop or delete several instances at once.
+- Tick instances' checkboxes (or **Select all**) to start, stop or delete several at once.
 - Your normal Waydroid appears under **Default**. You can start, stop, or clone it from there.
 
 ## The instance window
@@ -72,6 +72,7 @@ before, you can switch to the `.deb` at any time; your instances are kept.
 | Fullscreen | toolbar button or **F11**; leave with **Esc** or **F11** |
 | Android buttons | ◁ Back, ○ Home, □ Recents, volume up/down |
 | Screenshot | toolbar camera button, saved to `~/Pictures/Waydroid/<instance name>` |
+| Install APK | toolbar **APK** button, then pick an `.apk` |
 
 Closing the window stops the instance after asking you to confirm. In its Settings you can
 make closing pause it or keep it running instead.

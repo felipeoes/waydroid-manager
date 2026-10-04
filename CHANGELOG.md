@@ -9,11 +9,17 @@ All notable changes to waydroid-multi are listed here. The format follows
 ### Added
 - Per-instance `root` setting ("Root" switch): installs Magisk Delta (root for apps) into the instance.
 - Per-instance `system_writable` setting ("Writable system" switch) to make the Android system partition writable.
+- Install APK button in the instance window's side toolbar, and tooltips on its buttons.
+- Every instance row has a checkbox; a Select all row at the top of the list starts, stops or
+  deletes the checked instances. This replaces the separate selection mode and its bottom bar.
+- Instance rows show the disk space the instance uses (in GB), instead of its RAM, IP and screen size.
 
 ### Changed
 - The "Own dock icon and window title" switch is gone from the instance dialog (the `window_labels` setting remains in the CLI; turning on "Title bar and toolbar" turns it back on).
+- Start all and Start (on checked instances) start them in parallel, like Stop all.
 
 ### Fixed
+- Select all checked only the first instance; a second click was needed for the rest.
 - Instances under load no longer show as "not responding": a CPU-limited instance without a
   `cpuset` is now pinned at start to as many host CPUs as its `cpus` limit, the ones running
   instances use least, instead of a quota spread over every host CPU that stalled the whole
