@@ -167,7 +167,7 @@ Stored in `instance.cfg` and changed with `waydroid-multi config N set KEY VALUE
 | `name` | `Instance N` | display name |
 | `width`, `height`, `dpi` | 1280, 720, 240 | Android screen (restart) |
 | `cpus` | 2 (or fewer cores on the host) | CPU limit, cgroup `cpu.max` (restart) |
-| `cpuset` | as many CPUs as `cpus`, offset by instance number | pin to host CPUs, e.g. `0-3` (restart). A quota alone lets Android stall on all host CPUs at once |
+| `cpuset` | as many CPUs as `cpus`, the least used by running instances at start | pin to host CPUs, e.g. `0-3` (restart). A quota alone lets Android stall on all host CPUs at once |
 | `memory` | 4G, or 2G on hosts with ≤ 6 GB | cgroup `memory.high` (restart) |
 | `device_model` | `waydroid` | preset from `waydroid-multi devices`, or `custom` (restart) |
 | `zoom` | `auto` | window scale in %, saved when the window is resized |
