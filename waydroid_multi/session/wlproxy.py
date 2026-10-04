@@ -15,6 +15,10 @@ It gives every instance window an identity and a frame:
   Install APK, fullscreen) with tooltips, and an invisible resize border. These are proxy-owned
   subsurfaces; events for them are never forwarded to the HWC, which aborts on
   unknown object ids.
+* **Clipboard**: the HWC reads a new selection on its only Wayland thread, blocking
+  until the owner has sent it, so a slow owner (or the HWC itself, after a copy in
+  Android) holds back its pongs and GNOME calls the window not responding. The
+  proxy fetches the text itself and answers the HWC's reads (see Clip).
 
 Toolbar keys are delivered as synthetic ``wl_keyboard.key`` events (the HWC
 forwards evdev codes and needs no focus; codes >= 239 are dropped, hence
@@ -36,6 +40,7 @@ import signal
 import socket
 import struct
 import sys
+import threading
 import time
 
 from . import frame as fr
@@ -51,6 +56,10 @@ MY_ID_BASE = 0xfe000000      # proxy-created objects in client space (mapped to 
 FULL_DAMAGE = 0x7fffffff
 ZOOM_MIN, ZOOM_MAX = 0.25, 2.0
 PANEL_ALLOWANCE = 64          # room for a desktop panel when fitting to the screen
+# Clipboard text the HWC reads, in its order of preference
+CLIP_TYPES = ("text/plain;charset=utf-8", "UTF8_STRING", "text/plain", "TEXT", "STRING")
+CLIP_WAIT = 1.0               # longest the HWC waits on a slow clipboard owner (GNOME pings time out at 5 s)
+CLIP_MAX = 1 << 20            # more text than this is not passed to Android
 
 
 def read_string(payload, off):
@@ -80,15 +89,22 @@ class Stream:
     (replacement messages; [] drops the message). Proxy-originated messages are
     added with inject(); those carrying fds wait until no partial message is
     buffered, so every fd stays ahead of (or with) the message that uses it.
+
+    With count_fds ((obj, opcode) -> fds the message carries), fds are tracked per
+    message: only those of messages already queued are sent, and a handler can
+    take_fd() the fds of the message it drops.
     """
 
-    def __init__(self, handler, post_feed=None, translate=None):
+    def __init__(self, handler, post_feed=None, translate=None, count_fds=None):
         self.handler = handler
         self.post_feed = post_feed
         self.translate = translate   # applied when a message is appended for sending
+        self.count_fds = count_fds
         self.inbuf = bytearray()
         self.out = bytearray()
         self.fds = []
+        self.out_fds = 0             # leading fds that belong to messages in out (count_fds only)
+        self.cur = None              # [index, count] of the handled message's fds still queued
         self.deferred = []
         self.feeding = False
 
@@ -115,12 +131,19 @@ class Stream:
             if len(buf) - pos < size:
                 break
             payload = bytes(buf[pos + HEADER.size:pos + size])
+            n = self.count_fds(obj, word & 0xffff) if self.count_fds else 0
+            # None when its fds didn't all arrive: it is then forwarded as is
+            self.cur = [self.out_fds, n] if self.out_fds + n <= len(self.fds) else None
             repl = self.handler(obj, word & 0xffff, payload)
+            left = self.cur[1] if self.cur else 0
+            self.cur = None
             if repl is None:
-                self._append(bytes(buf[pos:pos + size]))
+                self._append(bytes(buf[pos:pos + size]), owned=left)
+            elif repl:
+                for i, m in enumerate(repl):
+                    self._append(m, owned=left if i == 0 else 0)
             else:
-                for m in repl:
-                    self._append(m)
+                self._close_owned(left)
             pos += size
         if pos:
             del self.inbuf[:pos]
@@ -140,14 +163,34 @@ class Stream:
             return
         self._append(data, fds)
 
-    def _append(self, data, fds=()):
+    def take_fd(self):
+        """Next fd of the message being handled, now the caller's to close; None when
+        fds aren't tracked (the message must then be forwarded unchanged)."""
+        c = self.cur
+        if not c or not c[1]:
+            return None
+        c[1] -= 1
+        return self.fds.pop(c[0])
+
+    def _close_owned(self, n):
+        for _ in range(n):
+            os.close(self.fds.pop(self.out_fds))
+
+    def _append(self, data, fds=(), owned=0):
+        """owned: fds of this message already queued (received with it)."""
         if self.translate is not None:
             data = self.translate(data)
             if data is None:
                 for fd in fds:
                     os.close(fd)
+                self._close_owned(owned)
                 return
-        self.fds.extend(fds)
+        if self.count_fds:
+            self.out_fds += owned
+            self.fds[self.out_fds:self.out_fds] = fds   # ahead of fds received for later messages
+            self.out_fds += len(fds)
+        else:
+            self.fds.extend(fds)
         self.out += data
 
     def _drain_deferred(self):
@@ -182,9 +225,10 @@ def recv_with_fds(sock):
 def flush(sock, stream):
     """Write as much queued output as possible. Returns True when drained."""
     while stream.out:
-        fds = stream.fds[:MAX_FDS_PER_MSG]
+        ready = stream.fds[:stream.out_fds] if stream.count_fds else stream.fds
+        fds = ready[:MAX_FDS_PER_MSG]
         # With more fds than one message may carry, send one byte per batch
-        chunk = bytes(stream.out[:1] if len(stream.fds) > MAX_FDS_PER_MSG else stream.out[:RECV_SIZE])
+        chunk = bytes(stream.out[:1] if len(ready) > MAX_FDS_PER_MSG else stream.out[:RECV_SIZE])
         anc = [(socket.SOL_SOCKET, socket.SCM_RIGHTS, array.array("i", fds))] if fds else []
         try:
             n = sock.sendmsg([chunk], anc)
@@ -193,6 +237,8 @@ def flush(sock, stream):
         for fd in fds:
             os.close(fd)
         del stream.fds[:len(fds)]
+        if stream.count_fds:
+            stream.out_fds -= len(fds)
         del stream.out[:n]
     return True
 
@@ -246,6 +292,13 @@ class Translator:
             (n,) = struct.unpack_from("=I", p, off)
             return off + 4 + ((n + 3) & ~3)
         return off            # fd: out of band
+
+    def request_fds(self, obj, op):
+        """How many fds a client request carries (they travel out of band)."""
+        iface = self.schema.get(self.iface.get(obj))
+        if iface is None or op >= len(iface.requests):
+            return 0
+        return sum(1 for a in iface.requests[op] if a.type == "fd")
 
     def request(self, data):
         """Client-space request -> compositor-space bytes, or None to drop."""
@@ -335,6 +388,57 @@ class Translator:
 
 
 # -- protocol state ---------------------------------------------------------------
+
+class Clip:
+    """Clipboard text of one selection offer, fetched by the proxy for the HWC.
+
+    The HWC reads the clipboard on its only Wayland thread, blocking until the owner
+    has sent it all, so a slow owner holds back its pongs and GNOME calls the window
+    not responding. The proxy fetches the text itself (a thread reads the pipe) and
+    answers the HWC's receive, waiting at most CLIP_WAIT."""
+
+    def __init__(self, fd, stats):
+        self.data = b""
+        self.done = threading.Event()
+        self.stats = stats
+        if fd is None:
+            self.done.set()
+        else:
+            threading.Thread(target=self._read, args=(fd,), daemon=True, name="clip-read").start()
+
+    def _read(self, fd):
+        chunks, size = [], 0
+        try:
+            while size <= CLIP_MAX:
+                b = os.read(fd, 65536)
+                if not b:
+                    self.data = b"".join(chunks)
+                    break
+                chunks.append(b)
+                size += len(b)
+        except OSError:
+            pass
+        finally:
+            os.close(fd)
+            self.done.set()
+
+    def answer(self, fd):
+        """Write the text to the HWC's pipe once fetched (nothing if it takes too long)."""
+        def run():
+            try:
+                if self.done.wait(CLIP_WAIT):
+                    self.stats["answered"] += 1
+                    view = memoryview(self.data)
+                    while view:
+                        view = view[os.write(fd, view):]
+                else:
+                    self.stats["late"] += 1
+            except OSError:
+                pass
+            finally:
+                os.close(fd)
+        threading.Thread(target=run, daemon=True, name="clip-answer").start()
+
 
 class Surf:
     __slots__ = ("id", "viewport", "parent", "sub", "dirty", "req_dest", "req_pos", "children")
@@ -441,6 +545,10 @@ class Session:
         self.cursor_dev = None
         self.pings = {}           # serial -> time the compositor pinged
         self.ping_stats = {"pings": 0, "pongs": 0, "max_latency": 0.0, "last_latency": 0.0}
+        self.offers = {}          # wl_data_offer id -> mime types offered
+        self.clips = {}           # selection offer id -> Clip
+        self.clip_stats = {"answered": 0, "late": 0}
+        self.own_source = None    # the HWC's wl_data_source while it owns the selection
 
     # -- helpers ------------------------------------------------------------------
     def new_id(self, kind):
@@ -648,9 +756,17 @@ class Session:
         if iface == "wp_fractional_scale_manager_v1" and op == P.WP_FRACTIONAL_SCALE_MANAGER_GET:
             self.objs[r.n()] = "wp_fractional_scale_v1"
             return None
-        if iface == "wl_data_device_manager" and op == P.WL_DATA_DEVICE_MANAGER_GET_DATA_DEVICE:
-            self.objs[r.n()] = "wl_data_device"
+        if iface == "wl_data_device_manager":
+            if op == P.WL_DATA_DEVICE_MANAGER_GET_DATA_DEVICE:
+                self.objs[r.n()] = "wl_data_device"
+            elif op == P.WL_DATA_DEVICE_MANAGER_CREATE_DATA_SOURCE:
+                self.objs[r.n()] = "wl_data_source"
             return None
+        if iface == "wl_data_device" and op == P.WL_DATA_DEVICE_SET_SELECTION:
+            self.own_source = r.o() or None
+            return None
+        if iface == "wl_data_offer":
+            return self._offer_request(obj, op)
         if iface == "wl_surface":
             return self._surface_request(obj, op, r)
         if iface == "wp_viewport":
@@ -869,6 +985,11 @@ class Session:
             return self._keyboard_event(obj, op, r)
         if iface == "wl_data_device":
             return self._data_device_event(obj, op, r, payload)
+        if iface == "wl_data_offer" and op == P.WL_DATA_OFFER_EV_OFFER and obj in self.offers:
+            self.offers[obj].append(r.s())
+            return None
+        if iface == "wl_data_source" and op == P.WL_DATA_SOURCE_EV_CANCELLED and obj == self.own_source:
+            self.own_source = None
         return None
 
     KEY_ESC, KEY_F11 = 1, 87
@@ -1056,6 +1177,14 @@ class Session:
         return None
 
     def _data_device_event(self, did, op, r, payload):
+        if op == P.WL_DATA_DEVICE_EV_DATA_OFFER:
+            offer = r.n()
+            self.objs[offer] = "wl_data_offer"
+            self.offers[offer] = []
+            return None
+        if op == P.WL_DATA_DEVICE_EV_SELECTION:
+            self._clip_selection(r.o())
+            return None
         if op == P.WL_DATA_DEVICE_EV_ENTER:
             serial, sid, x, y, offer = r.u(), r.o(), r.f(), r.f(), r.o()
             if sid in self.mine:
@@ -1070,6 +1199,30 @@ class Session:
             t, x, y = r.u(), r.f(), r.f()
             ux, uy = self.unscale_point(self._dnd_surface, x, y)
             return [msg(did, op, "uff", t, ux, uy)]
+        return None
+
+    def _clip_selection(self, offer):
+        """A new selection: start fetching its text for the HWC (see Clip)."""
+        mime = next((m for m in CLIP_TYPES if m in self.offers.get(offer, ())), None)
+        if not offer or mime is None:
+            return
+        if self.own_source:
+            # The HWC's own text: fetching it would wait on the HWC, which is busy reading
+            self.clips[offer] = Clip(None, self.clip_stats)
+            return
+        rfd, wfd = os.pipe()
+        self.to_server(msg(offer, P.WL_DATA_OFFER_RECEIVE, "s", mime), fds=[wfd])
+        self.clips[offer] = Clip(rfd, self.clip_stats)
+
+    def _offer_request(self, offer, op):
+        if op == P.WL_DATA_OFFER_RECEIVE and offer in self.clips:
+            fd = self.c2s.take_fd()
+            if fd is not None:
+                self.clips[offer].answer(fd)
+                return []
+        elif op == P.WL_DATA_OFFER_DESTROY:
+            self.offers.pop(offer, None)
+            self.clips.pop(offer, None)
         return None
 
     def _my_event(self, obj, op, payload):
@@ -1539,7 +1692,8 @@ class Connection:
         self.upstream = upstream
         self.session = Session(proxy.cfg, proxy.emit)
         self.tr = Translator(wlschema.load(), lambda m: sys.stderr.write("wlproxy: " + m + "\n"))
-        self.c2s = Stream(self.session.on_request, self.session.post_feed_c2s, translate=self.tr.request)
+        self.c2s = Stream(self.session.on_request, self.session.post_feed_c2s, translate=self.tr.request,
+                          count_fds=self.tr.request_fds)
         self.s2c = Stream(self._event)
         self.session.c2s, self.session.s2c = self.c2s, self.s2c
         self.closed = False
@@ -1710,6 +1864,7 @@ class Proxy:
                 i, se.zoom, se.res, bool(w), w and w.fullscreen, w and w.fill_size, bool(w and w.frame)))
             lines.append("  pings={pings} pongs={pongs} last_latency={last_latency:.3f}s "
                          "max_latency={max_latency:.3f}s outstanding={n}".format(n=len(se.pings), **se.ping_stats))
+            lines.append("  clipboard answered={answered} late={late}".format(**se.clip_stats))
             lines.append("  c2s out={} deferred={} inbuf={} fds={} | s2c out={} deferred={} inbuf={} fds={}".format(
                 len(c.c2s.out), len(c.c2s.deferred), len(c.c2s.inbuf), len(c.c2s.fds),
                 len(c.s2c.out), len(c.s2c.deferred), len(c.s2c.inbuf), len(c.s2c.fds)))

@@ -93,18 +93,41 @@ def parse_cpus(text):
     return out
 
 
-def pick_cpus(cpus, host_cpus, busy=()):
+def pick_cpus(cpus, host_cpus, busy=(), cores=None):
     """cpuset for a `cpus` limit with no cpuset of its own, or "" to leave it unpinned.
 
     A quota alone lets Android run threads on every host CPU: it spends the quota in a few ms
     and then the whole container, UI included, stalls for the rest of the period (GNOME: "not
-    responding"); a shorter period does not help. So pin to as many CPUs, the ones least used
-    by the running instances' pins (`busy`, one entry per pin)."""
+    responding"); a shorter period does not help. So pin to as many CPUs, the least loaded by
+    the other instances (`busy`: their (cpus limit, pinned CPUs) pairs, [] = not pinned):
+    one thread per physical core first (`cores`: CPU -> its core's CPUs), CPU 0 (interrupts)
+    last."""
     n = math.ceil(float(cpus))
     if not host_cpus or n >= len(host_cpus):
         return ""
-    use = collections.Counter(busy)
-    return ",".join(str(c) for c in sorted(sorted(host_cpus, key=lambda c: (use[c], c))[:n]))
+    load = collections.Counter()
+    for limit, pin in busy:
+        pin = [c for c in pin if c in host_cpus] or host_cpus  # its limit spread over its CPUs
+        for c in pin:
+            load[c] += min(float(limit or len(pin)), len(pin)) / len(pin)
+    cores = cores or {}
+
+    def key(c):
+        core = cores.get(c, [c])
+        return sum(load[s] for s in core), load[c], core.index(c), c == 0, c
+    return ",".join(str(c) for c in sorted(sorted(host_cpus, key=key)[:n]))
+
+
+CPUSET_KEY = "lxc.cgroup2.cpuset.cpus"
+
+
+def config_cpuset(lines):
+    """CPUs a config's cpuset line pins to ([] = not pinned)."""
+    for line in lines:
+        key, val = _split(line)
+        if key == CPUSET_KEY:
+            return parse_cpus(val)
+    return []
 
 
 def cgroup_limits(cpus="", cpuset="", memory="", period=100000):
@@ -113,7 +136,7 @@ def cgroup_limits(cpus="", cpuset="", memory="", period=100000):
         quota = max(1000, int(float(cpus) * period))
         lines.append("lxc.cgroup2.cpu.max = {} {}".format(quota, period))
     if cpuset:
-        lines.append("lxc.cgroup2.cpuset.cpus = " + cpuset)
+        lines.append(CPUSET_KEY + " = " + cpuset)
     if memory:
         lines.append("lxc.cgroup2.memory.high = " + memory)
     return lines

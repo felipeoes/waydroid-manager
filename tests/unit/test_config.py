@@ -96,13 +96,32 @@ class LxcConfigTest(unittest.TestCase):
     def test_pick_cpus(self):
         host = list(range(8))
         self.assertEqual(lxcconfig.parse_cpus("0-2,5\n"), [0, 1, 2, 5])
-        self.assertEqual(lxcconfig.pick_cpus("2", host), "0,1")
-        self.assertEqual(lxcconfig.pick_cpus("1.5", host, [0, 1, 2, 3]), "4,5")
+        self.assertEqual(lxcconfig.pick_cpus("2", host), "1,2")  # CPU 0 (interrupts) last
+        self.assertEqual(lxcconfig.pick_cpus("1.5", host, [("2", [1, 2]), ("2", [3, 4])]), "5,6")
         # instances 1 and 3 running after 2 was deleted: no shared CPUs while others are idle
-        self.assertEqual(lxcconfig.pick_cpus("2", host, [0, 1, 4, 5]), "2,3")
-        self.assertEqual(lxcconfig.pick_cpus("2", host, host + [0, 1, 2]), "3,4")  # host full: least shared
+        self.assertEqual(lxcconfig.pick_cpus("2", host, [("2", [1, 2]), ("2", [5, 6])]), "3,4")
+        full = [("2", [0, 1]), ("2", [2, 3]), ("2", [4, 5]), ("2", [6, 7]), ("2", [0, 1])]
+        self.assertEqual(lxcconfig.pick_cpus("2", host, full), "2,3")  # host full: least shared
+        # a wide pin or no pin spreads its limit: 2 over 0-5, 4 over all
+        self.assertEqual(lxcconfig.pick_cpus("2", host, [("2", range(6)), ("2", [6, 7])]), "1,2")
+        self.assertEqual(lxcconfig.pick_cpus("2", host, [("4", []), ("2", [1, 2])]), "3,4")
         self.assertEqual(lxcconfig.pick_cpus("8", host), "")
         self.assertEqual(lxcconfig.pick_cpus("2", []), "")  # no cpuset controller
+
+    def test_pick_cpus_one_thread_per_core(self):
+        host = list(range(8))
+        intel = {c: [c & ~1, c | 1] for c in host}  # SMT siblings 0/1, 2/3, ...
+        self.assertEqual(lxcconfig.pick_cpus("2", host, cores=intel), "2,4")
+        amd = {c: [c % 4, c % 4 + 4] for c in host}  # SMT siblings 0/4, 1/5, ...
+        self.assertEqual(lxcconfig.pick_cpus("2", host, cores=amd), "1,2")
+        # idle cores first, even CPU 0's, before a busy core's free thread
+        self.assertEqual(lxcconfig.pick_cpus("2", host, [("2", [1, 2])], amd), "0,3")
+        self.assertEqual(lxcconfig.pick_cpus("4", host, [("4", [0, 1, 2, 3])], amd), "4,5,6,7")
+
+    def test_config_cpuset_reads_cgroup_limits(self):
+        self.assertEqual(lxcconfig.config_cpuset(lxcconfig.cgroup_limits("2", "3,5-6", "4G")), [3, 5, 6])
+        self.assertEqual(lxcconfig.config_cpuset(["lxc.cgroup2.cpuset.cpus=1\n"]), [1])
+        self.assertEqual(lxcconfig.config_cpuset(lxcconfig.cgroup_limits("2")), [])
 
     def test_session_entries(self):
         text = lxcconfig.session_entries("/run/waydroid-multi/instances/t1/wayland-0", "",
@@ -116,9 +135,10 @@ class LxcConfigTest(unittest.TestCase):
 
 class InstanceTest(unittest.TestCase):
     def test_ids_are_numbers(self):
-        for ok in ("1", "2", "99", "240"):
+        for ok in ("0", "1", "2", "99", "240"):
             self.assertEqual(validate_id(ok), ok)
-        for bad in ("", "0", "default", "241", "01", "t1", "-1", "1a", "../x"):
+        self.assertEqual(validate_id(0), "0")
+        for bad in ("", "00", "default", "241", "01", "t1", "-1", "1a", "../x"):
             with self.assertRaises(ValueError):
                 validate_id(bad)
         # 0.1 name-based ids are only accepted for migration
@@ -129,6 +149,7 @@ class InstanceTest(unittest.TestCase):
     def test_settings_validation(self):
         self.assertEqual(validate_setting("memory", "4gb"), "4G")
         self.assertEqual(validate_setting("cpus", "2.0"), "2")
+        self.assertEqual(validate_setting("cpuset", "ALL"), "all")
         self.assertEqual(validate_setting("window_labels", "off"), "false")
         self.assertEqual(validate_setting("close_action", "FREEZE"), "freeze")
         self.assertEqual(validate_setting("zoom", "75%"), "75")
@@ -216,8 +237,8 @@ class InstanceTest(unittest.TestCase):
             self.assertEqual(oct(os.stat(p).st_mode & 0o777), "0o644")
 
     def test_macs_unique_and_never_bridge(self):
-        macs = {mac_for_index(i) for i in range(1, 241)}
-        self.assertEqual(len(macs), 240)
+        macs = {mac_for_index(i) for i in range(0, 241)}
+        self.assertEqual(len(macs), 241)
         self.assertNotIn("02:57:44:4d:00:00", macs)  # the bridge's own MAC
 
 
@@ -225,6 +246,7 @@ class NetConfigTest(unittest.TestCase):
     def test_addresses(self):
         n = NetConfig("wdmulti0", "192.168.241.0/24")
         self.assertEqual(str(n.gateway), "192.168.241.1")
+        self.assertEqual(str(n.ip_for_index(0)), "192.168.241.10")
         self.assertEqual(str(n.ip_for_index(1)), "192.168.241.11")
         self.assertEqual(str(n.ip_for_index(240)), "192.168.241.250")
         env = n.env()

@@ -5,6 +5,7 @@ import socket
 import struct
 import tempfile
 import threading
+import time
 import unittest
 
 from waydroid_multi.session import wlproto as P
@@ -359,6 +360,96 @@ class StreamTest(unittest.TestCase):
         data = msg(5, 0, "u", 1) + msg(6, 0, "u", 2)
         st.feed(data, [])
         self.assertTrue(bytes(st.out).startswith(data))
+
+
+    def test_tracked_fds_follow_their_messages(self):
+        st = None
+
+        def handler(o, op, p):
+            if o == 5:                                  # drop it, keeping its fd
+                taken.append(st.take_fd())
+                return []
+            return None
+        taken = []
+        st = wp.Stream(handler, count_fds=lambda o, op: 1)
+        r1, w1 = os.pipe()
+        r2, w2 = os.pipe()
+        st.feed(msg(5, 0, "u", 1) + msg(6, 0, "u", 2), [w1, w2])
+        self.assertEqual(taken, [w1])
+        self.assertEqual(st.fds, [w2])                  # the forwarded message's fd only
+        self.assertEqual([o for o, _, _ in parse(bytes(st.out))], [6])
+        st.inject(msg(7, 0, "u", 3), fds=[r2])
+        self.assertEqual((st.fds, st.out_fds), ([w2, r2], 2))
+        for fd in (r1, w1, r2, w2):
+            os.close(fd)
+
+
+DDM, DD, OFFER = 30, 31, 0xff000001
+
+
+class ClipboardTest(unittest.TestCase):
+    """The HWC's clipboard reads are answered by the proxy, never by a slow owner."""
+
+    def setUp(self):
+        self.h = h = Harness(frame=False)
+        h.c2s = h.s.c2s = wp.Stream(h.s.on_request, h.s.post_feed_c2s, count_fds=lambda o, op: int(
+            h.s.objs.get(o) == "wl_data_offer" and op == P.WL_DATA_OFFER_RECEIVE))
+        h.setup_globals()
+        h.req(msg(REG, P.WL_REGISTRY_BIND, "usun", 9, "wl_data_device_manager", 3, DDM))
+        h.req(msg(DDM, P.WL_DATA_DEVICE_MANAGER_GET_DATA_DEVICE, "no", DD, SEAT))
+
+    def offer_selection(self, offer=OFFER):
+        h = self.h
+        h.ev(msg(DD, P.WL_DATA_DEVICE_EV_DATA_OFFER, "n", offer),
+             msg(offer, P.WL_DATA_OFFER_EV_OFFER, "s", "UTF8_STRING"),
+             msg(offer, P.WL_DATA_OFFER_EV_OFFER, "s", "text/plain;charset=utf-8"),
+             msg(DD, P.WL_DATA_DEVICE_EV_SELECTION, "o", offer))
+
+    def sent_fd(self):
+        """The fd our receive sent to the compositor (as flush() would)."""
+        self.h.c2s.out_fds -= 1
+        return self.h.c2s.fds.pop(0)
+
+    def hwc_reads(self, offer=OFFER):
+        """The HWC's read_selection: returns what it reads, and how long it was blocked."""
+        r, w = os.pipe()
+        self.assertEqual(self.h.req(msg(offer, P.WL_DATA_OFFER_RECEIVE, "s", "text/plain;charset=utf-8"),
+                                    fds=[w]), [])           # answered by us, not forwarded
+        t0, data = time.monotonic(), b""
+        while True:
+            b = os.read(r, 4096)
+            if not b:
+                break
+            data += b
+        os.close(r)
+        return data, time.monotonic() - t0
+
+    def test_text_fetched_by_us_reaches_the_hwc(self):
+        self.offer_selection()
+        (o, op, p), = self.h.server_out()                  # we asked the compositor ourselves
+        self.assertEqual((o, op, args(p, "s")), (OFFER, P.WL_DATA_OFFER_RECEIVE, ["text/plain;charset=utf-8"]))
+        owner = self.sent_fd()                              # the owner writes and closes
+        os.write(owner, "olá".encode())
+        os.close(owner)
+        self.assertEqual(self.hwc_reads()[0], "olá".encode())
+
+    def test_slow_owner_does_not_block_the_hwc(self):
+        self.offer_selection()
+        self.h.server_out()
+        owner = self.sent_fd()                              # never answers
+        data, blocked = self.hwc_reads()
+        self.assertEqual(data, b"")
+        self.assertLess(blocked, wp.CLIP_WAIT + 1)
+        self.assertEqual(self.h.s.clip_stats["late"], 1)
+        os.close(owner)
+
+    def test_own_selection_answered_without_asking(self):
+        h = self.h
+        h.req(msg(DDM, P.WL_DATA_DEVICE_MANAGER_CREATE_DATA_SOURCE, "n", 40),
+              msg(DD, P.WL_DATA_DEVICE_SET_SELECTION, "ou", 40, 7))
+        self.offer_selection()
+        self.assertEqual(h.server_out(), [])
+        self.assertEqual(self.hwc_reads()[0], b"")
 
 
 class TranslatorTest(unittest.TestCase):
