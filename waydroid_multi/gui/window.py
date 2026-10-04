@@ -12,6 +12,7 @@ from .. import paths  # noqa: E402
 from ..session import desktop  # noqa: E402
 from .backend import Backend  # noqa: E402
 from .dialogs import CloneDialog, InstanceDialog  # noqa: E402
+from .pickapk import apk_dialog  # noqa: E402
 
 ACTIVE = ("RUNNING", "FROZEN")
 BUSY = ("STARTING", "STOPPING", "CLONING", "DELETING")
@@ -36,15 +37,6 @@ def describe(info):
     if info.get("index"):
         parts.append("#" + info["index"])
     parts.append(STATE_LABEL.get(info["state"], info["state"].title()))
-    if info["state"] in ACTIVE and info.get("ip"):
-        parts.append(info["ip"])
-    if info["state"] in ACTIVE and info.get("mem_used"):
-        parts.append(human_bytes(info["mem_used"]) + " RAM")
-    if info.get("width", "0") != "0":
-        size = "{}×{}".format(info["width"], info["height"])
-        if info.get("dpi", "0") != "0":
-            size += " @ {} dpi".format(info["dpi"])
-        parts.append(size)
     lim = []
     if info.get("cpus"):
         lim.append("{} CPU".format(info["cpus"]))
@@ -65,10 +57,15 @@ def _flat_button(icon, tooltip, cb):
 class BaseRow(Adw.ActionRow):
     """Status dot, spinner, start/show and stop buttons, and a ⋮ menu built on demand."""
 
-    def __init__(self, win, info):
+    def __init__(self, win, info, check=False):
         super().__init__()
         self.win = win
         self.info = info
+        if check:  # for batch actions; clicking the row toggles it too
+            self.check = Gtk.CheckButton(valign=Gtk.Align.CENTER)
+            self.check.connect("toggled", lambda *_: win.selection_changed())
+            self.add_prefix(self.check)
+            self.set_activatable_widget(self.check)
         self.dot = Gtk.Label(label="●", valign=Gtk.Align.CENTER)
         self.add_prefix(self.dot)
         self.spinner = Adw.Spinner(valign=Gtk.Align.CENTER, visible=False)
@@ -77,6 +74,13 @@ class BaseRow(Adw.ActionRow):
         self.add_suffix(self.play)
         self.stop = _flat_button("media-playback-stop-symbolic", "Stop", lambda: win.stop(self.info))
         self.add_suffix(self.stop)
+        # Disk space used, next to ⋮ so it lines up across rows; filled in by update() (instances only: the daemon measures it)
+        self.disk = Gtk.Box(spacing=4, valign=Gtk.Align.CENTER, visible=False, css_classes=["dim-label"],
+                            tooltip_text="Disk space used by this instance")
+        self.disk.append(Gtk.Image(icon_name="drive-harddisk-symbolic"))
+        self.disk_label = Gtk.Label(width_chars=6, xalign=1)
+        self.disk.append(self.disk_label)
+        self.add_suffix(self.disk)
         self.more = Gtk.MenuButton(icon_name="view-more-symbolic", valign=Gtk.Align.CENTER, tooltip_text="More")
         self.more.add_css_class("flat")
         # Rebuilt every time it opens so labels reflect the current state
@@ -100,6 +104,8 @@ class BaseRow(Adw.ActionRow):
         for c in ("success", "warning", "dim-label", "accent"):
             self.dot.remove_css_class(c)
         self.dot.add_css_class(STATE_STYLE.get(st, "accent"))
+        self.disk_label.set_label(human_bytes(info.get("disk_used")))
+        self.disk.set_visible(bool(self.disk_label.get_label()))
         busy = st in BUSY or info["id"] in self.win.busy
         self.spinner.set_visible(busy)
         self.play.set_visible(not busy)
@@ -117,10 +123,7 @@ class BaseRow(Adw.ActionRow):
 
 class InstanceRow(BaseRow):
     def __init__(self, win, info):
-        super().__init__(win, info)
-        self.check = Gtk.CheckButton(valign=Gtk.Align.CENTER, visible=False)
-        self.check.connect("toggled", lambda *_: win.selection_changed())
-        self.add_prefix(self.check)
+        super().__init__(win, info, check=True)
         self.add_action("settings", lambda: win.edit(self.info["id"]))
         self.add_action("clone", lambda: win.clone(self.info))
         self.add_action("install", lambda: win.install_apk(self.info["id"]))
@@ -143,13 +146,6 @@ class InstanceRow(BaseRow):
     def update(self, info):
         self.set_title(GLib.markup_escape_text(info["name"]))
         super().update(info)
-
-    def set_selecting(self, on):
-        self.check.set_visible(on)
-        self.dot.set_visible(not on)
-        self.set_activatable_widget(self.check if on else None)
-        if not on:
-            self.check.set_active(False)
 
 
 class StockRow(BaseRow):
@@ -191,12 +187,9 @@ class MainWindow(Adw.ApplicationWindow):
             about.append("Uninstall Waydroid Multi…", "app.uninstall")
         menu.append_section(None, about)
         header.pack_end(Gtk.MenuButton(icon_name="open-menu-symbolic", menu_model=menu, tooltip_text="Menu"))
-        self.select_btn = Gtk.ToggleButton(icon_name="selection-mode-symbolic", tooltip_text="Select instances")
-        self.select_btn.connect("toggled", lambda b: self.set_selecting(b.get_active()))
-        header.pack_end(self.select_btn)
         view.add_top_bar(header)
 
-        # Batch actions (selection mode)
+        # Batch actions on the checked instances
         self.action_bar = Gtk.ActionBar(revealed=False)
         self.select_all = Gtk.CheckButton(label="Select all")
         self.select_all.connect("toggled", self._toggle_all)
@@ -213,7 +206,6 @@ class MainWindow(Adw.ApplicationWindow):
         self.batch_start.connect("clicked", lambda *_: self.start_selected())
         self.action_bar.pack_end(self.batch_start)
         view.add_bottom_bar(self.action_bar)
-        self.selecting = False
 
         self.stack = Gtk.Stack()
         page = Adw.PreferencesPage()
@@ -275,13 +267,11 @@ class MainWindow(Adw.ApplicationWindow):
                 row.update(info)
             else:
                 row = InstanceRow(self, info)
-                row.set_selecting(self.selecting)
                 self.rows[info["id"]] = row
                 self.group.add(row)
         self.empty_row.set_visible(not self.instances)
-        self.select_btn.set_sensitive(bool(self.instances))
-        if self.selecting:
-            self.selection_changed()
+        self.action_bar.set_revealed(bool(self.instances))
+        self.selection_changed()
 
     def _update_stock(self):
         from .. import stockctl
@@ -315,15 +305,6 @@ class MainWindow(Adw.ApplicationWindow):
         self.backend.run_cli(args, done)
 
     # -- selection / batch -------------------------------------------------------
-    def set_selecting(self, on):
-        self.selecting = on
-        if self.select_btn.get_active() != on:
-            self.select_btn.set_active(on)
-        for row in self.rows.values():
-            row.set_selecting(on)
-        self.action_bar.set_revealed(on)
-        self.selection_changed()
-
     def selected(self):
         return [r.info for r in self.rows.values() if r.check.get_active()]
 
@@ -341,23 +322,21 @@ class MainWindow(Adw.ApplicationWindow):
             self.select_all.handler_unblock_by_func(self._toggle_all)
 
     def _toggle_all(self, btn):
+        on = btn.get_active()  # read once: each row's toggle re-syncs this button mid-loop
         for row in self.rows.values():
-            row.check.set_active(btn.get_active())
+            row.check.set_active(on)
 
-    def start_selected(self, interval=3):
-        """Start one instance every few seconds, like LDPlayer, to avoid a load spike."""
+    def start_selected(self):
         todo = [i for i in self.selected() if i["state"] == "STOPPED"]
-        for n, info in enumerate(todo):
-            GLib.timeout_add_seconds(n * interval, lambda info=info: (self.start_or_show(info), False)[1])
+        for info in todo:
+            self.start_or_show(info)
         if todo:
             self.toast("Starting {} instance{}…".format(len(todo), "s" if len(todo) > 1 else ""))
-        self.set_selecting(False)
 
     def stop_selected(self):
         for info in self.selected():
             if info["state"] in ACTIVE:
                 self.stop(info)
-        self.set_selecting(False)
 
     def delete_selected(self):
         sel = self.selected()
@@ -375,7 +354,6 @@ class MainWindow(Adw.ApplicationWindow):
             if resp == "delete":
                 for info in sel:
                     self._delete_now(info)
-                self.set_selecting(False)
         dlg.connect("response", respond)
         dlg.present(self)
 
@@ -386,10 +364,10 @@ class MainWindow(Adw.ApplicationWindow):
     def stop(self, info):
         self._cli(info["id"], ["stop", info["id"]], "Failed to stop " + info["name"])
 
-    def start_all(self, interval=3):
-        todo = [i for i in self.instances if i["state"] == "STOPPED"]
-        for n, info in enumerate(todo):
-            GLib.timeout_add_seconds(n * interval, lambda info=info: (self.start_or_show(info), False)[1])
+    def start_all(self):
+        for i in self.instances:
+            if i["state"] == "STOPPED":
+                self.start_or_show(i)
 
     def stop_all(self):
         for i in self.instances:
@@ -535,14 +513,6 @@ class MainWindow(Adw.ApplicationWindow):
         self.backend.run_cli(["stop", iid], lambda *_: self.backend.call("Delete", iid, ok=ok, fail=fail))
 
     def install_apk(self, iid):
-        fd = Gtk.FileDialog(title="Install APK")
-        f = Gtk.FileFilter()
-        f.set_name("Android packages")
-        f.add_pattern("*.apk")
-        filters = Gio.ListStore.new(Gtk.FileFilter)
-        filters.append(f)
-        fd.set_filters(filters)
-
         def picked(dialog, res):
             try:
                 gfile = dialog.open_finish(res)
@@ -556,7 +526,7 @@ class MainWindow(Adw.ApplicationWindow):
                 if ok:
                     self.toast("Installed {}".format(name))
             self._cli(iid, ["app", "install", iid, path], "Install failed", then=then)
-        fd.open(self, None, picked)
+        apk_dialog("Install APK").open(self, None, picked)
 
     def toggle_launcher(self, info):
         if os.path.exists(desktop.launcher_path(info["id"])):

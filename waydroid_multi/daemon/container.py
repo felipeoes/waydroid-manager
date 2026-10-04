@@ -10,6 +10,7 @@ import os
 import platform
 import pwd
 import shutil
+import threading
 import time
 
 from .. import devices, lxcconfig, paths, stock
@@ -80,6 +81,9 @@ def select_image(inst, in_use=()):
 
 
 CPUSET_LINE = "lxc.cgroup2.cpuset.cpus = "
+# Held from reading the other instances' pins to writing this one's, so parallel starts
+# see each other's picks
+_pin_lock = threading.Lock()
 
 
 def host_cpus():
@@ -240,16 +244,17 @@ def write_props(inst, session):
     bind_file(full, inst.rootfs + "/vendor/waydroid.prop")
 
 
-def start(inst, net, hosts, session_in, uid, images_in_use=(), cpus_busy=()):
+def start(inst, net, hosts, session_in, uid, images_in_use=(), cpus_busy=list):
     """Bring the container up. session_in: validated dict from the session process.
-    cpus_busy: CPUs pinned by the other running instances, one entry per pin."""
+    cpus_busy(): CPUs pinned by the other running or starting instances, one entry per pin."""
     pw = pwd.getpwuid(uid)
     images_dir = select_image(inst, images_in_use)
     ensure_dirs(inst)
     a = stock_args(inst)
     binder.ensure_binderfs(a)
     binder.ensure_nodes(a, inst.index)
-    write_lxc_config(inst, net, cpus_busy)
+    with _pin_lock:
+        write_lxc_config(inst, net, cpus_busy())
     net.ensure_up(hosts)
     set_device_permissions()
 

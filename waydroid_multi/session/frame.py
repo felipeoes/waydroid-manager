@@ -23,6 +23,7 @@ TOOLBAR = [
     ("volume_down", "audio-volume-low-symbolic"),
     None,
     ("screenshot", "camera-photo-symbolic"),
+    ("install", "package-x-generic-symbolic"),
     ("fullscreen", "view-fullscreen-symbolic"),
 ]
 SEPARATOR_H = 9
