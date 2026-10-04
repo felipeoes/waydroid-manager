@@ -61,7 +61,7 @@ names, launcher `waydroid-multi.N.desktop` and window app_id `waydroid-multi.N`.
    │
    └─ per-instance user session (session/main.py, transient user unit
       waydroid-multi-session-N.service)
-        ├─ Wayland proxy (session/wlproxy.py): window title, frame, toolbar, zoom
+        ├─ Wayland proxy (session/wlproxy.py): window title, frame, toolbar, zoom, clipboard
         └─ binder services for Android: clipboard, notifications, user monitor
 ```
 
@@ -338,7 +338,8 @@ unmounted in `container.cleanup`. Stock Waydroid must stay usable without us:
 - #0 only starts on the exact image set stock uses (`images.stock_image_id()`), so stock's data never
   boots an older Android than stock's own.
 - While #0 runs, `waydroid-container.service` is stopped and masked with `--runtime` (cleared by a
-  reboot). `cleanup` and `uninstall.sh` unmask it and restart it if it's enabled.
+  reboot). `cleanup` and `uninstall.sh` unmask it, and start it again if it was running before #0
+  (`/run/waydroid-multi/stock-was-active`).
 - #0 can't be deleted. Purge refuses while anything is mounted under the state dir.
 
 ## Stock Waydroid pitfalls
