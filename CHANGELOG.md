@@ -6,6 +6,13 @@ All notable changes to waydroid-multi are listed here. The format follows
 
 ## [Unreleased]
 
+### Added
+- Per-instance `root` setting ("Root" switch): installs Magisk Delta (root for apps) into the instance.
+- Per-instance `system_writable` setting ("Writable system" switch) to make the Android system partition writable.
+
+### Changed
+- The "Own dock icon and window title" switch is gone from the instance dialog (the `window_labels` setting remains in the CLI).
+
 ### Fixed
 - The `.deb`'s Installed-Size no longer depends on the filesystem it was built on.
 

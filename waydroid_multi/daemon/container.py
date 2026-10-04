@@ -14,7 +14,7 @@ import time
 
 from .. import devices, lxcconfig, paths, stock
 from ..instance import PROTECTED_PROP_RE, Instance
-from . import binder, images
+from . import binder, images, magisk
 from .util import (CommandError, apparmor_profile_loaded, attach, bind, bind_file, chown_tree_top,
                    is_mount, log, lxc_state, mount_image, mount_overlay, run, stage_socket, umount_tree)
 
@@ -116,22 +116,33 @@ def set_device_permissions():
             run(["chmod", "777", "-R", p], check=False)
 
 
+def sync_root(inst):
+    """Root switch: Magisk Delta in the instance's own lower layer (removed when off)."""
+    if inst.getbool("root"):
+        magisk.install(inst)
+    elif os.path.isdir(os.path.join(inst.dir, "overlay", magisk.MAGISK.lstrip("/"))):
+        magisk.remove(inst)
+
+
 def mount_rootfs(inst, images_dir):
     """system.img + overlays, vendor.img + overlays, like stock mount_rootfs."""
     rootfs = inst.rootfs
+    sync_root(inst)
     umount_tree(rootfs)
     mount_image(os.path.join(images_dir, "system.img"), rootfs)
     lowers = [os.path.join(inst.dir, "overlay")]
     if os.path.isdir(paths.STOCK_OVERLAY):
         lowers.append(paths.STOCK_OVERLAY)
     mount_overlay(lowers + [rootfs], rootfs, os.path.join(inst.dir, "overlay_rw/system"),
-                  os.path.join(inst.dir, "overlay_work/system"))
+                  os.path.join(inst.dir, "overlay_work/system"),
+                  writable=inst.getbool("system_writable"))
     mount_image(os.path.join(images_dir, "vendor.img"), rootfs + "/vendor")
     vlowers = [os.path.join(inst.dir, "overlay/vendor")]
     if os.path.isdir(paths.STOCK_OVERLAY + "/vendor"):
         vlowers.append(paths.STOCK_OVERLAY + "/vendor")
     mount_overlay(vlowers + [rootfs + "/vendor"], rootfs + "/vendor",
-                  os.path.join(inst.dir, "overlay_rw/vendor"), os.path.join(inst.dir, "overlay_work/vendor"))
+                  os.path.join(inst.dir, "overlay_rw/vendor"), os.path.join(inst.dir, "overlay_work/vendor"),
+                  writable=inst.getbool("system_writable"))
     for egl_path in ("/vendor/lib/egl", "/vendor/lib64/egl"):
         if os.path.isdir(egl_path):
             bind(egl_path, rootfs + egl_path)

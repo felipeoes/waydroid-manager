@@ -98,6 +98,16 @@ Run `waydroid-multi --help` to see all commands.
 ## Good to know
 
 - **Resolution, device model, CPU and memory** changes apply at the next start of the instance.
+- **Writable system:** the per-instance "Writable system" switch (`config set N system_writable true`,
+  then restart) lets Android change `/system` and `/vendor`, e.g. to install Magisk. Changes live in
+  the instance's `overlay_rw/` and are lost when Waydroid's images are upgraded. Turning it off keeps
+  earlier changes visible but read-only.
+- **Root:** the per-instance "Root" switch (`config set N root true`, then restart) installs
+  Magisk Delta, the build `waydroid_script` uses, so apps can get root. The first start downloads
+  it, so it needs internet. Then install the Magisk app:
+  `waydroid-multi app install N /var/lib/waydroid-multi/magisk-delta.apk`. Official Magisk does
+  not work on Waydroid (no boot image). The switch is open to the instance owner, and root in
+  Android is close to root on the host, so only enable it on machines you trust.
 - **Updating Waydroid:** run `waydroid upgrade` as usual. Instances pick up the new Android
   version the next time they start.
 - **Google Play on a clone:** a clone counts as a new device, so register it once. Run

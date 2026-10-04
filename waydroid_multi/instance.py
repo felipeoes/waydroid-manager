@@ -156,12 +156,14 @@ SETTINGS = {
     "idle_action": (_action, "freeze", "what Android idle-suspend does: freeze|stop|none"),
     "window_labels": (_bool, "true", "label windows per instance (Wayland proxy)"),
     "window_frame": (_bool, "true", "title bar, toolbar and resizing (needs window_labels)"),
+    "root": (_bool, "false", "Root: Magisk Delta in the instance (restart)"),
+    "system_writable": (_bool, "false", "Android system partition is writable (restart)"),
     "desktop_apps": (_bool, "false", "create desktop entries for this instance's apps"),
 }
 
 # Settings that only take effect at the next start
 RESTART_SETTINGS = {"width", "height", "dpi", "cpus", "cpuset", "memory", "device_model",
-                    "window_labels", "window_frame"}
+                    "window_labels", "window_frame", "system_writable", "root"}
 
 
 def setting_default(key):
