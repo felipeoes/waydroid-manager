@@ -72,7 +72,7 @@ before, you can switch to the `.deb` at any time; your instances are kept.
 | Fullscreen | toolbar button or **F11**; leave with **Esc** or **F11** |
 | Android buttons | ◁ Back, ○ Home, □ Recents, volume up/down |
 | Screenshot | toolbar camera button, saved to `~/Pictures/Waydroid/<instance name>` |
-| Install APK | toolbar package button, then pick an `.apk` |
+| Install APK | toolbar **APK** button, then pick an `.apk` |
 
 Closing the window stops the instance after asking you to confirm. In its Settings you can
 make closing pause it or keep it running instead.

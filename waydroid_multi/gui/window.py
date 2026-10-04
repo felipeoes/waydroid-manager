@@ -24,12 +24,11 @@ STOCK = {"id": "default", "name": "Stock Waydroid"}
 UNINSTALL_SCRIPT = os.path.join(os.path.dirname(paths.PKG_DIR), "uninstall.sh")
 
 
-def human_bytes(n):
+def gigabytes(n):
     try:
-        n = int(n)
+        return "{:.1f} GB".format(int(n) / 1024 ** 3)
     except (TypeError, ValueError):
         return ""
-    return "{:.1f} GB".format(n / 1024 ** 3) if n >= 1024 ** 3 else "{} MB".format(n // 1024 ** 2)
 
 
 def describe(info):
@@ -104,7 +103,7 @@ class BaseRow(Adw.ActionRow):
         for c in ("success", "warning", "dim-label", "accent"):
             self.dot.remove_css_class(c)
         self.dot.add_css_class(STATE_STYLE.get(st, "accent"))
-        self.disk_label.set_label(human_bytes(info.get("disk_used")))
+        self.disk_label.set_label(gigabytes(info.get("disk_used")))
         self.disk.set_visible(bool(self.disk_label.get_label()))
         busy = st in BUSY or info["id"] in self.win.busy
         self.spinner.set_visible(busy)
@@ -189,23 +188,6 @@ class MainWindow(Adw.ApplicationWindow):
         header.pack_end(Gtk.MenuButton(icon_name="open-menu-symbolic", menu_model=menu, tooltip_text="Menu"))
         view.add_top_bar(header)
 
-        # Batch actions on the checked instances
-        self.action_bar = Gtk.ActionBar(revealed=False)
-        self.select_all = Gtk.CheckButton(label="Select all")
-        self.select_all.connect("toggled", self._toggle_all)
-        self.action_bar.pack_start(self.select_all)
-        self.sel_label = Gtk.Label(css_classes=["dim-label"])
-        self.action_bar.set_center_widget(self.sel_label)
-        self.batch_delete = Gtk.Button(label="Delete", css_classes=["destructive-action"])
-        self.batch_delete.connect("clicked", lambda *_: self.delete_selected())
-        self.action_bar.pack_end(self.batch_delete)
-        self.batch_stop = Gtk.Button(label="Stop")
-        self.batch_stop.connect("clicked", lambda *_: self.stop_selected())
-        self.action_bar.pack_end(self.batch_stop)
-        self.batch_start = Gtk.Button(label="Start", css_classes=["suggested-action"])
-        self.batch_start.connect("clicked", lambda *_: self.start_selected())
-        self.action_bar.pack_end(self.batch_start)
-        view.add_bottom_bar(self.action_bar)
 
         self.stack = Gtk.Stack()
         page = Adw.PreferencesPage()
@@ -220,6 +202,22 @@ class MainWindow(Adw.ApplicationWindow):
         new_btn.connect("clicked", lambda *_: self.new_instance())
         self.group.set_header_suffix(new_btn)
         page.add(self.group)
+        # Batch actions on the checked instances: the list's first row, its checkbox in line with
+        # theirs (an invisible dot stands in for the status dot)
+        self.batch_row = Adw.ActionRow(title="Select all", visible=False)
+        self.select_all = Gtk.CheckButton(valign=Gtk.Align.CENTER)
+        self.select_all.connect("toggled", self._toggle_all)
+        self.batch_row.add_prefix(self.select_all)
+        self.batch_row.add_prefix(Gtk.Label(label="●", valign=Gtk.Align.CENTER, opacity=0))
+        self.batch_row.set_activatable_widget(self.select_all)
+        for attr, label, style, cb in (("batch_start", "Start", "suggested-action", self.start_selected),
+                                       ("batch_stop", "Stop", None, self.stop_selected),
+                                       ("batch_delete", "Delete", "destructive-action", self.delete_selected)):
+            b = Gtk.Button(label=label, valign=Gtk.Align.CENTER, css_classes=[style] if style else [])
+            b.connect("clicked", lambda _b, cb=cb: cb())
+            self.batch_row.add_suffix(b)
+            setattr(self, attr, b)
+        self.group.add(self.batch_row)
         self.empty_row = Adw.ActionRow(title="No instances yet",
                                        subtitle="Create one to run another Android next to stock Waydroid")
         new_btn = Gtk.Button(label="New Instance", valign=Gtk.Align.CENTER, css_classes=["suggested-action"])
@@ -270,7 +268,7 @@ class MainWindow(Adw.ApplicationWindow):
                 self.rows[info["id"]] = row
                 self.group.add(row)
         self.empty_row.set_visible(not self.instances)
-        self.action_bar.set_revealed(bool(self.instances))
+        self.batch_row.set_visible(bool(self.instances))
         self.selection_changed()
 
     def _update_stock(self):
@@ -311,7 +309,7 @@ class MainWindow(Adw.ApplicationWindow):
     def selection_changed(self):
         sel = self.selected()
         n = len(sel)
-        self.sel_label.set_label("{} selected".format(n) if n else "Select instances")
+        self.batch_row.set_subtitle("{} selected".format(n) if n else "")
         self.batch_start.set_sensitive(any(i["state"] == "STOPPED" for i in sel))
         self.batch_stop.set_sensitive(any(i["state"] in ACTIVE for i in sel))
         self.batch_delete.set_sensitive(n > 0)

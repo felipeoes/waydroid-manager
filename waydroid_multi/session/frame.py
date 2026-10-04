@@ -12,7 +12,7 @@ TOOLBAR_W = 40
 BUTTON_H = 36
 BORDER = 8            # invisible resize border around the window
 
-# (action, icon name, tooltip)
+# (action, icon name); None = drawn here
 TITLE_BUTTONS = [("minimize", "window-minimize-symbolic"), ("close", "window-close-symbolic")]
 TOOLBAR = [
     ("back", "go-previous-symbolic"),
@@ -23,9 +23,12 @@ TOOLBAR = [
     ("volume_down", "audio-volume-low-symbolic"),
     None,
     ("screenshot", "camera-photo-symbolic"),
-    ("install", "package-x-generic-symbolic"),
+    ("install", None),
     ("fullscreen", "view-fullscreen-symbolic"),
 ]
+TOOLTIPS = {"back": "Back", "home": "Home", "recents": "Recent apps", "volume_up": "Volume up",
+            "volume_down": "Volume down", "screenshot": "Screenshot", "install": "Install APK",
+            "fullscreen": "Fullscreen (F11)"}
 SEPARATOR_H = 9
 GRIP_H = 24
 
@@ -215,6 +218,9 @@ def render_toolbar(height, scale, theme="dark", hover=None, pressed=None, fullsc
         if action in ("back", "home", "recents"):
             _draw_nav(cr, action, w / 2, cy, t["fg"])
             continue
+        if action == "install":
+            _draw_apk(cr, w / 2, cy, t["fg"])
+            continue
         name = icons[action]
         if action == "fullscreen" and fullscreen:
             name = "view-restore-symbolic"
@@ -238,6 +244,52 @@ def _draw_nav(cr, action, cx, cy, rgba):
     else:
         _rounded(cr, cx - 6, cy - 6, 12, 12, 1.5)
     cr.stroke()
+
+
+def _draw_apk(cr, cx, cy, rgba):
+    """Install APK: "APK" in an outlined box."""
+    cr.set_source_rgba(*rgba)
+    cr.set_line_width(1.4)
+    _rounded(cr, cx - 11, cy - 7, 22, 14, 2.5)
+    cr.stroke()
+    _text(cr, "APK", cx, cy, 7.5, bold=True)
+
+
+def _text(cr, text, cx, cy, size, bold=False):
+    """Text centred on (cx, cy), in the current source colour."""
+    import cairo
+    cr.select_font_face("Sans", cairo.FONT_SLANT_NORMAL, cairo.FONT_WEIGHT_BOLD if bold else cairo.FONT_WEIGHT_NORMAL)
+    cr.set_font_size(size)
+    e = cr.text_extents(text)
+    cr.move_to(cx - e.x_bearing - e.width / 2, cy - e.y_bearing - e.height / 2)
+    cr.show_text(text)
+
+
+# -- tooltip ------------------------------------------------------------------------
+
+TIP_FONT = 12
+TIP_PAD_X, TIP_PAD_Y = 8, 6
+
+
+def tooltip_size(text):
+    import cairo
+    cr = cairo.Context(cairo.ImageSurface(cairo.FORMAT_ARGB32, 1, 1))
+    cr.select_font_face("Sans")
+    cr.set_font_size(TIP_FONT)
+    fe = cr.font_extents()
+    return int(cr.text_extents(text).x_advance + 2 * TIP_PAD_X + 0.99), int(fe[0] + fe[1] + 2 * TIP_PAD_Y + 0.99)
+
+
+def render_tooltip(text, scale):
+    """A hovered toolbar button's label, dark like GNOME's tooltips in either theme."""
+    w, h = tooltip_size(text)
+    surf, cr = _surface(w, h, scale)
+    cr.set_source_rgba(0.1, 0.1, 0.1, 0.92)
+    _rounded(cr, 0, 0, w, h, 6)
+    cr.fill()
+    cr.set_source_rgba(1, 1, 1, 1)
+    _text(cr, text, w / 2, h / 2, TIP_FONT)
+    return _finish(surf)
 
 
 def _rounded(cr, x, y, w, h, r):

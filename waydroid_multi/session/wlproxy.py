@@ -12,7 +12,7 @@ It gives every instance window an identity and a frame:
   sizes are hidden from it (any real size triggers an Android display hotplug).
 * **Frame** (full-UI window only): a title bar (move, minimize, close), an
   attached side toolbar (Back, Home, Recents, volume, screenshot,
-  Install APK, fullscreen) and an invisible resize border. These are proxy-owned
+  Install APK, fullscreen) with tooltips, and an invisible resize border. These are proxy-owned
   subsurfaces; events for them are never forwarded to the HWC, which aborts on
   unknown object ids.
 
@@ -436,6 +436,8 @@ class Session:
         self.hover = {}          # our surface kind -> hovered action
         self.pressed = None      # (surface kind, action)
         self.last_title_click = 0.0
+        self.tip_due = None      # (monotonic time, toolbar action) to show a tooltip at
+        self.tip_shown = None    # toolbar action whose tooltip is up
         self.cursor_dev = None
         self.pings = {}           # serial -> time the compositor pinged
         self.ping_stats = {"pings": 0, "pongs": 0, "max_latency": 0.0, "last_latency": 0.0}
@@ -1146,16 +1148,17 @@ class Session:
         if not w:
             return
         if w.frame:
-            for key in ("title_sub", "toolbar_sub", "border_sub", "border_vp"):
+            for key in ("tip_sub", "title_sub", "toolbar_sub", "border_sub", "border_vp"):
                 oid = w.frame.get(key)
                 if oid:
                     op = P.WL_SUBSURFACE_DESTROY if key.endswith("_sub") else P.WP_VIEWPORT_DESTROY
                     self.to_server(msg(oid, op))
-            for key in ("title", "toolbar", "border"):
+            for key in ("tip", "title", "toolbar", "border"):
                 oid = w.frame.get(key)
                 if oid:
                     self.to_server(msg(oid, P.WL_SURFACE_DESTROY))
         self.window = None
+        self.tip_due = self.tip_shown = None
 
     def _forget_surface(self, sid):
         s = self.surfaces.pop(sid, None)
@@ -1221,6 +1224,17 @@ class Session:
         self.to_server(msg(f["border_sub"], P.WL_SUBSURFACE_SET_DESYNC))
         f["border_vp"] = self.new_id("viewport")
         self.to_server(msg(vp, P.WP_VIEWPORTER_GET_VIEWPORT, "no", f["border_vp"], f["border"]))
+        # Tooltip: a child of the toolbar (whose commits we control: subsurface positions are
+        # parent state), left of it over the picture, with an empty input region so clicks
+        # and hover go through to whatever is below
+        f["tip"], f["tip_sub"] = self.new_id("surface_tip"), self.new_id("subsurface")
+        self.to_server(msg(comp, P.WL_COMPOSITOR_CREATE_SURFACE, "n", f["tip"]))
+        self.to_server(msg(subc, P.WL_SUBCOMPOSITOR_GET_SUBSURFACE, "noo", f["tip_sub"], f["tip"], f["toolbar"]))
+        self.to_server(msg(f["tip_sub"], P.WL_SUBSURFACE_SET_DESYNC))
+        region = self.new_id("region")
+        self.to_server(msg(comp, P.WL_COMPOSITOR_CREATE_REGION, "n", region))
+        self.to_server(msg(f["tip"], P.WL_SURFACE_SET_INPUT_REGION, "o", region))
+        self.to_server(msg(region, P.WL_REGION_DESTROY))
         f["sizes"] = {}
         w.frame = f
         self.surface_kinds = {f["title"]: "title", f["toolbar"]: "toolbar", f["border"]: "border"}
@@ -1236,6 +1250,7 @@ class Session:
         hidden = w.fullscreen or not self.cfg.frame
         b, t, m = fr.TOOLBAR_W, fr.TITLE_H, fr.BORDER
         if hidden:
+            self._tip(None)
             for kind in ("title", "toolbar", "border"):
                 if f["sizes"].get(kind) != "hidden":
                     out.append(msg(f[kind], P.WL_SURFACE_ATTACH, "oii", 0, 0, 0))
@@ -1277,6 +1292,11 @@ class Session:
         else:
             data, pw, ph, stride = fr.render_toolbar(size[1], scale, self.cfg.theme, hover, pressed,
                                                      fullscreen=w.fullscreen)
+        self._attach(f[kind], data, pw, ph, stride, scale)
+        return []
+
+    def _attach(self, sid, data, pw, ph, stride, scale):
+        """Show pixels on one of our surfaces, through a fresh shm buffer."""
         shm = self.my_globals.get("wl_shm")
         fd = os.memfd_create("wdm-frame", os.MFD_CLOEXEC)
         os.write(fd, data)
@@ -1287,12 +1307,59 @@ class Session:
         self.to_server(msg(shm, P.WL_SHM_CREATE_POOL, "ni", pool, len(data)), fds=[fd])
         for m in (msg(pool, P.WL_SHM_POOL_CREATE_BUFFER, "niiiiu", buf, 0, pw, ph, stride, P.WL_SHM_FORMAT_ARGB8888),
                   msg(pool, P.WL_SHM_POOL_DESTROY),
-                  msg(f[kind], P.WL_SURFACE_SET_BUFFER_SCALE, "i", scale),
-                  msg(f[kind], P.WL_SURFACE_ATTACH, "oii", buf, 0, 0),
-                  msg(f[kind], P.WL_SURFACE_DAMAGE, "iiii", 0, 0, FULL_DAMAGE, FULL_DAMAGE),
-                  msg(f[kind], P.WL_SURFACE_COMMIT)):
+                  msg(sid, P.WL_SURFACE_SET_BUFFER_SCALE, "i", scale),
+                  msg(sid, P.WL_SURFACE_ATTACH, "oii", buf, 0, 0),
+                  msg(sid, P.WL_SURFACE_DAMAGE, "iiii", 0, 0, FULL_DAMAGE, FULL_DAMAGE),
+                  msg(sid, P.WL_SURFACE_COMMIT)):
             self.to_server(m)
-        return []
+
+    # -- toolbar tooltips ---------------------------------------------------------------
+    TIP_DELAY = 0.5
+
+    def _tip(self, action):
+        """Hovered toolbar button changed: tooltip after a short delay, or at once when one is
+        already up (moving along the toolbar), like GTK."""
+        if action == self.tip_shown:
+            return
+        showing = self.tip_shown
+        if showing:
+            self._hide_tip()
+        self.tip_due = None
+        if action in fr.TOOLTIPS:
+            if showing:
+                self._show_tip(action)
+            else:
+                self.tip_due = (time.monotonic() + self.TIP_DELAY, action)
+
+    def tick(self):
+        """From the main loop: show a tooltip whose delay has passed. True if messages were queued."""
+        if not self.tip_due or time.monotonic() < self.tip_due[0]:
+            return False
+        action, self.tip_due = self.tip_due[1], None
+        return self._show_tip(action)
+
+    def _show_tip(self, action):
+        f = self.window.frame if self.window else None
+        size = f and f["sizes"].get("toolbar")
+        span = [(y0, y1) for a, y0, y1 in fr.toolbar_layout(size[1])
+                if a == action] if size and size != "hidden" else []
+        if not span:
+            return False
+        text = fr.TOOLTIPS[action]
+        w, h = fr.tooltip_size(text)
+        scale = self._out_scale()
+        self.to_server(msg(f["tip_sub"], P.WL_SUBSURFACE_SET_POSITION, "ii", -w - 6, (sum(span[0]) - h) // 2))
+        self.to_server(msg(f["toolbar"], P.WL_SURFACE_COMMIT))     # applies the position
+        self._attach(f["tip"], *fr.render_tooltip(text, scale), scale)
+        self.tip_shown = action
+        return True
+
+    def _hide_tip(self):
+        f = self.window.frame if self.window else None
+        if f:
+            self.to_server(msg(f["tip"], P.WL_SURFACE_ATTACH, "oii", 0, 0, 0))
+            self.to_server(msg(f["tip"], P.WL_SURFACE_COMMIT))
+        self.tip_shown = None
 
     def _border_messages(self, bw, bh):
         f = self.window.frame
@@ -1354,9 +1421,13 @@ class Session:
         if self.hover.get(kind) != action:
             self.hover[kind] = action
             self._redraw(kind)
+            if kind == "toolbar":
+                self._tip(action)
 
     def _frame_leave(self, sid):
         kind = getattr(self, "surface_kinds", {}).get(sid)
+        if kind == "toolbar":
+            self._tip(None)
         if kind and self.hover.get(kind):
             self.hover[kind] = None
             if kind != "border":
@@ -1390,6 +1461,7 @@ class Session:
                                    P.RESIZE_EDGE["bottom_right"]))
             return
         if pressed:
+            self._tip(None)
             self.pressed = (kind, action)
             self._redraw(kind)
             return
@@ -1653,11 +1725,15 @@ class Proxy:
             self.bind()
         self.emit("ready")
         while True:
-            for key, mask in self.sel.select():
+            due = [c.session.tip_due[0] for c in self.conns if c.session.tip_due]
+            for key, mask in self.sel.select(max(0.0, min(due) - time.monotonic()) if due else None):
                 if key.data is None:
                     self.accept()
                 else:
                     key.data.on_event(key.fileobj, mask)
+            for c in list(self.conns):
+                if c.session.tick():
+                    c.pump()
 
 
 def main(argv=None):
