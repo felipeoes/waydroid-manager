@@ -271,6 +271,8 @@ class InstanceDialog(_Dialog):
             _, w, h, dpi = self.presets[self.res_row.get_selected()]
         v["width"], v["height"], v["dpi"] = str(w), str(h), str(dpi)
         v["window_frame"] = "true" if self.frame_row.get_active() else "false"
+        if self.frame_row.get_active():
+            v["window_labels"] = "true"  # the frame needs it; it has no row of its own
         key = self.dev_keys[self.device_row.get_selected()]
         v["device_model"] = key
         if key == "custom":

@@ -420,6 +420,9 @@ class Manager(dbus.service.Object):
                 container.ensure_dirs(inst)
                 if src_data:
                     storage.copy_data(src_data, inst.data_dir)
+                    if clone_from != "default":  # the source's own /system and /vendor changes
+                        storage.copy_data(os.path.join(paths.instance_dir(clone_from), "overlay_rw"),
+                                          os.path.join(inst.dir, "overlay_rw"))
                     pw = pwd.getpwuid(uid)
                     os.chown(inst.data_dir, uid, pw.pw_gid, follow_symlinks=False)
                     if reset_ids:

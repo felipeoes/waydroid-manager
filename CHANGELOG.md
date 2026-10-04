@@ -11,7 +11,7 @@ All notable changes to waydroid-multi are listed here. The format follows
 - Per-instance `system_writable` setting ("Writable system" switch) to make the Android system partition writable.
 
 ### Changed
-- The "Own dock icon and window title" switch is gone from the instance dialog (the `window_labels` setting remains in the CLI).
+- The "Own dock icon and window title" switch is gone from the instance dialog (the `window_labels` setting remains in the CLI; turning on "Title bar and toolbar" turns it back on).
 
 ### Fixed
 - The `.deb`'s Installed-Size no longer depends on the filesystem it was built on.
