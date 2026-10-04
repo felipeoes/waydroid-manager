@@ -198,8 +198,9 @@ which Android reads last.
   (`ro.debuggable`, `ro.secure`, `ro.adb.*`, `service.adb.*`, `ro.boot.*`, …; `PROTECTED_PROP_RE`
   in `instance.py`) still can only be set by root and are filtered when props are written.
 - **Everything below a user's home, and everything inside a container, is hostile.**
-  - Clone from stock opens `~/.local/share/waydroid/data` one step at a time with `O_NOFOLLOW`
-    and copies through `/proc/<pid>/fd/N`.
+  - `storage.open_stock_data` opens `~/.local/share/waydroid/data` one step at a time with
+    `O_NOFOLLOW`. Clone from stock copies through `/proc/<pid>/fd/N`, and #0 bind-mounts it onto
+    the root-owned `instances/0/data`, so LXC never resolves a user path.
   - Files inside a running container are opened with `util.open_in_container`, which never
     follows symlinks. Without it, an absolute link planted inside the container would resolve
     on the host.
@@ -325,6 +326,20 @@ Versions follow [Semantic Versioning](https://semver.org/). Releases are publish
    GitHub would show `dev` as one commit "behind". Open a PR `main` → `dev` (or merge
    `origin/main` into a branch from `dev`) and merge it with **"Create a merge commit"**. It
    changes no files. Afterwards `dev` is only ever ahead of `main`.
+
+### Instance #0 (stock Waydroid's data)
+
+#0 is an ordinary instance (`instances/0/`, container `wdm-0`, MAC `…:ff:00` since `…:00:00` is
+the bridge's), created on the first `List` by a user who has stock data. Its `data/` is the
+owner's stock data dir, bind-mounted in place at start (`container.mount_stock_data`) and
+unmounted in `container.cleanup`. Stock Waydroid must stay usable without us:
+
+- Its data is never copied, chowned or identity-reset, and nothing under `/var/lib/waydroid` is written.
+- #0 only starts on the exact image set stock uses (`images.stock_image_id()`), so stock's data never
+  boots an older Android than stock's own.
+- While #0 runs, `waydroid-container.service` is stopped and masked with `--runtime` (cleared by a
+  reboot). `cleanup` and `uninstall.sh` unmask it and restart it if it's enabled.
+- #0 can't be deleted. Purge refuses while anything is mounted under the state dir.
 
 ## Stock Waydroid pitfalls
 

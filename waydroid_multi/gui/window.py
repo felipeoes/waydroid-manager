@@ -19,7 +19,6 @@ BUSY = ("STARTING", "STOPPING", "CLONING", "DELETING")
 STATE_STYLE = {"RUNNING": "success", "FROZEN": "warning", "STOPPED": "dim-label"}
 STATE_LABEL = {"RUNNING": "Running", "FROZEN": "Paused", "STOPPED": "Stopped", "STARTING": "Starting…",
                "STOPPING": "Stopping…", "CLONING": "Cloning…", "DELETING": "Deleting…"}
-STOCK = {"id": "default", "name": "Stock Waydroid"}
 # install.sh puts the uninstaller next to the package (PREFIX/lib/waydroid-multi/)
 UNINSTALL_SCRIPT = os.path.join(os.path.dirname(paths.PKG_DIR), "uninstall.sh")
 
@@ -60,6 +59,7 @@ class BaseRow(Adw.ActionRow):
         super().__init__()
         self.win = win
         self.info = info
+        self.check = None
         if check:  # for batch actions; clicking the row toggles it too
             self.check = Gtk.CheckButton(valign=Gtk.Align.CENTER)
             self.check.connect("toggled", lambda *_: win.selection_changed())
@@ -122,7 +122,8 @@ class BaseRow(Adw.ActionRow):
 
 class InstanceRow(BaseRow):
     def __init__(self, win, info):
-        super().__init__(win, info, check=True)
+        # #0 (stock Waydroid) can't be deleted, so it stays out of the batch selection
+        super().__init__(win, info, check=info["id"] != "0")
         self.add_action("settings", lambda: win.edit(self.info["id"]))
         self.add_action("clone", lambda: win.clone(self.info))
         self.add_action("install", lambda: win.install_apk(self.info["id"]))
@@ -137,6 +138,8 @@ class InstanceRow(BaseRow):
         m.append("Install APK…", "row.install")
         has = os.path.exists(desktop.launcher_path(self.info["id"]))
         m.append("Remove from app grid" if has else "Add to app grid", "row.launcher")
+        if self.info["id"] == "0":
+            return m
         danger = Gio.Menu()
         danger.append("Delete…", "row.delete")
         m.append_section(None, danger)
@@ -145,24 +148,6 @@ class InstanceRow(BaseRow):
     def update(self, info):
         self.set_title(GLib.markup_escape_text(info["name"]))
         super().update(info)
-
-
-class StockRow(BaseRow):
-    """The stock Waydroid instance, controlled through Waydroid's own CLI."""
-
-    def __init__(self, win):
-        super().__init__(win, dict(STOCK, state="STOPPED"))
-        self.set_title("Stock Waydroid")
-        self.add_action("clone", lambda: win.clone(self.info))
-        self.update(self.info)
-
-    def menu(self):
-        m = Gio.Menu()
-        m.append("Clone…", "row.clone")
-        return m
-
-    def subtitle(self):
-        return "#0 · {} · default instance, managed by Waydroid".format(STATE_LABEL.get(self.info["state"], "Stopped"))
 
 
 class MainWindow(Adw.ApplicationWindow):
@@ -192,10 +177,8 @@ class MainWindow(Adw.ApplicationWindow):
         self.stack = Gtk.Stack()
         page = Adw.PreferencesPage()
         # Default (stock Waydroid, #0) first, then the instances
-        stock = Adw.PreferencesGroup(title="Default")
-        self.stock_row = StockRow(self)
-        stock.add(self.stock_row)
-        page.add(stock)
+        self.stock_group = Adw.PreferencesGroup(title="Default", visible=False)
+        page.add(self.stock_group)
         self.group = Adw.PreferencesGroup(title="Instances")
         new_btn = Gtk.Button(child=Adw.ButtonContent(icon_name="list-add-symbolic", label="New Instance"),
                              valign=Gtk.Align.CENTER, css_classes=["flat"])
@@ -247,18 +230,18 @@ class MainWindow(Adw.ApplicationWindow):
     def refresh(self):
         self.backend.call("List", ok=self._got_list, fail=lambda m: self.stack.set_visible_child_name("error"),
                           timeout=30)
-        self._update_stock()
 
     def _got_list(self, items):
         self.stack.set_visible_child_name("list")
         self.instances = sorted(items, key=lambda i: int(i["index"]))
+        others = [i for i in self.instances if i["id"] != "0"]
         if not getattr(self, "_launchers_cleaned", False):
             desktop.cleanup_launchers([i["id"] for i in self.instances])
             self._launchers_cleaned = True
         ids = {i["id"] for i in self.instances}
         for iid in list(self.rows):
             if iid not in ids:
-                self.group.remove(self.rows.pop(iid))
+                (self.stock_group if iid == "0" else self.group).remove(self.rows.pop(iid))
         for info in self.instances:
             row = self.rows.get(info["id"])
             if row:
@@ -266,15 +249,11 @@ class MainWindow(Adw.ApplicationWindow):
             else:
                 row = InstanceRow(self, info)
                 self.rows[info["id"]] = row
-                self.group.add(row)
-        self.empty_row.set_visible(not self.instances)
-        self.batch_row.set_visible(bool(self.instances))
+                (self.stock_group if info["id"] == "0" else self.group).add(row)
+        self.stock_group.set_visible("0" in ids)
+        self.empty_row.set_visible(not others)
+        self.batch_row.set_visible(bool(others))
         self.selection_changed()
-
-    def _update_stock(self):
-        from .. import stockctl
-        if "default" not in self.busy:
-            self.stock_row.update(dict(STOCK, state=stockctl.state()))
 
     def toast(self, msg, timeout=4):
         t = Adw.Toast(title=GLib.markup_escape_text(msg))
@@ -282,7 +261,7 @@ class MainWindow(Adw.ApplicationWindow):
         self.toasts.add_toast(t)
 
     def row_for(self, iid):
-        return self.stock_row if iid == "default" else self.rows.get(iid)
+        return self.rows.get(iid)
 
     def set_busy(self, iid, on):
         (self.busy.add if on else self.busy.discard)(iid)
@@ -304,7 +283,10 @@ class MainWindow(Adw.ApplicationWindow):
 
     # -- selection / batch -------------------------------------------------------
     def selected(self):
-        return [r.info for r in self.rows.values() if r.check.get_active()]
+        return [r.info for r in self.checkable() if r.check.get_active()]
+
+    def checkable(self):
+        return [r for r in self.rows.values() if r.check]
 
     def selection_changed(self):
         sel = self.selected()
@@ -313,7 +295,7 @@ class MainWindow(Adw.ApplicationWindow):
         self.batch_start.set_sensitive(any(i["state"] == "STOPPED" for i in sel))
         self.batch_stop.set_sensitive(any(i["state"] in ACTIVE for i in sel))
         self.batch_delete.set_sensitive(n > 0)
-        all_on = bool(self.rows) and n == len(self.rows)
+        all_on = bool(self.checkable()) and n == len(self.checkable())
         if self.select_all.get_active() != all_on:
             self.select_all.handler_block_by_func(self._toggle_all)
             self.select_all.set_active(all_on)
@@ -321,7 +303,7 @@ class MainWindow(Adw.ApplicationWindow):
 
     def _toggle_all(self, btn):
         on = btn.get_active()  # read once: each row's toggle re-syncs this button mid-loop
-        for row in self.rows.values():
+        for row in self.checkable():
             row.check.set_active(on)
 
     def start_selected(self):
@@ -405,7 +387,7 @@ class MainWindow(Adw.ApplicationWindow):
                 self.refresh()
             self.backend.call("Create", values, ok=done, fail=self.toast)
 
-        if source["state"] in ACTIVE:
+        if source["state"] in ACTIVE or source["id"] == "0":  # 'stop 0' also stops stock Waydroid itself
             self._cli(source["id"], ["stop", source["id"]], "Could not stop " + source["name"], then=do_clone)
         else:
             do_clone()

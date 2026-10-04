@@ -13,10 +13,10 @@ import shutil
 import threading
 import time
 
-from .. import devices, lxcconfig, paths, stock
+from .. import devices, lxcconfig, paths, stock, stockctl
 from ..instance import PROTECTED_PROP_RE, Instance
-from . import binder, images, magisk
-from .util import (CommandError, apparmor_profile_loaded, attach, bind, bind_file, chown_tree_top,
+from . import binder, images, magisk, storage
+from .util import (CommandError, apparmor_profile_loaded, attach, bind, bind_file, bind_mount, chown_tree_top,
                    is_mount, log, lxc_state, mount_image, mount_overlay, run, stage_socket, umount_tree)
 
 DEVICE_NODES = [
@@ -38,6 +38,39 @@ def stock_args(inst, config=None):
         BINDER_DRIVER=w["binder"], VNDBINDER_DRIVER=w["vndbinder"], HWBINDER_DRIVER=w["hwbinder"],
         BINDER_PROTOCOL=w.get("binder_protocol"), SERVICE_MANAGER_PROTOCOL=w.get("service_manager_protocol"),
     )
+
+
+STOCK_UNIT = "waydroid-container.service"
+
+
+def _stock_stopped():
+    if stockctl.container_state() != "STOPPED":
+        raise RuntimeError("stock Waydroid is running; stop it first ('waydroid session stop')")
+
+
+def mount_stock_data(inst):
+    """#0 runs on stock Waydroid's own data, bind-mounted in place (never copied or
+    changed by us). Stock's container service is masked until #0 stops, so stock
+    Waydroid can't boot the same data alongside it; the mask is --runtime, so a
+    reboot clears it even if we never get to."""
+    run(["systemctl", "mask", "--runtime", STOCK_UNIT])
+    run(["systemctl", "stop", STOCK_UNIT], check=False)
+    _stock_stopped()  # also catches a start between start()'s check and the mask
+    umount_tree(inst.data_dir)
+    fd = storage.open_stock_data(inst.owner_uid)
+    try:
+        bind_mount("/proc/self/fd/{}".format(fd), inst.data_dir)
+    finally:
+        os.close(fd)
+
+
+def release_stock():
+    """Undo mount_stock_data's mask (only if it is ours) and restart stock's service."""
+    if run(["systemctl", "is-enabled", STOCK_UNIT], check=False).stdout.strip() != "masked-runtime":
+        return
+    run(["systemctl", "unmask", "--runtime", STOCK_UNIT], check=False)
+    if run(["systemctl", "is-enabled", STOCK_UNIT], check=False).stdout.strip() == "enabled":
+        run(["systemctl", "start", STOCK_UNIT], check=False)
 
 
 def ensure_dirs(inst):
@@ -248,7 +281,12 @@ def start(inst, net, hosts, session_in, uid, images_in_use=(), cpus_busy=list):
     """Bring the container up. session_in: validated dict from the session process.
     cpus_busy(): CPUs pinned by the other running or starting instances, one entry per pin."""
     pw = pwd.getpwuid(uid)
+    if inst.index == 0:
+        _stock_stopped()
     images_dir = select_image(inst, images_in_use)
+    if inst.index == 0 and inst.image_id != images.stock_image_id():
+        # stock's data must never boot an older Android than stock's own
+        raise RuntimeError("stock Waydroid's images are changing; try again in a minute")
     ensure_dirs(inst)
     a = stock_args(inst)
     binder.ensure_binderfs(a)
@@ -276,6 +314,8 @@ def start(inst, net, hosts, session_in, uid, images_in_use=(), cpus_busy=list):
            lxcconfig.session_entries(wl, pulse, inst.data_dir))
 
     try:
+        if inst.index == 0:
+            mount_stock_data(inst)
         mount_rootfs(inst, images_dir)
         detect_protocols(inst)
         session = {
@@ -309,6 +349,9 @@ def cleanup(inst):
     """Unmount everything belonging to a stopped instance."""
     umount_tree(inst.rootfs)
     umount_tree(paths.staging_dir(inst.id))
+    if inst.index == 0:
+        umount_tree(inst.data_dir)
+        release_stock()
 
 
 def freeze(inst):

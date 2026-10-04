@@ -1,16 +1,14 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
-"""Control the stock ("default") Waydroid instance through its own CLI.
+"""Stock Waydroid's own runtime, which shares its data with instance #0.
 
-Handles the state stock Waydroid itself gets stuck in when Android is shut
-down from inside: the session process stays alive while the container is
-STOPPED, and ``waydroid show-full-ui`` then waits forever for Android.
+Only one of them may run at a time: callers stop stock Waydroid before #0
+starts or is cloned.
 """
 import os
-import shutil
 import subprocess
 import time
 
-UNIT = "waydroid-multi-stock-ui.service"
+UNIT = "waydroid-multi-stock-ui.service"  # started by 0.2 and older
 
 
 CGROUP = "/sys/fs/cgroup/lxc.payload.waydroid"
@@ -53,6 +51,7 @@ def state():
 def stop(timeout=60):
     subprocess.run(["waydroid", "session", "stop"], capture_output=True, timeout=timeout)
     subprocess.run(["systemctl", "--user", "stop", UNIT], capture_output=True)
+    _wait(lambda: container_state() == "STOPPED", 30)
 
 
 def _wait(cond, timeout):
@@ -62,31 +61,3 @@ def _wait(cond, timeout):
             return True
         time.sleep(1)
     return False
-
-
-def start_or_show(timeout=90):
-    """Show the stock window, starting (or un-wedging) stock Waydroid if needed."""
-    st = status()
-    if st["session"] == "RUNNING" and st["container"] not in ("RUNNING", "FROZEN"):
-        # Stale session (Android was powered off): clear it before starting again
-        stop()
-        _wait(lambda: status()["session"] != "RUNNING", 30)
-        st = status()
-    if st["container"] in ("RUNNING", "FROZEN"):
-        subprocess.Popen(["waydroid", "show-full-ui"], stdout=subprocess.DEVNULL,
-                         stderr=subprocess.DEVNULL, stdin=subprocess.DEVNULL, start_new_session=True)
-        return True
-    # No session: 'waydroid show-full-ui' becomes the session process, so run it
-    # outside our own process tree.
-    if shutil.which("systemd-run"):
-        subprocess.run(["systemctl", "--user", "reset-failed", UNIT], capture_output=True)
-        r = subprocess.run(["systemd-run", "--user", "--unit=" + UNIT, "--collect",
-                            "--description=stock Waydroid session", "waydroid", "show-full-ui"],
-                           capture_output=True)
-        if r.returncode != 0:
-            subprocess.Popen(["waydroid", "show-full-ui"], stdout=subprocess.DEVNULL,
-                             stderr=subprocess.DEVNULL, stdin=subprocess.DEVNULL, start_new_session=True)
-    else:
-        subprocess.Popen(["waydroid", "show-full-ui"], stdout=subprocess.DEVNULL,
-                         stderr=subprocess.DEVNULL, stdin=subprocess.DEVNULL, start_new_session=True)
-    return _wait(lambda: status()["container"] in ("RUNNING", "FROZEN"), timeout)

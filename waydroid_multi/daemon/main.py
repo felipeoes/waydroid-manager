@@ -83,12 +83,33 @@ class Manager(dbus.service.Object):
 
     def load(self, iid):
         try:
-            iid = str(iid)
-            if iid in ("0", "default"):
-                raise ValueError("#0 is stock Waydroid, which is managed by Waydroid itself")
+            iid = "0" if str(iid) == "default" else str(iid)
             return Instance.load(validate_id(iid))
         except (FileNotFoundError, ValueError) as e:
             raise Error(e, "NotFound")
+
+    def ensure_stock_instance(self, uid):
+        """#0: the caller's stock Waydroid data, run as a managed instance. Its data is
+        bind-mounted in place at start, never copied (see container.start)."""
+        if uid == 0 or os.path.isfile(os.path.join(paths.instance_dir("0"), "instance.cfg")):
+            return
+        try:
+            os.close(storage.open_stock_data(uid))
+        except OSError:
+            return  # no stock Waydroid set up for this user
+        # ponytail: one #0 owner per host, first user wins; per-user #0 needs a per-user index
+        try:
+            os.mkdir(paths.instance_dir("0"), 0o700)
+        except FileExistsError:
+            return
+        w = dict(stock.load_stock_cfg()["waydroid"])
+        for k in ("binder", "vndbinder", "hwbinder", "images_path"):
+            w.pop(k, None)
+        inst = Instance.new("0", 0, uid, "", w, {})  # the image set is picked at start
+        inst.cfg["instance"]["name"] = "Stock Waydroid"
+        inst.save()
+        container.ensure_dirs(inst)
+        self.net.reload_hosts(self.hosts())
 
     def check_owner(self, inst, uid):
         if uid != 0 and uid != inst.owner_uid:
@@ -396,7 +417,7 @@ class Manager(dbus.service.Object):
             clone_from = "default"
         reset_ids = opts.pop("reset_ids", "true") != "false"
         # counted again here: the check in Create() races with parallel calls
-        if uid != 0 and sum(1 for i in self.all_instances() if i.owner_uid == uid) >= MAX_PER_USER:
+        if uid != 0 and sum(1 for i in self.all_instances() if i.owner_uid == uid and i.index) >= MAX_PER_USER:
             raise Error("instance limit reached ({} per user)".format(MAX_PER_USER), "LimitReached")
         src_data, src_fd = self._clone_source(clone_from, uid) if clone_from else (None, None)
         try:
@@ -502,28 +523,16 @@ class Manager(dbus.service.Object):
     def _clone_source(self, src, uid):
         """Returns (path to copy from, fd to close afterwards or None)."""
         if src == "default":
-            pw = pwd.getpwuid(uid)
             r = subprocess.run(["lxc-info", "-P", paths.STOCK_WORK + "/lxc", "-n", "waydroid", "-sH"],
                                capture_output=True, text=True)
             if r.stdout.strip() not in ("", "STOPPED") or os.path.isdir("/sys/fs/cgroup/lxc.payload.waydroid"):
                 raise Error("stop the stock Waydroid session first ('waydroid session stop')", "Busy")
-            # The user controls everything below their home: open each step without
-            # following symlinks and copy through the fd, so nothing can be swapped in
-            # between this check and the copy.
-            rel = ".local/share/waydroid/data"
-            fd = None
+            if lxc_state("0") != "STOPPED":  # #0 runs on the same data
+                raise Error("stop instance #0 before cloning it", "Busy")
             try:
-                fd = os.open(os.path.realpath(pw.pw_dir), os.O_PATH | os.O_DIRECTORY)
-                for part in rel.split("/"):
-                    nfd = os.open(part, os.O_PATH | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=fd)
-                    os.close(fd)
-                    fd = nfd
-                if os.fstat(fd).st_uid != uid:
-                    raise OSError("not owned by the caller")
+                fd = storage.open_stock_data(uid)
             except OSError:
-                if fd is not None:
-                    os.close(fd)
-                raise Error("no stock Waydroid data found at {}".format(os.path.join(pw.pw_dir, rel)), "NotFound")
+                raise Error("no stock Waydroid data found at {}".format(storage.stock_data_path(uid)), "NotFound")
             return "/proc/{}/fd/{}".format(os.getpid(), fd), fd
         sinst = self.load(src)
         self.check_owner(sinst, uid)
@@ -555,6 +564,7 @@ class Manager(dbus.service.Object):
     def List(self, sender):
         """The caller's instances (root: everyone's)."""
         uid = self.caller(sender)
+        self.ensure_stock_instance(uid)
         return [self.info(i) for i in self.all_instances() if uid == 0 or i.owner_uid == uid]
 
     @dbus.service.method(paths.DBUS_IFACE, in_signature="s", out_signature="a{ss}", sender_keyword="sender")
@@ -568,7 +578,7 @@ class Manager(dbus.service.Object):
     def Create(self, opts, sender, reply, error):
         """Create (or clone, with opts["clone_from"]) an instance; returns its number."""
         uid = self.caller(sender)
-        if uid != 0 and sum(1 for i in self.all_instances() if i.owner_uid == uid) >= MAX_PER_USER:
+        if uid != 0 and sum(1 for i in self.all_instances() if i.owner_uid == uid and i.index) >= MAX_PER_USER:
             return error(Error("instance limit reached ({} per user)".format(MAX_PER_USER), "LimitReached"))
         # Creates are serialised: the lowest free number is reserved by creating its directory
         self.run_async("__create__", lambda: self._create(uid, _s(opts)), reply, error)
@@ -579,6 +589,8 @@ class Manager(dbus.service.Object):
         try:
             inst = self.load(iid)
             self.check_owner(inst, self.caller(sender))
+            if inst.index == 0:
+                raise Error("#0 is your stock Waydroid; it can't be deleted", "InvalidArgs")
         except Error as e:
             return error(e)
         self.run_async(inst.id, lambda: self._delete(inst.id), reply, error)

@@ -66,6 +66,15 @@ stop_all() {
     for mp in $(mounts_under "$STATE") $(mounts_under "$RUNDIR"); do
         umount "$mp" 2>/dev/null || umount -l "$mp"
     done
+
+    # Instance #0 runs on stock Waydroid's data with stock's container service masked
+    # (--runtime) meanwhile: give it back
+    if [ "$(systemctl is-enabled waydroid-container.service 2>/dev/null)" = masked-runtime ]; then
+        echo "Re-enabling stock Waydroid"
+        systemctl unmask --runtime waydroid-container.service
+        [ "$(systemctl is-enabled waydroid-container.service 2>/dev/null)" != enabled ] ||
+            systemctl start waydroid-container.service
+    fi
 }
 
 # Per-user files, removed as each user (never follow a user's symlinks as root):

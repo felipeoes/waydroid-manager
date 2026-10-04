@@ -63,9 +63,7 @@ class Daemon:
     def resolve(self, ref):
         """Instance number for a reference: a number, 'default'/'0', or a display name."""
         ref = str(ref).strip()
-        if ref.lower() in ("0", "default", "#0"):
-            return "default"
-        num = ref.lstrip("#")
+        num = "0" if ref.lower() == "default" else ref.lstrip("#")
         items = self.list()
         if num.isdigit():
             if any(i["id"] == num for i in items):

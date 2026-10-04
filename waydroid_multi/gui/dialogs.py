@@ -315,7 +315,7 @@ class CloneDialog(_Dialog):
         self.on_submit = on_submit
         self.set_content_width(460)
         page = self._frame("Clone “{}”".format(source["name"]), "Clone")
-        what = "apps, accounts and data" if source["id"] == "default" else "apps, accounts, data and settings"
+        what = "apps, accounts and data" if source["id"] == "0" else "apps, accounts, data and settings"
         g = Adw.PreferencesGroup(description="Creates a new instance (next free number) with a copy of the "
                                              "{} of “{}”.".format(what, source["name"]))
         page.add(g)

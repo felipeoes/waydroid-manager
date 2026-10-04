@@ -116,9 +116,9 @@ class LxcConfigTest(unittest.TestCase):
 
 class InstanceTest(unittest.TestCase):
     def test_ids_are_numbers(self):
-        for ok in ("1", "2", "99", "240"):
+        for ok in ("0", "1", "2", "99", "240"):
             self.assertEqual(validate_id(ok), ok)
-        for bad in ("", "0", "default", "241", "01", "t1", "-1", "1a", "../x"):
+        for bad in ("", "00", "default", "241", "01", "t1", "-1", "1a", "../x"):
             with self.assertRaises(ValueError):
                 validate_id(bad)
         # 0.1 name-based ids are only accepted for migration
@@ -216,8 +216,8 @@ class InstanceTest(unittest.TestCase):
             self.assertEqual(oct(os.stat(p).st_mode & 0o777), "0o644")
 
     def test_macs_unique_and_never_bridge(self):
-        macs = {mac_for_index(i) for i in range(1, 241)}
-        self.assertEqual(len(macs), 240)
+        macs = {mac_for_index(i) for i in range(0, 241)}
+        self.assertEqual(len(macs), 241)
         self.assertNotIn("02:57:44:4d:00:00", macs)  # the bridge's own MAC
 
 
@@ -225,6 +225,7 @@ class NetConfigTest(unittest.TestCase):
     def test_addresses(self):
         n = NetConfig("wdmulti0", "192.168.241.0/24")
         self.assertEqual(str(n.gateway), "192.168.241.1")
+        self.assertEqual(str(n.ip_for_index(0)), "192.168.241.10")
         self.assertEqual(str(n.ip_for_index(1)), "192.168.241.11")
         self.assertEqual(str(n.ip_for_index(240)), "192.168.241.250")
         env = n.env()

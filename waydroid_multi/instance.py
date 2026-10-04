@@ -16,7 +16,7 @@ import time
 
 from . import devices, paths
 
-ID_RE = re.compile(r"^[1-9][0-9]{0,2}$")            # instance ids are their numbers
+ID_RE = re.compile(r"^(0|[1-9][0-9]{0,2})$")        # instance ids are their numbers (#0: stock Waydroid)
 LEGACY_ID_RE = re.compile(r"^[a-z][a-z0-9_]{0,30}$")  # 0.1 slug ids, migrated at daemon start
 PROP_KEY_RE = re.compile(r"^[A-Za-z0-9_.\-]{1,96}$")
 # Android properties only root may set. They would give the instance owner root inside
@@ -38,7 +38,7 @@ def validate_id(iid, legacy=False):
         return iid
     if legacy and LEGACY_ID_RE.match(iid) and iid != "default":
         return iid
-    raise ValueError("invalid instance id '{}': instances are numbered 1-{}".format(iid, MAX_INDEX))
+    raise ValueError("invalid instance id '{}': instances are numbered 0-{}".format(iid, MAX_INDEX))
 
 
 def host_memory_bytes():
@@ -190,7 +190,9 @@ def validate_prop(key, value, trusted=False):
 
 
 def mac_for_index(index):
-    # Locally administered, unicast ("WDM" in the middle bytes)
+    # Locally administered, unicast ("WDM" in the middle bytes); :00:00 is the bridge's
+    if index == 0:
+        return "02:57:44:4d:ff:00"
     return "02:57:44:4d:{:02x}:{:02x}".format(index // 256, index % 256)
 
 

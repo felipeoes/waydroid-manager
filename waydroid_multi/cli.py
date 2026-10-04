@@ -46,9 +46,12 @@ def wait_state(d, iid, wanted, timeout=120):
     return last
 
 
-def stock_state():
+def stop_stock():
+    """#0 runs on stock Waydroid's data: stock Waydroid itself must not run alongside it."""
     from . import stockctl
-    return stockctl.state()
+    if stockctl.status()["session"] == "RUNNING" or stockctl.state() != "STOPPED":
+        print("Stopping stock Waydroid (waydroid session stop)...")
+        stockctl.stop()
 
 
 # -- commands --------------------------------------------------------------------
@@ -59,7 +62,6 @@ def cmd_list(o):
     from .session import desktop
     desktop.cleanup_launchers([i["id"] for i in items])
     rows = [("#", "NAME", "STATE", "IP", "SCREEN", "DEVICE", "LIMITS")]
-    rows.append(("0", "Stock Waydroid (default)", stock_state(), "192.168.240.x", "-", "-", "-"))
     from . import devices
     for i in items:
         screen = "{}x{}@{}".format(i["width"], i["height"], i["dpi"])
@@ -118,20 +120,15 @@ def cmd_clone(o):
     opts = settings_from_args(o)
     opts["clone_from"] = src
     opts["reset_ids"] = "false" if o.keep_ids else "true"
-    if src == "default":
-        from . import stockctl
-        if stockctl.status()["session"] == "RUNNING" or stockctl.state() != "STOPPED":
-            print("Stopping stock Waydroid first...")
-            stockctl.stop()
-        label = "stock Waydroid"
-    else:
-        info = d.get(src)
-        label = "#{} “{}”".format(src, info["name"])
-        if info["state"] != "STOPPED":
-            print("Stopping {} first...".format(label))
-            stop_session(src)
-            if d.get(src)["state"] != "STOPPED":
-                d.stop(src)
+    if src == "0":
+        stop_stock()
+    info = d.get(src)
+    label = "#{} “{}”".format(src, info["name"])
+    if info["state"] != "STOPPED":
+        print("Stopping {} first...".format(label))
+        stop_session(src)
+        if d.get(src)["state"] != "STOPPED":
+            d.stop(src)
     print("Cloning {}...".format(label))
     try:
         iid = d.create(opts)
@@ -228,6 +225,8 @@ def ensure_running(d, iid, background=False):
         return False
     if info["state"] not in ("STOPPED",):
         die("instance #{} is {}".format(iid, info["state"]))
+    if iid == "0":
+        stop_stock()
     start_session(iid, background=background)
     st = wait_state(d, iid, ACTIVE)
     if st not in ACTIVE:
@@ -237,11 +236,6 @@ def ensure_running(d, iid, background=False):
 
 
 def cmd_start(o):
-    if o.id == "default":
-        from . import stockctl
-        if not stockctl.start_or_show():
-            die("stock Waydroid did not start; try 'waydroid show-full-ui' for details")
-        return
     d = daemon()
     info = d.get(o.id)
     if info["state"] in ACTIVE:
@@ -260,8 +254,6 @@ def cmd_start(o):
 
 
 def cmd_show(o):
-    if o.id == "default":
-        return cmd_start(o)
     d = daemon()
     started = ensure_running(d, o.id)
     if not started:
@@ -276,11 +268,8 @@ def cmd_stop(o):
             die("give an instance id or --all")
         return
     for iid in ids:
-        if iid == "default":
-            from . import stockctl
-            stockctl.stop()
-            print("Stopped stock Waydroid.")
-            continue
+        if iid == "0":
+            stop_stock()
         stop_session(iid)
         try:
             if d.get(iid)["state"] != "STOPPED":
@@ -530,9 +519,9 @@ def parser():
     add_settings(c)
     c.set_defaults(fn=cmd_create)
 
-    c = sub.add_parser("clone", help="copy an instance (or 'default' = stock Waydroid) with its apps, "
+    c = sub.add_parser("clone", help="copy an instance (0 or 'default' = stock Waydroid) with its apps, "
                                      "data and settings into a new one")
-    c.add_argument("src", help="instance number or name, or 'default' (stock Waydroid)")
+    c.add_argument("src", help="instance number or name; 0 or 'default' is stock Waydroid")
     c.add_argument("--keep-ids", action="store_true", help="keep the source's device identity")
     add_settings(c)
     c.set_defaults(fn=cmd_clone)
@@ -548,7 +537,7 @@ def parser():
     c.add_argument("args", nargs="*")
     c.set_defaults(fn=cmd_config)
 
-    c = sub.add_parser("start", help="start an instance and open its window ('default' = stock Waydroid)")
+    c = sub.add_parser("start", help="start an instance and open its window (0 or 'default' = stock Waydroid)")
     c.add_argument("id")
     c.add_argument("--background", action="store_true", help="don't open the window")
     c.add_argument("--wait", action="store_true", help="wait until Android has booted")

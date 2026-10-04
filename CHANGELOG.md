@@ -6,6 +6,12 @@ All notable changes to waydroid-multi are listed here. The format follows
 
 ## [Unreleased]
 
+### Added
+- Your normal Waydroid (#0) is now a full instance: window with title bar and toolbar, settings
+  (resolution, device model, CPU and memory, root, writable system, …), Install APK, app grid entry,
+  and every `waydroid-multi` command. It runs on stock Waydroid's own data, in place. Plain
+  `waydroid` is paused while #0 runs and works as before once #0 stops or waydroid-multi is uninstalled.
+
 ## [0.2.0] - 2026-10-04
 
 ### Added
