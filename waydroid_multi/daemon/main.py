@@ -71,6 +71,7 @@ class Manager(dbus.service.Object):
         self.sessions = {}       # id -> dict(sender, pid, uid, watch, session)
         self.helpers = {}        # id -> Popen
         self.last_close = {}
+        self.disk = {}           # id -> (bytes used as a string, time measured)
         self.stopping_by_us = set()
         self.key_fds = {}        # id -> fd of the instance's keyboard FIFO (kept open while running)
         self.dbus_info = dbus.Interface(bus.get_object("org.freedesktop.DBus", "/org/freedesktop/DBus"),
@@ -114,6 +115,28 @@ class Manager(dbus.service.Object):
         return [i.image_id for i in self.all_instances()
                 if i.image_id and (i.id in self.transient or lxc_state(i.id) in ACTIVE)]
 
+    def cpus_busy(self, exclude):
+        """CPUs pinned by the other running or starting instances, one entry per pin."""
+        return [c for i in self.all_instances()
+                if i.id != exclude and (i.id in self.transient or lxc_state(i.id) in ACTIVE)
+                for c in container.pinned_cpus(i)]
+
+    def disk_used(self, inst):
+        """Bytes the instance's directory takes (data, writable layers); measured with du in a
+        thread, at most once a minute, since List runs on the main loop."""
+        val, at = self.disk.get(inst.id, ("", 0))
+        if time.time() - at > 60:
+            self.disk[inst.id] = (val, time.time())
+
+            def measure():
+                # -x: not into the mounted rootfs (shared images); du exits 1 when Android
+                # deletes files mid-walk but still prints the total
+                r = subprocess.run(["du", "-sx", "--block-size=1", inst.dir], capture_output=True, text=True)
+                if r.stdout.split():
+                    self.disk[inst.id] = (r.stdout.split()[0], time.time())
+            threading.Thread(target=measure, daemon=True, name="du-" + inst.id).start()
+        return val
+
     def set_transient(self, iid, st):
         if st:
             self.transient[iid] = st
@@ -133,13 +156,16 @@ class Manager(dbus.service.Object):
         d["ip"] = self.net.ip_for(inst)
         d["session"] = "yes" if inst.id in self.sessions else "no"
         d["pending_id_reset"] = inst.cfg["instance"].get("pending_id_reset", "false")
+        d["disk_used"] = self.disk_used(inst)
         d["mem_used"] = ""
+        d["pinned"] = ""  # CPUs in use: the cpuset setting, or the ones picked at start
         if d["state"] in ACTIVE:
-            try:
-                with open("/sys/fs/cgroup/lxc.payload.{}/memory.current".format(inst.container)) as f:
-                    d["mem_used"] = f.read().strip()
-            except OSError:
-                pass
+            for key, name in (("mem_used", "memory.current"), ("pinned", "cpuset.cpus")):
+                try:
+                    with open("/sys/fs/cgroup/lxc.payload.{}/{}".format(inst.container, name)) as f:
+                        d[key] = f.read().strip()
+                except OSError:
+                    pass
         return d
 
     def run_async(self, iid, fn, reply, error, lock=True):
@@ -226,7 +252,8 @@ class Manager(dbus.service.Object):
             return
         self.set_transient(iid, "STARTING")
         try:
-            container.start(inst, self.net, self.hosts(), session, uid, self.images_in_use())
+            container.start(inst, self.net, self.hosts(), session, uid, self.images_in_use(),
+                            lambda: self.cpus_busy(iid))
             inst = Instance.load(iid)
             self.start_helper(inst)
             GLib.idle_add(self._attach_session, iid, uid, session, sender)
@@ -347,7 +374,8 @@ class Manager(dbus.service.Object):
         container.stop(inst)
         session = dict(s["session"])
         session["background_start"] = "false"
-        container.start(inst, self.net, self.hosts(), session, s["uid"], self.images_in_use())
+        container.start(inst, self.net, self.hosts(), session, s["uid"], self.images_in_use(),
+                        lambda: self.cpus_busy(iid))
         self.start_helper(Instance.load(iid))
         GLib.idle_add(self._emit_state, iid)
 
@@ -420,6 +448,9 @@ class Manager(dbus.service.Object):
                 container.ensure_dirs(inst)
                 if src_data:
                     storage.copy_data(src_data, inst.data_dir)
+                    if clone_from != "default":  # the source's own /system and /vendor changes
+                        storage.copy_data(os.path.join(paths.instance_dir(clone_from), "overlay_rw"),
+                                          os.path.join(inst.dir, "overlay_rw"))
                     pw = pwd.getpwuid(uid)
                     os.chown(inst.data_dir, uid, pw.pw_gid, follow_symlinks=False)
                     if reset_ids:

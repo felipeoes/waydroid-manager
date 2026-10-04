@@ -148,7 +148,7 @@ SETTINGS = {
     "height": (_uint(16384), "720", "Android screen height in pixels"),
     "dpi": (_uint(1000), "240", "screen density"),
     "cpus": (_cpus, default_cpus, "CPU limit in cores, e.g. 2"),
-    "cpuset": (_cpuset, "", "pin to host CPUs, e.g. 0-3 (empty = any)"),
+    "cpuset": (_cpuset, "", "pin to host CPUs, e.g. 0-3 (empty = as many as cpus, the least used at start)"),
     "memory": (_memory, default_memory, "memory limit, e.g. 4G"),
     "device_model": (_device, "waydroid", "device model preset (see 'waydroid-multi devices')"),
     "zoom": (_zoom, "auto", "window zoom in % (25-200) or auto (fit the screen)"),
@@ -156,12 +156,14 @@ SETTINGS = {
     "idle_action": (_action, "freeze", "what Android idle-suspend does: freeze|stop|none"),
     "window_labels": (_bool, "true", "label windows per instance (Wayland proxy)"),
     "window_frame": (_bool, "true", "title bar, toolbar and resizing (needs window_labels)"),
+    "root": (_bool, "false", "Root: Magisk Delta in the instance (restart)"),
+    "system_writable": (_bool, "false", "Android system partition is writable (restart)"),
     "desktop_apps": (_bool, "false", "create desktop entries for this instance's apps"),
 }
 
 # Settings that only take effect at the next start
 RESTART_SETTINGS = {"width", "height", "dpi", "cpus", "cpuset", "memory", "device_model",
-                    "window_labels", "window_frame"}
+                    "window_labels", "window_frame", "system_writable", "root"}
 
 
 def setting_default(key):

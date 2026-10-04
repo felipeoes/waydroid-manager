@@ -99,11 +99,17 @@ def mount_image(image, target):
         raise RuntimeError("mount failed: {} -> {}".format(image, target))
 
 
-def mount_overlay(lowers, target, upper, work):
+def overlay_opts(lowers, upper, work, writable):
+    if writable:
+        return ",".join(["lowerdir=" + ":".join(lowers), "upperdir=" + upper, "workdir=" + work, "xino=off"])
+    # The upper layer becomes the top read-only lower: earlier changes stay visible, nothing new is written.
+    return "ro,lowerdir=" + ":".join([upper] + list(lowers)) + ",xino=off"
+
+
+def mount_overlay(lowers, target, upper, work, writable=False):
     for d in (upper, work):
         os.makedirs(d, exist_ok=True)
-    opts = ["ro", "lowerdir=" + ":".join(lowers), "upperdir=" + upper, "workdir=" + work, "xino=off"]
-    run(["mount", "-t", "overlay", "-o", ",".join(opts), "overlay", target])
+    run(["mount", "-t", "overlay", "-o", overlay_opts(lowers, upper, work, writable), "overlay", target])
 
 
 def bind(src, dst):

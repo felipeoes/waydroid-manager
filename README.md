@@ -17,7 +17,7 @@ window. Your normal Waydroid keeps working exactly as before.
   - drag the title bar to move it, drag an edge to **resize** (the picture scales, and the size
     is remembered)
   - double-click the title bar to maximize
-  - **◁ ○ □** Back / Home / Recents, volume buttons, screenshots and fullscreen
+  - **◁ ○ □** Back / Home / Recents, volume buttons, screenshots, Install APK and fullscreen
 - Find each instance in the dock and app grid under its own name
 - Install APKs, launch apps, and connect with `adb`, per instance
 
@@ -59,7 +59,7 @@ before, you can switch to the `.deb` at any time; your instances are kept.
   Waydroid is **#0**, new ones get the next free number (#1, #2, …).
 - **▶** starts an instance, **👁** brings its window back, and **■** stops it.
 - **⋮** opens a menu with Settings, Clone, Install APK, Add to/Remove from app grid, and Delete.
-- The **☑** button switches to selection mode: start, stop or delete several instances at once.
+- Tick instances' checkboxes (or **Select all**) to start, stop or delete several at once.
 - Your normal Waydroid appears under **Default**. You can start, stop, or clone it from there.
 
 ## The instance window
@@ -72,6 +72,7 @@ before, you can switch to the `.deb` at any time; your instances are kept.
 | Fullscreen | toolbar button or **F11**; leave with **Esc** or **F11** |
 | Android buttons | ◁ Back, ○ Home, □ Recents, volume up/down |
 | Screenshot | toolbar camera button, saved to `~/Pictures/Waydroid/<instance name>` |
+| Install APK | toolbar **APK** button, then pick an `.apk` |
 
 Closing the window stops the instance after asking you to confirm. In its Settings you can
 make closing pause it or keep it running instead.
@@ -98,6 +99,16 @@ Run `waydroid-multi --help` to see all commands.
 ## Good to know
 
 - **Resolution, device model, CPU and memory** changes apply at the next start of the instance.
+- **Writable system:** the per-instance "Writable system" switch (`config set N system_writable true`,
+  then restart) lets Android change `/system` and `/vendor`, e.g. to install Magisk. Changes live in
+  the instance's `overlay_rw/` and are lost when Waydroid's images are upgraded. Turning it off keeps
+  earlier changes visible but read-only.
+- **Root:** the per-instance "Root" switch (`config set N root true`, then restart) installs
+  Magisk Delta, the build `waydroid_script` uses, so apps can get root. The first start downloads
+  it, so it needs internet. Then install the Magisk app:
+  `waydroid-multi app install N /var/lib/waydroid-multi/magisk-delta.apk`. Official Magisk does
+  not work on Waydroid (no boot image). The switch is open to the instance owner, and root in
+  Android is close to root on the host, so only enable it on machines you trust.
 - **Updating Waydroid:** run `waydroid upgrade` as usual. Instances pick up the new Android
   version the next time they start.
 - **Google Play on a clone:** a clone counts as a new device, so register it once. Run

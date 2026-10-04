@@ -46,12 +46,12 @@ def color_scheme():
         return "dark"
 
 
-def notify(summary, body):
+def notify(summary, body, icon="camera-photo-symbolic"):
     try:
         n = dbus.Interface(dbus.SessionBus().get_object("org.freedesktop.Notifications",
                                                         "/org/freedesktop/Notifications"),
                            "org.freedesktop.Notifications")
-        n.Notify("waydroid-multi", 0, "camera-photo-symbolic", summary, body, [], {}, 4000)
+        n.Notify("waydroid-multi", 0, icon, summary, body, [], {}, 4000)
     except dbus.DBusException:
         pass
 
@@ -143,33 +143,70 @@ class Session:
                 self._zoom_timer = GLib.timeout_add(1000, self._save_zoom)
         elif ev == "action screenshot":
             self.screenshot()
+        elif ev == "action install":
+            self.pick_apk()
         elif ev.startswith("action key "):
             log.info("sending key %s", ev.split()[2])
             self._async("SendKey", self.iid, dbus.UInt32(int(ev.split()[2])))
 
-    def confirm_close(self):
-        """Closing the window stops the instance: ask first (gui/confirm.py)."""
-        if getattr(self, "confirm", None) and self.confirm.poll() is None:
+    def _ask(self, attr, module, on_answer):
+        """Run a small GTK process (gui/<module>.py) once at a time; on_answer gets its stdout."""
+        if getattr(self, attr, None) and getattr(self, attr).poll() is None:
             return                     # already asking
         env = dict(os.environ)
         env["PYTHONPATH"] = os.path.dirname(paths.PKG_DIR) + os.pathsep + env.get("PYTHONPATH", "")
-        self.confirm = subprocess.Popen(
-            [sys.executable, "-m", "waydroid_multi.gui.confirm", "--name", Instance.load(self.iid).name],
+        proc = subprocess.Popen(
+            [sys.executable, "-m", "waydroid_multi.gui." + module, "--name", Instance.load(self.iid).name],
             stdout=subprocess.PIPE, stdin=subprocess.DEVNULL, env=env)
-        proc, out = self.confirm, []
+        setattr(self, attr, proc)
+        out = []
 
         def readable(fd, _cond):
-            chunk = os.read(fd, 1024)
+            chunk = os.read(fd, 4096)
             if chunk:
                 out.append(chunk)
                 return True
             proc.stdout.close()
             proc.wait()
-            if b"".join(out).strip() == b"stop":
-                log.info("stop confirmed")
-                self._async("ReportClose", self.iid)
+            on_answer(b"".join(out).decode("utf-8", "surrogateescape").rstrip("\n"))
             return False
         GLib.io_add_watch(proc.stdout.fileno(), GLib.PRIORITY_DEFAULT, GLib.IO_IN | GLib.IO_HUP, readable)
+
+    def confirm_close(self):
+        """Closing the window stops the instance: ask first."""
+        def answer(a):
+            if a == "stop":
+                log.info("stop confirmed")
+                self._async("ReportClose", self.iid)
+        self._ask("confirm", "confirm", answer)
+
+    def pick_apk(self):
+        """Toolbar Install APK: pick a file, then hand it to the daemon like `app install`."""
+        self._ask("picker", "pickapk", lambda path: path and self.install_apk(path))
+
+    def install_apk(self, path):
+        name = os.path.basename(path)
+        try:
+            f = open(path, "rb")
+        except OSError as e:
+            return notify("Install failed", str(e), "dialog-error-symbolic")
+        notify("Installing " + name, "", "package-x-generic-symbolic")
+
+        def done(res):
+            f.close()
+            log.info("installed %s: %s", name, res)
+            notify("Installed " + name, str(res), "package-x-generic-symbolic")
+
+        def failed(e):
+            f.close()
+            msg = e.get_dbus_message() if isinstance(e, dbus.DBusException) else str(e)
+            log.warning("install %s: %s", name, msg)
+            notify("Install failed", msg or name, "dialog-error-symbolic")
+        try:
+            self.daemon.iface.InstallApk(self.iid, dbus.types.UnixFd(f), name, reply_handler=done,
+                                         error_handler=failed, timeout=900)
+        except dbus.DBusException as e:
+            failed(e)
 
     def _async(self, method, *args, ok=None):
         try:

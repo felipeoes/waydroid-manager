@@ -167,13 +167,15 @@ Stored in `instance.cfg` and changed with `waydroid-multi config N set KEY VALUE
 | `name` | `Instance N` | display name |
 | `width`, `height`, `dpi` | 1280, 720, 240 | Android screen (restart) |
 | `cpus` | 2 (or fewer cores on the host) | CPU limit, cgroup `cpu.max` (restart) |
-| `cpuset` | any | pin to host CPUs, e.g. `0-3` (restart) |
+| `cpuset` | as many CPUs as `cpus`, the least used by running instances at start | pin to host CPUs, e.g. `0-3` (restart). A quota alone lets Android stall on all host CPUs at once |
 | `memory` | 4G, or 2G on hosts with ≤ 6 GB | cgroup `memory.high` (restart) |
 | `device_model` | `waydroid` | preset from `waydroid-multi devices`, or `custom` (restart) |
 | `zoom` | `auto` | window scale in %, saved when the window is resized |
 | `close_action` | `stop` | closing the window: `stop` (asks first), `freeze` or `none` |
 | `idle_action` | `freeze` | Android idle-suspend: `freeze`, `stop` or `none` |
 | `window_labels` | true | run the Wayland proxy (restart) |
+| `root` | false | install Magisk Delta into the instance (`daemon/magisk.py`, restart) |
+| `system_writable` | false | mount system/vendor overlays writable (restart) |
 | `window_frame` | true | title bar, toolbar and resizing (restart) |
 | `desktop_apps` | false | launchers for the instance's apps |
 
@@ -188,10 +190,13 @@ which Android reads last.
   because files inside `data/` belong to raw Android uids, which can coincide with other host
   users' uids.
 - **Android root is close to host root.** Instances are privileged LXC containers, as with stock
-  Waydroid. Owners therefore must not be able to get root inside Android. Props that would
-  allow it (`ro.debuggable`, `ro.secure`, `ro.adb.*`, `service.adb.*`, `ro.boot.*`, …;
-  `PROTECTED_PROP_RE` in `instance.py`) can only be set by root, and they are also filtered when
-  props are written at start.
+  Waydroid. The per-instance `root` switch is deliberately open to the instance owner (like
+  LDPlayer's), so an owner can get root inside Android and, through it, close to host root.
+  Keep that in mind when sharing a machine. The switch puts Magisk Delta (the build
+  `waydroid_script` uses, pinned by commit and sha256 in `daemon/magisk.py`) into the
+  instance's own overlay layer. Magisk then decides which apps get root. Other props that would give root
+  (`ro.debuggable`, `ro.secure`, `ro.adb.*`, `service.adb.*`, `ro.boot.*`, …; `PROTECTED_PROP_RE`
+  in `instance.py`) still can only be set by root and are filtered when props are written.
 - **Everything below a user's home, and everything inside a container, is hostile.**
   - Clone from stock opens `~/.local/share/waydroid/data` one step at a time with `O_NOFOLLOW`
     and copies through `/proc/<pid>/fd/N`.
@@ -299,8 +304,9 @@ Versions follow [Semantic Versioning](https://semver.org/). Releases are publish
    - in `CHANGELOG.md`, rename `## [Unreleased]` to `## [X.Y.Z] - YYYY-MM-DD`, add a new
      empty `## [Unreleased]` above it, and update the links at the bottom.
 2. **Open a release PR `dev` → `main`** titled "Release X.Y.Z". Merge it with **"Create a merge
-   commit"**, not squash or rebase, so `main` stays an ancestor of `dev` and the branches
-   never diverge.
+   commit"**, not squash or rebase. Every commit of `dev` then reaches `main` unchanged
+   (`dev` stays an ancestor of `main`), so the next release PR never conflicts. Squashing would
+   rewrite the commits, and later release PRs would conflict.
 3. **Tag the merge commit on `main`:**
    ```sh
    git switch main && git pull
@@ -315,6 +321,10 @@ Versions follow [Semantic Versioning](https://semver.org/). Releases are publish
      notes.
 
    If it fails, fix the problem through `dev` → `main` again. Never move a published tag.
+5. **Merge `main` back into `dev`.** The release PR's merge commit exists only on `main`, so
+   GitHub would show `dev` as one commit "behind". Open a PR `main` → `dev` (or merge
+   `origin/main` into a branch from `dev`) and merge it with **"Create a merge commit"**. It
+   changes no files. Afterwards `dev` is only ever ahead of `main`.
 
 ## Stock Waydroid pitfalls
 

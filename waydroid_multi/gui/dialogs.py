@@ -195,10 +195,16 @@ class InstanceDialog(_Dialog):
         self.idle_row = _combo("When Android goes idle", IDLE)
         _select(self.idle_row, IDLE, self.info.get("idle_action", "freeze"))
         g.add(self.idle_row)
-        self.labels_row = Adw.SwitchRow(title="Own dock icon and window title",
-                                        subtitle="Needed for the title bar and toolbar")
-        self.labels_row.set_active(self.info.get("window_labels", "true") == "true")
-        g.add(self.labels_row)
+        self.writable_row = Adw.SwitchRow(title="Writable system",
+                                          subtitle="Lets Android change its system files. "
+                                                   "Restart the instance to apply.")
+        self.writable_row.set_active(self.info.get("system_writable", "false") == "true")
+        g.add(self.writable_row)
+        self.root_row = Adw.SwitchRow(title="Root",
+                                      subtitle="Installs Magisk Delta; needs internet the first time. "
+                                               "Restart the instance to apply.")
+        self.root_row.set_active(self.info.get("root", "false") == "true")
+        g.add(self.root_row)
         if mode == "edit":
             self.apps_row = Adw.SwitchRow(title="App shortcuts in the app grid",
                                           subtitle="Create launchers for this instance's apps")
@@ -265,6 +271,8 @@ class InstanceDialog(_Dialog):
             _, w, h, dpi = self.presets[self.res_row.get_selected()]
         v["width"], v["height"], v["dpi"] = str(w), str(h), str(dpi)
         v["window_frame"] = "true" if self.frame_row.get_active() else "false"
+        if self.frame_row.get_active():
+            v["window_labels"] = "true"  # the frame needs it; it has no row of its own
         key = self.dev_keys[self.device_row.get_selected()]
         v["device_model"] = key
         if key == "custom":
@@ -274,7 +282,8 @@ class InstanceDialog(_Dialog):
         v["memory"] = self.mem_opts[self.mem_row.get_selected()][0]
         v["close_action"] = ACTIONS[self.close_row.get_selected()][0]
         v["idle_action"] = IDLE[self.idle_row.get_selected()][0]
-        v["window_labels"] = "true" if self.labels_row.get_active() else "false"
+        v["system_writable"] = "true" if self.writable_row.get_active() else "false"
+        v["root"] = "true" if self.root_row.get_active() else "false"
         if self.mode == "edit":
             v["desktop_apps"] = "true" if self.apps_row.get_active() else "false"
             seen = set()

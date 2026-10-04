@@ -10,11 +10,12 @@ import os
 import platform
 import pwd
 import shutil
+import threading
 import time
 
 from .. import devices, lxcconfig, paths, stock
 from ..instance import PROTECTED_PROP_RE, Instance
-from . import binder, images
+from . import binder, images, magisk
 from .util import (CommandError, apparmor_profile_loaded, attach, bind, bind_file, chown_tree_top,
                    is_mount, log, lxc_state, mount_image, mount_overlay, run, stage_socket, umount_tree)
 
@@ -79,9 +80,43 @@ def select_image(inst, in_use=()):
     return d
 
 
-def write_lxc_config(inst, net):
+CPUSET_LINE = "lxc.cgroup2.cpuset.cpus = "
+# Held from reading the other instances' pins to writing this one's, so parallel starts
+# see each other's picks
+_pin_lock = threading.Lock()
+
+
+def host_cpus():
+    """CPUs the containers' cgroups (children of the root one) can be pinned to; [] when the
+    cpuset controller isn't enabled for them, so no pin is written that would fail the start."""
+    try:
+        with open("/sys/fs/cgroup/cgroup.subtree_control") as f:
+            if "cpuset" not in f.read().split():
+                return []
+        with open("/sys/fs/cgroup/cpuset.cpus.effective") as f:
+            return lxcconfig.parse_cpus(f.read())
+    except OSError:
+        return []
+
+
+def pinned_cpus(inst):
+    """CPUs a running instance was pinned to at its start ([] = not pinned)."""
+    try:
+        with open(os.path.join(inst.lxc_dir, "config")) as f:
+            for line in f:
+                if line.startswith(CPUSET_LINE):
+                    return lxcconfig.parse_cpus(line[len(CPUSET_LINE):])
+    except OSError:
+        pass
+    return []
+
+
+def write_lxc_config(inst, net, cpus_busy=()):
     a = stock_args(inst)
-    limits = lxcconfig.cgroup_limits(inst.get("cpus"), inst.get("cpuset"), inst.get("memory"))
+    cpuset = inst.get("cpuset")
+    if inst.get("cpus") and not cpuset:
+        cpuset = lxcconfig.pick_cpus(inst.get("cpus"), host_cpus(), cpus_busy)
+    limits = lxcconfig.cgroup_limits(inst.get("cpus"), cpuset, inst.get("memory"))
     text = lxcconfig.build_config(
         stock.lxc_snippets(),
         rootfs=inst.rootfs, lxc_dir=inst.lxc_dir, bridge=net.cfg.bridge, mac=inst.mac,
@@ -116,22 +151,33 @@ def set_device_permissions():
             run(["chmod", "777", "-R", p], check=False)
 
 
+def sync_root(inst):
+    """Root switch: Magisk Delta in the instance's own lower layer (removed when off)."""
+    if inst.getbool("root"):
+        magisk.install(inst)
+    elif os.path.isdir(os.path.join(inst.dir, "overlay", magisk.MAGISK.lstrip("/"))):
+        magisk.remove(inst)
+
+
 def mount_rootfs(inst, images_dir):
     """system.img + overlays, vendor.img + overlays, like stock mount_rootfs."""
     rootfs = inst.rootfs
+    sync_root(inst)
     umount_tree(rootfs)
     mount_image(os.path.join(images_dir, "system.img"), rootfs)
     lowers = [os.path.join(inst.dir, "overlay")]
     if os.path.isdir(paths.STOCK_OVERLAY):
         lowers.append(paths.STOCK_OVERLAY)
     mount_overlay(lowers + [rootfs], rootfs, os.path.join(inst.dir, "overlay_rw/system"),
-                  os.path.join(inst.dir, "overlay_work/system"))
+                  os.path.join(inst.dir, "overlay_work/system"),
+                  writable=inst.getbool("system_writable"))
     mount_image(os.path.join(images_dir, "vendor.img"), rootfs + "/vendor")
     vlowers = [os.path.join(inst.dir, "overlay/vendor")]
     if os.path.isdir(paths.STOCK_OVERLAY + "/vendor"):
         vlowers.append(paths.STOCK_OVERLAY + "/vendor")
     mount_overlay(vlowers + [rootfs + "/vendor"], rootfs + "/vendor",
-                  os.path.join(inst.dir, "overlay_rw/vendor"), os.path.join(inst.dir, "overlay_work/vendor"))
+                  os.path.join(inst.dir, "overlay_rw/vendor"), os.path.join(inst.dir, "overlay_work/vendor"),
+                  writable=inst.getbool("system_writable"))
     for egl_path in ("/vendor/lib/egl", "/vendor/lib64/egl"):
         if os.path.isdir(egl_path):
             bind(egl_path, rootfs + egl_path)
@@ -198,15 +244,17 @@ def write_props(inst, session):
     bind_file(full, inst.rootfs + "/vendor/waydroid.prop")
 
 
-def start(inst, net, hosts, session_in, uid, images_in_use=()):
-    """Bring the container up. session_in: validated dict from the session process."""
+def start(inst, net, hosts, session_in, uid, images_in_use=(), cpus_busy=list):
+    """Bring the container up. session_in: validated dict from the session process.
+    cpus_busy(): CPUs pinned by the other running or starting instances, one entry per pin."""
     pw = pwd.getpwuid(uid)
     images_dir = select_image(inst, images_in_use)
     ensure_dirs(inst)
     a = stock_args(inst)
     binder.ensure_binderfs(a)
     binder.ensure_nodes(a, inst.index)
-    write_lxc_config(inst, net)
+    with _pin_lock:
+        write_lxc_config(inst, net, cpus_busy())
     net.ensure_up(hosts)
     set_device_permissions()
 

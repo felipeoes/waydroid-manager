@@ -93,6 +93,17 @@ class LxcConfigTest(unittest.TestCase):
         self.assertEqual(lxcconfig.cgroup_limits("1.5"), ["lxc.cgroup2.cpu.max = 150000 100000"])
         self.assertEqual(lxcconfig.cgroup_limits(), [])
 
+    def test_pick_cpus(self):
+        host = list(range(8))
+        self.assertEqual(lxcconfig.parse_cpus("0-2,5\n"), [0, 1, 2, 5])
+        self.assertEqual(lxcconfig.pick_cpus("2", host), "0,1")
+        self.assertEqual(lxcconfig.pick_cpus("1.5", host, [0, 1, 2, 3]), "4,5")
+        # instances 1 and 3 running after 2 was deleted: no shared CPUs while others are idle
+        self.assertEqual(lxcconfig.pick_cpus("2", host, [0, 1, 4, 5]), "2,3")
+        self.assertEqual(lxcconfig.pick_cpus("2", host, host + [0, 1, 2]), "3,4")  # host full: least shared
+        self.assertEqual(lxcconfig.pick_cpus("8", host), "")
+        self.assertEqual(lxcconfig.pick_cpus("2", []), "")  # no cpuset controller
+
     def test_session_entries(self):
         text = lxcconfig.session_entries("/run/waydroid-multi/instances/t1/wayland-0", "",
                                          "/var/lib/waydroid-multi/instances/t1/data")

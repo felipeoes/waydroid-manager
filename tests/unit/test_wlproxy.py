@@ -222,6 +222,30 @@ class FrameTest(unittest.TestCase):
         for fd in h.c2s.fds:
             os.close(fd)
 
+    def test_toolbar_tooltip(self):
+        h = self.h
+        f = h.s.window.frame
+        # the tooltip never takes input: it gets an (empty) input region at creation
+        self.assertIn(P.WL_SURFACE_SET_INPUT_REGION, [op for o, op, _ in self.out if o == f["tip"]])
+        y0, y1 = [(a, b) for x, a, b in wp.fr.toolbar_layout(720) if x == "install"][0]
+        out = h.ev(msg(PTR, P.WL_POINTER_EV_ENTER, "uoff", 9, f["toolbar"], fixed(20.0), fixed((y0 + y1) / 2)))
+        self.assertEqual(out, [])
+        h.server_out()
+        self.assertFalse(h.s.tick())                             # not before the delay
+        h.s.tip_due = (0, h.s.tip_due[1])
+        self.assertTrue(h.s.tick())
+        out = h.server_out()
+        w, th = wp.fr.tooltip_size("Install APK")
+        pos = [args(p, "ii") for o, op, p in out if o == f["tip_sub"] and op == P.WL_SUBSURFACE_SET_POSITION]
+        self.assertEqual(pos, [[-w - 6, (y0 + y1 - th) // 2]])  # left of the button, centred on it
+        self.assertIn((f["toolbar"], P.WL_SURFACE_COMMIT), [(o, op) for o, op, _ in out])
+        h.ev(msg(PTR, P.WL_POINTER_EV_LEAVE, "uo", 12, f["toolbar"]))
+        attach = [args(p, "oii") for o, op, p in h.server_out() if o == f["tip"] and op == P.WL_SURFACE_ATTACH]
+        self.assertEqual(attach, [[0, 0, 0]])                   # hidden
+        self.assertIsNone(h.s.tip_due)
+        for fd in h.c2s.fds:
+            os.close(fd)
+
     def test_recents_goes_through_daemon(self):
         h = self.h
         h.s.do_action("recents")
