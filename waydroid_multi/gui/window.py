@@ -405,8 +405,7 @@ class MainWindow(Adw.ApplicationWindow):
 
         def ok(iid):
             info_name = values.get("name") or "Instance {}".format(iid)
-            if values.get("window_labels", "true") == "true":
-                desktop.write_launcher(iid, info_name)
+            desktop.write_launcher(iid, info_name)
             self.toast("Created #{} “{}”".format(iid, info_name))
             self.refresh()
         self.backend.call("Create", values, ok=ok, fail=self.toast)
