@@ -7,6 +7,9 @@ All notable changes to waydroid-multi are listed here. The format follows
 ## [Unreleased]
 
 ### Fixed
+- Instances under load no longer show as "not responding": a CPU-limited instance without a
+  `cpuset` is now pinned to as many host CPUs as its `cpus` limit, instead of a quota spread
+  over every host CPU that stalled the whole container, UI included.
 - The `.deb`'s Installed-Size no longer depends on the filesystem it was built on.
 
 ## [0.1.0] - 2026-10-03

@@ -81,7 +81,8 @@ def select_image(inst, in_use=()):
 
 def write_lxc_config(inst, net):
     a = stock_args(inst)
-    limits = lxcconfig.cgroup_limits(inst.get("cpus"), inst.get("cpuset"), inst.get("memory"))
+    limits = lxcconfig.cgroup_limits(inst.get("cpus"), inst.get("cpuset"), inst.get("memory"),
+                                     index=inst.index, host_cpus=sorted(os.sched_getaffinity(0)))
     text = lxcconfig.build_config(
         stock.lxc_snippets(),
         rootfs=inst.rootfs, lxc_dir=inst.lxc_dir, bridge=net.cfg.bridge, mac=inst.mac,

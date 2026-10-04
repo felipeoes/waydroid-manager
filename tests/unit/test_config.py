@@ -93,6 +93,14 @@ class LxcConfigTest(unittest.TestCase):
         self.assertEqual(lxcconfig.cgroup_limits("1.5"), ["lxc.cgroup2.cpu.max = 150000 100000"])
         self.assertEqual(lxcconfig.cgroup_limits(), [])
 
+    def test_cgroup_limits_pin_without_cpuset(self):
+        host = list(range(8))
+        self.assertEqual(lxcconfig.cgroup_limits("2", index=1, host_cpus=host)[1], "lxc.cgroup2.cpuset.cpus = 2,3")
+        self.assertEqual(lxcconfig.cgroup_limits("1.5", index=3, host_cpus=host)[1], "lxc.cgroup2.cpuset.cpus = 6,7")
+        self.assertEqual(lxcconfig.cgroup_limits("2", index=4, host_cpus=host)[1], "lxc.cgroup2.cpuset.cpus = 0,1")
+        self.assertEqual(lxcconfig.cgroup_limits("2", "5", index=1, host_cpus=host)[1], "lxc.cgroup2.cpuset.cpus = 5")
+        self.assertEqual(len(lxcconfig.cgroup_limits("8", index=1, host_cpus=host)), 1)
+
     def test_session_entries(self):
         text = lxcconfig.session_entries("/run/waydroid-multi/instances/t1/wayland-0", "",
                                          "/var/lib/waydroid-multi/instances/t1/data")

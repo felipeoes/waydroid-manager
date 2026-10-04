@@ -7,6 +7,7 @@ value that must be unique per instance. Generation fails closed: if a stock
 path or an unexpanded placeholder survives, an error is raised instead of
 producing a config that would touch the stock instance.
 """
+import math
 import os
 import re
 
@@ -81,11 +82,17 @@ def check(text):
             raise ConfigError("unexpanded placeholder {} in: {}".format(m.group(0), line))
 
 
-def cgroup_limits(cpus="", cpuset="", memory="", period=100000):
+def cgroup_limits(cpus="", cpuset="", memory="", period=100000, index=0, host_cpus=()):
     lines = []
     if cpus:
         quota = max(1000, int(float(cpus) * period))
         lines.append("lxc.cgroup2.cpu.max = {} {}".format(quota, period))
+        n = math.ceil(float(cpus))
+        if not cpuset and n < len(host_cpus):
+            # A quota alone lets Android run threads on every host CPU: it spends the quota in a
+            # few ms and then the whole container, UI included, stalls for the rest of the period
+            # (GNOME: "not responding"). Pin to as many CPUs, spread by instance number.
+            cpuset = ",".join(str(host_cpus[(index * n + k) % len(host_cpus)]) for k in range(n))
     if cpuset:
         lines.append("lxc.cgroup2.cpuset.cpus = " + cpuset)
     if memory:
