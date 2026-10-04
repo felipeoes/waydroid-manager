@@ -6,6 +6,8 @@ All notable changes to waydroid-multi are listed here. The format follows
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-10-04
+
 ### Added
 - Your normal Waydroid (#0) is now a full instance: window with title bar and toolbar, settings
   (resolution, device model, CPU and memory, root, writable system, …), Install APK, app grid entry,
@@ -72,6 +74,7 @@ First release.
 - Root daemon hardened against symlink and race attacks, root-enabling Android properties,
   and misuse of passed file descriptors. Each user sees and controls only their own instances.
 
-[Unreleased]: https://github.com/felipeoes/waydroid-multi-instances/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/felipeoes/waydroid-multi-instances/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/felipeoes/waydroid-multi-instances/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/felipeoes/waydroid-multi-instances/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/felipeoes/waydroid-multi-instances/releases/tag/v0.1.0
