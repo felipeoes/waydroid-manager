@@ -22,7 +22,8 @@ window. Your normal Waydroid keeps working exactly as before.
   - **◁ ○ □** Back / Home / Recents, volume buttons, screenshots, Install APK and fullscreen
   - drop `.apk` files on the window to install them
 - Find each instance in the dock and app grid under its own name
-- Install APKs, launch apps, and connect with `adb`, per instance
+- Install APKs, launch apps, and use `adb`, per instance: running instances show up in
+  `adb devices` by name, e.g. `waydroid-account-1:5555`
 - Run **ARM-only apps**: each instance picks its ARM translation (Houdini, libndk or off)
 
 ## Requirements
@@ -121,6 +122,10 @@ Run `waydroid-multi --help` to see all commands.
   `config set N arm_translation libndk` (or `none`), pick libndk or turn it off, then restart. The
   first start with each one downloads it (the builds `waydroid_script` uses), so it needs internet;
   without internet the instance starts without it. Works on x86_64 with Android 11 or 13 images.
+- **adb:** once Android has started, each instance (#0 too) connects to adb by itself as
+  `waydroid-<name>:5555`. For example, `adb -s waydroid-account-1:5555 shell`. Like the Android
+  Studio emulator, there is no "Allow USB debugging?" prompt: your adb key is trusted in your own
+  instances. The names are kept in a marked block in `/etc/hosts`.
 - **Updating Waydroid:** run `waydroid upgrade` as usual. Instances pick up the new Android
   version the next time they start.
 - **Google Play on a clone:** a clone counts as a new device, so register it once. Run
