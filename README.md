@@ -69,7 +69,8 @@ before, you can switch to the `.deb` at any time; your instances are kept.
 - Tick instances' checkboxes (or **Select all**) to start, stop or delete several at once.
 - Your normal Waydroid appears under **Default** as #0. It works like any other instance:
   window with title bar and toolbar, Settings, Install APK, app grid entry and Clone. It runs on
-  your normal Waydroid's own apps and data, in place.
+  your normal Waydroid's own apps and data, in place. Its app grid entry is the one **Waydroid** icon:
+  stock's own is hidden, so opening Waydroid opens #0.
 
 ## The instance window
 

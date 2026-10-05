@@ -3,7 +3,10 @@
 
 Each instance gets a launcher whose desktop-file id equals the app_id the
 Wayland proxy assigns to its window ("waydroid-multi.<id>"), so GNOME shows
-every instance as its own app. Per-app entries are opt-in and namespaced
+every instance as its own app. #0 runs stock Waydroid's data, so its launcher
+is named plain "Waydroid" and stock's own entry is hidden for the user: one
+Waydroid icon, which opens #0. (Overriding stock's entry under its own id
+instead doesn't work: GNOME Shell's app grid keeps launching the old one.) Per-app entries are opt-in and namespaced
 ("waydroid-multi.<id>.<pkg>.desktop") so they never collide with the stock
 instance's "waydroid.<pkg>.desktop" files.
 """
@@ -35,12 +38,33 @@ def launcher_path(iid):
     return os.path.join(paths.user_applications_dir(), "waydroid-multi.{}.desktop".format(iid))
 
 
+STOCK_LAUNCHER = "Waydroid.desktop"   # stock Waydroid's entry, hidden while #0 exists
+MARK = "X-WaydroidMulti=true"           # our override, so uninstall removes only that
+
+
+def hide_stock_launcher():
+    """Hide stock's Waydroid icon for this user: #0's is the Waydroid icon. A window of stock
+    Waydroid run by hand still gets its name and icon from this entry."""
+    p = os.path.join(paths.user_applications_dir(), STOCK_LAUNCHER)
+    text = ("[Desktop Entry]\nType=Application\nName=Waydroid\nExec=waydroid\nIcon=waydroid\n"
+            "NoDisplay=true\n" + MARK + "\n")
+    try:
+        with open(p) as f:
+            old = f.read()
+        if old == text or MARK not in old.splitlines():
+            return      # done, or the user's own override
+    except FileNotFoundError:
+        os.makedirs(paths.user_applications_dir(), exist_ok=True)
+    with open(p, "w") as f:
+        f.write(text)
+
+
 def write_launcher(iid, name):
     os.makedirs(paths.user_applications_dir(), exist_ok=True)
     text = "\n".join([
         "[Desktop Entry]",
         "Type=Application",
-        "Name={} (Waydroid)".format(_escape(name)),
+        "Name=" + ("Waydroid" if iid == "0" else "{} (Waydroid)".format(_escape(name))),
         "Comment=Waydroid instance '{}' (waydroid-multi)".format(iid),
         "Exec=" + _cmd("start", iid),
         "Icon=waydroid",
@@ -62,9 +86,19 @@ def write_launcher(iid, name):
 
 
 def cleanup_launchers(existing_ids):
-    """Remove launchers of instances that no longer exist (e.g. 0.1 name-based ids)."""
+    """Remove launchers of instances that no longer exist (e.g. 0.1 name-based ids). With #0,
+    stock's Waydroid icon is hidden, and #0's launcher from 0.4 gets its new name."""
     d = paths.user_applications_dir()
     keep = set(existing_ids)
+    if "0" in keep:
+        hide_stock_launcher()
+        try:
+            with open(launcher_path("0")) as f:
+                old = "Name=Waydroid\n" not in f.read()
+        except FileNotFoundError:
+            old = False
+        if old:
+            write_launcher("0", "")
     try:
         names = os.listdir(d)
     except FileNotFoundError:
