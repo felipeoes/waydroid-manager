@@ -82,10 +82,6 @@ def settings_from_args(o):
         v = getattr(o, key, None)
         if v is not None:
             s[key] = str(v)
-    if getattr(o, "no_window_labels", False):
-        s["window_labels"] = "false"
-    if getattr(o, "no_frame", False):
-        s["window_frame"] = "false"
     for kv in getattr(o, "prop", None) or []:
         if "=" not in kv:
             die("--prop expects KEY=VALUE")
@@ -172,7 +168,7 @@ def cmd_config(o):
     if o.action in (None, "show"):
         info = d.get(o.id)
         for k in SETTINGS:
-            print("{:14} {:12} # {}".format(k, info.get(k, ""), SETTINGS[k][2]))
+            print("{:15} {:12} # {}".format(k, info.get(k, ""), SETTINGS[k][2]))
         props = {k[5:]: v for k, v in info.items() if k.startswith("prop:")}
         for k, v in sorted(props.items()):
             print("prop {} = {}".format(k, v))
@@ -426,7 +422,7 @@ def cmd_log(o):
         time.sleep(0.5)
         path = os.path.join(paths.user_cache_dir(), "wlproxy-{}.log".format(o.id))
         if not os.path.exists(path):
-            die("no window log for #{} (is it running with window labels on?)".format(o.id))
+            die("no window log for #{} (has it been started?)".format(o.id))
         os.execvp("tail", ["tail", "-n", str(max(o.lines, 400)), path])
     if o.id:
         os.execvp("journalctl", ["journalctl", "--user", "-u", "waydroid-multi-session-{}".format(o.id),
@@ -506,10 +502,8 @@ def add_settings(p, create=True):
     p.add_argument("--memory", help="memory limit (default 4G)")
     p.add_argument("--device", dest="device_model", help="device model preset (see 'waydroid-multi devices')")
     p.add_argument("--zoom", help="window zoom in %% or 'auto'")
-    p.add_argument("--no-frame", action="store_true", help="no title bar/toolbar")
     p.add_argument("--close-action", dest="close_action", choices=("stop", "freeze", "none"))
     p.add_argument("--idle-action", dest="idle_action", choices=("stop", "freeze", "none"))
-    p.add_argument("--no-window-labels", action="store_true", help="don't label windows (no Wayland proxy)")
     p.add_argument("--prop", action="append", metavar="KEY=VALUE", help="Android property override")
     p.add_argument("--no-launcher", action="store_true", help="don't create a desktop launcher")
 

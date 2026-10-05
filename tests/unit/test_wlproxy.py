@@ -452,6 +452,57 @@ class ClipboardTest(unittest.TestCase):
         self.assertEqual(self.hwc_reads()[0], b"")
 
 
+class FileDropTest(unittest.TestCase):
+    """Files dropped on the window are the proxy's: the APKs among them are reported for installing."""
+
+    def setUp(self):
+        self.h = h = Harness(frame=False)
+        h.c2s = h.s.c2s = wp.Stream(h.s.on_request, h.s.post_feed_c2s, count_fds=lambda o, op: int(
+            h.s.objs.get(o) == "wl_data_offer" and op == P.WL_DATA_OFFER_RECEIVE))
+        h.setup_globals()
+        h.create_window()
+        h.req(msg(REG, P.WL_REGISTRY_BIND, "usun", 9, "wl_data_device_manager", 3, DDM))
+        h.req(msg(DDM, P.WL_DATA_DEVICE_MANAGER_GET_DATA_DEVICE, "no", DD, SEAT))
+        self.watched = []
+        h.s.watch = lambda fd, done: self.watched.append((fd, done))
+
+    def drag(self, *mimes):
+        h = self.h
+        h.ev(msg(DD, P.WL_DATA_DEVICE_EV_DATA_OFFER, "n", OFFER),
+             *[msg(OFFER, P.WL_DATA_OFFER_EV_OFFER, "s", m) for m in mimes])
+        return h.ev(msg(DD, P.WL_DATA_DEVICE_EV_ENTER, "uoffo", 9, S, fixed(10.0), fixed(10.0), OFFER))
+
+    def test_apks_dropped_on_the_window_are_installed(self):
+        h = self.h
+        self.assertEqual(self.drag("text/uri-list", "text/plain;charset=utf-8"), [])   # the HWC sees nothing
+        sent = [(o, op) for o, op, _ in h.server_out()]
+        self.assertEqual(sent, [(OFFER, P.WL_DATA_OFFER_ACCEPT), (OFFER, P.WL_DATA_OFFER_SET_ACTIONS)])
+        self.assertEqual(h.ev(msg(OFFER, P.WL_DATA_OFFER_EV_ACTION, "u", P.DND_ACTION_COPY),
+                              msg(DD, P.WL_DATA_DEVICE_EV_MOTION, "uff", 1, fixed(20.0), fixed(20.0)),
+                              msg(DD, P.WL_DATA_DEVICE_EV_DROP),
+                              msg(DD, P.WL_DATA_DEVICE_EV_LEAVE)), [])
+        (o, op, p), = h.server_out()
+        self.assertEqual((o, op, args(p, "s")), (OFFER, P.WL_DATA_OFFER_RECEIVE, [wp.URI_LIST]))
+        h.c2s.out_fds -= 1
+        os.close(h.c2s.fds.pop(0))                       # (the source's end of the pipe)
+        (fd, done), = self.watched
+        os.close(fd)
+        done(b"file:///home/u/My%20Game.apk\r\nfile:///home/u/photo.png\r\n")
+        self.assertEqual(h.events, ["install /home/u/My Game.apk"])
+        self.assertEqual([(o, op) for o, op, _ in h.server_out()], [(OFFER, P.WL_DATA_OFFER_FINISH)])
+
+    def test_other_drags_still_reach_the_hwc(self):
+        (o, op, p), = self.drag("text/plain;charset=utf-8")
+        self.assertEqual((o, op), (DD, P.WL_DATA_DEVICE_EV_ENTER))
+        self.assertEqual(self.h.server_out(), [])
+
+    def test_apk_paths(self):
+        self.assertEqual(wp.apk_paths(b"# comment\nfile://localhost/a/B.APK\nhttps://x/c.apk\n"
+                                      b"file://otherhost/d.apk\nfile:///e%0Af.apk\nfile:///g.apk.txt\n"
+                                      b"file:///h/game.xapk\n"),
+                         ["/a/B.APK", "/h/game.xapk"])
+
+
 class TranslatorTest(unittest.TestCase):
     def setUp(self):
         from waydroid_multi.session import wlschema

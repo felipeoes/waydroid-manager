@@ -26,7 +26,7 @@ import dbus.service
 from gi.repository import GLib
 
 from .. import __version__, paths, stock, stockctl
-from ..instance import (Instance, SETTINGS, legacy_ids, list_ids, validate_id, validate_prop,
+from ..instance import (Instance, REMOVED_SETTINGS, SETTINGS, legacy_ids, list_ids, validate_id, validate_prop,
                         validate_setting)
 from ..registry import allocate_index
 from . import container, images, storage
@@ -471,7 +471,7 @@ class Manager(dbus.service.Object):
                     props[k[5:]] = validate_prop(k[5:], v, trusted=uid == 0)
                 else:
                     props.pop(k[5:], None)
-            else:
+            elif k not in REMOVED_SETTINGS:
                 settings[k] = validate_setting(k, v)
         used = [i.index for i in self.all_instances()] + self._legacy_indices()
         index = allocate_index(used)
@@ -642,7 +642,7 @@ class Manager(dbus.service.Object):
                             inst.cfg["properties"].pop(key, None)
                         else:
                             inst.cfg["properties"][key] = validate_prop(key, v, trusted=uid == 0)
-                    else:
+                    elif k not in REMOVED_SETTINGS:
                         inst.set(k, v)
             except ValueError as e:
                 raise Error(e, "InvalidArgs")

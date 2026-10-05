@@ -9,6 +9,7 @@ gi.require_version("Adw", "1")
 from gi.repository import Adw, Gio, GLib, Gtk  # noqa: E402
 
 from .. import paths  # noqa: E402
+from ..instance import RESTART_SETTINGS  # noqa: E402
 from ..session import desktop  # noqa: E402
 from .backend import Backend  # noqa: E402
 from .dialogs import CloneDialog, InstanceDialog  # noqa: E402
@@ -395,20 +396,39 @@ class MainWindow(Adw.ApplicationWindow):
 
     def edit(self, iid):
         def got(info):
-            InstanceDialog("edit", self._save, info=info).present(self)
+            InstanceDialog("edit", lambda iid, values: self._save(iid, values, info), info=info).present(self)
         self.backend.call("Get", iid, ok=got, fail=self.toast, timeout=30)
 
-    def _save(self, iid, values):
+    def _save(self, iid, values, before):
+        # the dialog sends every field: only what it changed may need a restart
+        changed = {k for k, v in values.items() if before.get(k, "") != v}
+        restart = any(k in RESTART_SETTINGS or k.startswith("prop:") for k in changed)
+
         def ok(*_):
             info = next((i for i in self.instances if i["id"] == iid), {})
             if "name" in values and os.path.exists(desktop.launcher_path(iid)):
                 desktop.write_launcher(iid, values["name"])
-            msg = "Saved"
-            if info.get("state") in ACTIVE:
-                msg += " — restart the instance to apply"
-            self.toast(msg)
             self.refresh()
+            if restart and info.get("state") in ACTIVE:
+                self.ask_restart(info)
+            else:
+                self.toast("Saved")
         self.backend.call("SetConfig", iid, values, ok=ok, fail=self.toast, timeout=60)
+
+    def ask_restart(self, info):
+        dlg = Adw.AlertDialog(heading="Restart “{}”?".format(info["name"]),
+                              body="The new settings apply when the instance restarts.")
+        dlg.add_response("later", "Restart Later")
+        dlg.add_response("restart", "Restart Now")
+        dlg.set_response_appearance("restart", Adw.ResponseAppearance.SUGGESTED)
+        dlg.set_default_response("restart")
+
+        def respond(_d, resp):
+            if resp == "restart":
+                self._cli(info["id"], ["stop", info["id"]], "Failed to stop " + info["name"],
+                          then=lambda ok: ok and self.start_or_show(info))
+        dlg.connect("response", respond)
+        dlg.present(self)
 
     def uninstall(self):
         running = [i for i in self.instances if i.get("state") in ACTIVE]

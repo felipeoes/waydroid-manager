@@ -1,16 +1,14 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 """Root switch: put Magisk Delta into an instance's own overlay layer (Waydroid has no boot image)."""
 import gzip
-import hashlib
 import os
 import platform
 import shutil
 import threading
-import urllib.request
 import zipfile
 
 from .. import paths
-from .util import CommandError, log
+from .util import CommandError, download
 
 # Same build waydroid_script installs, pinned to a commit and checked by hash
 APK_URL = ("https://github.com/mistrmochov/magiskdeltaorig/raw/"
@@ -79,32 +77,7 @@ _apk_lock = threading.Lock()
 def ensure_apk():
     """Download the pinned APK once; returns its path."""
     with _apk_lock:  # parallel starts share the cache and its temp file
-        if os.path.isfile(APK_CACHE) and _sha256(APK_CACHE) == APK_SHA256:
-            return APK_CACHE
-        log.info("downloading Magisk Delta")
-        tmp = APK_CACHE + ".tmp"
-        try:
-            with urllib.request.urlopen(APK_URL, timeout=60) as r, open(tmp, "wb") as f:
-                shutil.copyfileobj(r, f)
-            ok = _sha256(tmp) == APK_SHA256
-            if ok:
-                os.replace(tmp, APK_CACHE)
-        except OSError as e:
-            raise CommandError("cannot download Magisk Delta for the Root switch: {}".format(e))
-        finally:
-            if os.path.lexists(tmp):
-                os.unlink(tmp)
-        if not ok:
-            raise CommandError("the downloaded Magisk Delta does not match the expected checksum")
-        return APK_CACHE
-
-
-def _sha256(path):
-    h = hashlib.sha256()
-    with open(path, "rb") as f:
-        for chunk in iter(lambda: f.read(1 << 20), b""):
-            h.update(chunk)
-    return h.hexdigest()
+        return download(APK_URL, APK_SHA256, APK_CACHE, "Magisk Delta for the Root switch")
 
 
 def remove(inst, upper=True):
