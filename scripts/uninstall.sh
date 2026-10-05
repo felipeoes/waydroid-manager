@@ -67,6 +67,13 @@ stop_all() {
         umount "$mp" 2>/dev/null || umount -l "$mp"
     done
 
+    # the hidden device software rendering used
+    if [ -d /sys/kernel/config/vkms/waydroid-manager ]; then
+        echo 0 > /sys/kernel/config/vkms/waydroid-manager/enabled
+        rm -f /sys/kernel/config/vkms/waydroid-manager/*/*/possible_*/*
+        rmdir /sys/kernel/config/vkms/waydroid-manager/*/* /sys/kernel/config/vkms/waydroid-manager
+    fi
+
     # Instance #0 runs on stock Waydroid's data with stock's container service masked
     # (--runtime) meanwhile: give it back
     if [ "$(systemctl is-enabled waydroid-container.service 2>/dev/null)" = masked-runtime ]; then
@@ -96,6 +103,7 @@ remove_files() {
           /usr/share/dbus-1/system.d/io.github.waydroidmanager.Manager.conf \
           /usr/share/dbus-1/system-services/io.github.waydroidmanager.Manager.service \
           /usr/share/applications/io.github.waydroidmanager.desktop \
+          /usr/lib/udev/rules.d/70-waydroid-manager.rules \
           "$PREFIX/bin/waydroid-manager" "$PREFIX/bin/waydroid-manager-gui" "$PREFIX/bin/waydroid-manager-daemon"
     rm -rf "$LIBDIR" "$RUNDIR"
     # the instance names adb uses (only our lines, even if END was deleted)

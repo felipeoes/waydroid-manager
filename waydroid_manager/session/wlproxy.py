@@ -101,8 +101,8 @@ def build_message(obj, opcode, payload):
 class Stream:
     """One direction of a proxied connection: frames, filters and queues output.
 
-    The handler returns None (forward unchanged) or a list of byte strings
-    (replacement messages; [] drops the message). Proxy-originated messages are
+    The handler returns None (forward unchanged) or a list of replacement messages
+    (byte strings, or (bytes, fds) for ones carrying new fds; [] drops the message). Proxy-originated messages are
     added with inject(); those carrying fds wait until no partial message is
     buffered, so every fd stays ahead of (or with) the message that uses it.
 
@@ -157,7 +157,8 @@ class Stream:
                 self._append(bytes(buf[pos:pos + size]), owned=left)
             elif repl:
                 for i, m in enumerate(repl):
-                    self._append(m, owned=left if i == 0 else 0)
+                    data, fds = m if isinstance(m, tuple) else (m, ())
+                    self._append(data, fds, owned=left if i == 0 else 0)
             else:
                 self._close_owned(left)
             pos += size
@@ -187,6 +188,12 @@ class Stream:
             return None
         c[1] -= 1
         return self.fds.pop(c[0])
+
+    def peek_fd(self):
+        """A copy of the next fd of the message being handled, which keeps its own; None when
+        fds aren't tracked."""
+        c = self.cur
+        return os.dup(self.fds[c[0]]) if c and c[1] else None
 
     def _close_owned(self, n):
         for _ in range(n):
@@ -544,6 +551,9 @@ class Session:
         self.mine = {}           # id -> kind
         self.my_globals = {}     # interface -> our bound object id
         self.buffers = {}        # our buffer id -> ("shm"|"pixel")
+        self.shm = None          # the HWC's wl_shm, and the formats the compositor takes through it
+        self.shm_formats = set()
+        self.dmabuf_planes = {}  # cpu_buffers: params id -> [(fd copy, offset, stride, modifier)]
         # input routing
         self.last_serial = 0
         self.ptr_focus = None    # ("mine", surface) | ("tree", surface) | None
@@ -726,6 +736,8 @@ class Session:
                 self.seat = new
             elif name_iface == "wl_output":
                 self.outputs.setdefault(new, {})
+            elif name_iface == "wl_shm":
+                self.shm = new
             return None
         if iface == "wl_compositor" and op == P.WL_COMPOSITOR_CREATE_SURFACE:
             sid = r.n()
@@ -795,7 +807,47 @@ class Session:
             return self._viewport_request(obj, op, r)
         if iface == "wl_subsurface":
             return self._subsurface_request(obj, op, r)
+        if self.cfg.cpu_buffers and iface in ("zwp_linux_dmabuf_v1", "zwp_linux_buffer_params_v1"):
+            return self._dmabuf_request(obj, iface, op, r)
         return None
+
+    def _dmabuf_request(self, obj, iface, op, r):
+        """Android renders on the CPU (cpu_buffers): its dmabufs reach the compositor as shared
+        memory over the same fd. A compositor may not import dmabufs from another device (GNOME
+        on NVIDIA doesn't), but it can map these."""
+        if iface == "zwp_linux_dmabuf_v1":
+            if op == P.ZWP_LINUX_DMABUF_CREATE_PARAMS:
+                self.objs[r.n()] = "zwp_linux_buffer_params_v1"
+            return None
+        if op == P.ZWP_LINUX_BUFFER_PARAMS_ADD:
+            fd = self.c2s.peek_fd()
+            if fd is not None:
+                r.u()                       # plane index
+                offset, stride, hi, lo = r.u(), r.u(), r.u(), r.u()
+                self.dmabuf_planes.setdefault(obj, []).append((fd, offset, stride, hi << 32 | lo))
+            return None
+        if op not in (P.ZWP_LINUX_BUFFER_PARAMS_CREATE_IMMED, P.ZWP_LINUX_BUFFER_PARAMS_DESTROY):
+            return None
+        planes = self.dmabuf_planes.pop(obj, [])
+        try:
+            if op == P.ZWP_LINUX_BUFFER_PARAMS_DESTROY or len(planes) != 1 or self.shm is None:
+                return None
+            buf, width, height, fmt = r.n(), r.i(), r.i(), r.u()
+            fd, offset, stride, modifier = planes[0]
+            code = {P.DRM_FORMAT_ARGB8888: 0, P.DRM_FORMAT_XRGB8888: 1}.get(fmt, fmt)
+            size = offset + stride * height
+            if modifier not in (P.DRM_FORMAT_MOD_LINEAR, P.DRM_FORMAT_MOD_INVALID) or \
+                    code not in self.shm_formats or os.lseek(fd, 0, os.SEEK_END) < size:
+                return None
+            planes.clear()                  # the fd now travels with create_pool
+            pool = self.new_id("pool")
+            self.objs[buf] = "wl_buffer"
+            return [(msg(self.shm, P.WL_SHM_CREATE_POOL, "ni", pool, size), [fd]),
+                    msg(pool, P.WL_SHM_POOL_CREATE_BUFFER, "niiiiu", buf, offset, width, height, stride, code),
+                    msg(pool, P.WL_SHM_POOL_DESTROY)]
+        finally:
+            for plane in planes:
+                os.close(plane[0])
 
     def _surface_request(self, sid, op, r):
         s = self.surfaces.get(sid)
@@ -977,6 +1029,9 @@ class Session:
                 self.globals[name] = (gi, ver)
             elif op == P.WL_REGISTRY_EV_GLOBAL_REMOVE:
                 self.globals.pop(r.u(), None)
+            return None
+        if iface == "wl_shm" and op == P.WL_SHM_EV_FORMAT:
+            self.shm_formats.add(r.u())
             return None
         if iface == "wl_output":
             out = self.outputs.setdefault(obj, {})
@@ -1890,7 +1945,7 @@ class Connection:
 
 class Config:
     def __init__(self, inst_id, name, width=0, height=0, zoom="auto", frame=True, theme="dark",
-                 close_action="stop"):
+                 close_action="stop", cpu_buffers=False):
         self.id = inst_id
         self.name = name
         self.width = int(width or 0)
@@ -1899,6 +1954,7 @@ class Config:
         self.frame = frame
         self.theme = theme
         self.close_action = close_action
+        self.cpu_buffers = cpu_buffers   # Android renders in software: show its dmabufs as shm
 
 
 class Proxy:
@@ -1999,8 +2055,9 @@ def main(argv=None):
     p.add_argument("--zoom", default="auto")
     p.add_argument("--theme", default="dark", choices=("dark", "light"))
     p.add_argument("--close-action", default="stop", choices=("stop", "freeze", "none"))
+    p.add_argument("--cpu-buffers", action="store_true")
     o = p.parse_args(argv)
-    cfg = Config(o.id, o.name, o.width, o.height, o.zoom, True, o.theme, o.close_action)
+    cfg = Config(o.id, o.name, o.width, o.height, o.zoom, True, o.theme, o.close_action, o.cpu_buffers)
     global LOG_PATH
     cache = os.environ.get("XDG_CACHE_HOME") or os.path.expanduser("~/.cache")
     os.makedirs(os.path.join(cache, "waydroid-manager"), exist_ok=True)

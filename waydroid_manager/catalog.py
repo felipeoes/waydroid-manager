@@ -26,8 +26,9 @@ MTG14 = ("https://github.com/s1204IT/MindTheGappsBuilder/releases/download/20250
 #   gb           approximate download size, for display
 #   gapps        "image" (built in) | "mtg14" (MindTheGapps layer) | "gms_apex" (unpack the image's GMS APEX)
 #   provision    the image has no setup wizard of its own: mark the device set up after first boot
-#   software     software rendering works (14 and 15's hwcomposer can't show gralloc-default buffers,
-#                17 has no gralloc-default mapper)
+#   software     how it renders on the CPU: stock Waydroid's way (gralloc.default, the default), "vkms"
+#                (17 has no gralloc.default mapper: see gpu.VKMS_PROPS), or False: it can't (14 and
+#                15's hwcomposer can't show gralloc.default buffers)
 #   nvidia       guest build for the NVIDIA path (see daemon/gpu.py), or None
 #   props        Android properties the image always needs; nvidia_props on the NVIDIA path
 #   loop         apexd needs loop devices in the container
@@ -49,7 +50,7 @@ VERSIONS = {
     "16": dict(sdk=36, ota=_atv("a16-qpr2") + ("23.2",), gb=1.6, nvidia="venus", loop=True,
                props={"qemu.hw.mainkeys": "1"}, nvidia_props={"ro.waydroid.override_props": "0"}),
     "17": dict(sdk=37, ota=_atv("a17") + ("24.0",), gb=1.7, nvidia="venus", experimental=True,
-               gapps="gms_apex", loop=True, videodev=True, software=False,
+               gapps="gms_apex", loop=True, videodev=True, software="vkms",
                props={"qemu.hw.mainkeys": "1"},
                nvidia_props={"ro.waydroid.override_props": "0", "debug.hwui.renderer": "skiavk"}),
 }

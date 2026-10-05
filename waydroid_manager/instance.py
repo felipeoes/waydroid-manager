@@ -14,7 +14,7 @@ import os
 import re
 import time
 
-from . import catalog, devices, paths
+from . import catalog, devices, gpu, paths
 
 ID_RE = re.compile(r"^(0|[1-9][0-9]{0,2})$")        # instance ids are their numbers (#0: stock Waydroid)
 PROP_KEY_RE = re.compile(r"^[A-Za-z0-9_.\-]{1,96}$")
@@ -161,6 +161,7 @@ SETTINGS = {
     "arm_translation": (_choice(ARM), "houdini", "runs ARM apps: houdini|libndk|none (restart)"),
     "android": (_choice(tuple(catalog.VERSIONS)), catalog.DEFAULT,
                 "Android version: " + "|".join(catalog.VERSIONS) + " (chosen at creation)"),
+    "gpu": (_choice(gpu.GPU_MODES), "auto", "graphics: auto (a GPU if usable) | software (restart)"),
     "desktop_apps": (_bool, "false", "create desktop entries for this instance's apps"),
 }
 
@@ -169,7 +170,7 @@ CREATE_ONLY = {"android"}
 
 # Settings that only take effect at the next start
 RESTART_SETTINGS = {"width", "height", "dpi", "cpus", "cpuset", "memory", "device_model",
-                    "system_writable", "root", "arm_translation"}
+                    "system_writable", "root", "arm_translation", "gpu"}
 
 
 def setting_default(key):

@@ -12,11 +12,14 @@ All notable changes to waydroid-multi are listed here. The format follows
   and checked the first time a device uses it, and shared by all devices on it. `images update` (or
   "Check for Android updates" in the menu) fetches newer builds, which devices switch to at their
   next start; `images list` shows what is installed. 11 and 13 are the official Waydroid builds;
-  14, 16 and 17 are WayDroid-ATV's, and 15 is minhmc2007's. 15 and 17 are experimental, and 14, 15
-  and 17 need a GPU (they can't render in software). Android 12 has no Waydroid build. Stock
+  14, 16 and 17 are WayDroid-ATV's, and 15 is minhmc2007's. 15 and 17 are experimental, and 14 and
+  15 need a GPU (they can't render in software). Android 12 has no Waydroid build. Stock
   Waydroid's own images are reused when they are the same build.
 - Android 14 and 15 get Google Play from MindTheGapps; Android 17's Google services are unpacked
   from the image so they run in a container.
+- **Graphics** setting ("Graphics" in Settings, `config <id> set gpu software`): Automatic, or
+  Software, which renders on the CPU: slower, but it works on any PC. Android 17 renders in
+  software into a hidden virtual display device (the kernel's vkms module) that no desktop shows.
 
 ### Changed
 - **waydroid-multi is now Waydroid Manager.** The command is `waydroid-manager`, the package

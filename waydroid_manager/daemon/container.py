@@ -14,7 +14,7 @@ import stat
 import threading
 import time
 
-from .. import catalog, devices, lxcconfig, paths, stock, stockctl
+from .. import catalog, devices, gpu, lxcconfig, paths, stock, stockctl
 from ..instance import PROTECTED_PROP_RE, Instance
 from . import armtrans, binder, images, magisk, storage
 from .util import (CommandError, apparmor_profile_loaded, attach, bind, bind_file, bind_mount, chown_tree_top,
@@ -200,7 +200,8 @@ def pinned_cpus(inst):
         return []
 
 
-def write_lxc_config(inst, net, cpus_busy=()):
+def write_lxc_config(inst, net, cpus_busy=(), card=None):
+    """card: our vkms device's node when Android renders on the CPU (see vkms_card)."""
     a = stock_args(inst)
     cpuset = inst.get("cpuset")
     if cpuset == "all":
@@ -222,6 +223,9 @@ def write_lxc_config(inst, net, cpus_busy=()):
     nodes = stock.tools().helpers.lxc.generate_nodes_lxc_config(a)
     if catalog.get(inst.get("android"), "loop") and inst.index != 0:
         nodes += loop_entries()
+    if card:     # the only DRM device: minigbm takes the first one it can use
+        nodes = [n for n in nodes if "= /dev/dri/" not in n]
+        nodes.append("lxc.mount.entry = {} {} none bind,create=file 0 0".format(card, card[1:]))
     _write(os.path.join(inst.lxc_dir, "config_nodes"), "\n".join(nodes) + "\n")
     session = os.path.join(inst.lxc_dir, "config_session")
     if not os.path.exists(session):
@@ -285,6 +289,33 @@ def loop_entries():
             os.mknod(node, 0o660 | stat.S_IFBLK, os.makedev(7, n))
         entries.append("lxc.mount.entry = {} dev/block/loop{} none bind,create=file 0 0".format(node, n))
     return entries
+
+
+VKMS_DEVICE = "/sys/kernel/config/vkms/waydroid-manager"
+
+
+def vkms_card():
+    """Our vkms device's node, made on first use: Android renders on the CPU into its buffers,
+    which minigbm can map for any use. Its one output is disconnected, so no desktop shows it,
+    and our udev rule (loaded before it appears) tags it for GNOME to leave alone."""
+    d = VKMS_DEVICE
+    if not os.path.isdir(d):
+        run(["udevadm", "control", "--reload"])
+        run(["modprobe", "vkms", "create_default_dev=0"])
+        for group in ("planes/plane", "crtcs/crtc", "encoders/encoder", "connectors/connector"):
+            os.makedirs(os.path.join(d, group))
+        for attr, value in (("planes/plane/type", "1"), ("connectors/connector/status", "2")):  # primary; disconnected
+            with open(os.path.join(d, attr), "w") as f:
+                f.write(value)
+        os.symlink(d + "/crtcs/crtc", d + "/planes/plane/possible_crtcs/crtc")
+        os.symlink(d + "/crtcs/crtc", d + "/encoders/encoder/possible_crtcs/crtc")
+        os.symlink(d + "/encoders/encoder", d + "/connectors/connector/possible_encoders/encoder")
+        with open(d + "/enabled", "w") as f:
+            f.write("1")
+    cards = glob.glob("/sys/devices/faux/waydroid-manager/drm/card*")
+    if not cards:
+        raise RuntimeError("software rendering needs the kernel's vkms module")
+    return "/dev/dri/" + os.path.basename(cards[0])
 
 
 def ensure_videodev():
@@ -377,9 +408,10 @@ def host_timezone():
         return ""
 
 
-def write_props(inst, session, arm):
+def write_props(inst, session, arm, card=None):
     """Generate waydroid_base.prop and waydroid.prop for this start. arm: the mounted ARM
-    translation layer (None: off, or its download failed and stock's props stay)."""
+    translation layer (None: off, or its download failed and stock's props stay). card: our
+    vkms device's node when Android renders on the CPU."""
     # Effective config: stock [properties], then ours (the image's needs), then the instance's own
     eff = configparser.ConfigParser(interpolation=None)
     eff.read_dict(inst.cfg)
@@ -397,6 +429,9 @@ def write_props(inst, session, arm):
     key = android_of(inst)
     if key:
         eff["properties"].update(catalog.get(key, "props", {}))
+    if card:
+        eff["properties"].update(gpu.VKMS_PROPS)
+        eff["properties"]["gralloc.gbm.device"] = card
     for k, v in inst.cfg["properties"].items():
         if inst.owner_uid != 0 and PROTECTED_PROP_RE.match(k):
             log.warning("%s: ignoring property %s (only root may set it)", inst.id, k)
@@ -450,8 +485,9 @@ def start(inst, net, hosts, session_in, uid, keep_images=(), cpus_busy=list):
     a = stock_args(inst)
     binder.ensure_binderfs(a)
     binder.ensure_nodes(a, inst.index)
+    card = vkms_card() if gpu.on_vkms(android_of(inst), inst.get("gpu")) else None
     with _pin_lock:
-        write_lxc_config(inst, net, cpus_busy())
+        write_lxc_config(inst, net, cpus_busy(), card)
     net.ensure_up(hosts)
     set_device_permissions()
 
@@ -483,7 +519,7 @@ def start(inst, net, hosts, session_in, uid, keep_images=(), cpus_busy=list):
             "background_start": "true" if session_in.get("background_start") == "true" else "false",
             "lcd_density": inst.get("dpi"),
         }
-        write_props(inst, session, arm)
+        write_props(inst, session, arm, card)
         r = run(["lxc-start", "-P", paths.LXC_PATH, "-n", inst.container, "-d",
                  "-o", os.path.join(inst.dir, "container.log"), "-l", "NOTICE", "--", "/init"], check=False)
         if r.returncode != 0:

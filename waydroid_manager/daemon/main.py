@@ -168,6 +168,9 @@ class Manager(dbus.service.Object):
         """Refuse settings an instance's Android version can't run."""
         if settings.get("root") == "true" and catalog.get(android, "sdk") not in container.ROOT_SDKS:
             raise Error("root is only available on Android 11 and 13", "InvalidArgs")
+        if settings.get("gpu") == "software" and android in catalog.VERSIONS \
+                and catalog.get(android, "software", True) is False:
+            raise Error("Android {} can't render in software: it needs a GPU".format(android), "InvalidArgs")
 
     def cpus_busy(self, iid):
         """The other instances' (cpus limit, pinned CPUs), for iid's pick: called under

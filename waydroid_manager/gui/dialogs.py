@@ -18,6 +18,7 @@ PHONE = [(540, 960, 240), (720, 1280, 320), (900, 1600, 320), (1080, 1920, 440),
 ACTIONS = [("stop", "Stop the instance"), ("freeze", "Freeze (pause)"), ("none", "Keep running")]
 IDLE = [("freeze", "Freeze (pause)"), ("none", "Keep running"), ("stop", "Stop the instance")]
 ARM = [("houdini", "Houdini"), ("libndk", "libndk"), ("none", "Off")]
+GPU = [("auto", "Automatic"), ("software", "Software")]
 ANDROID = [(k, catalog.label(k)) for k in catalog.VERSIONS]
 ROOT_VERSIONS = ("11", "13")    # Magisk Delta works there only
 
@@ -221,6 +222,10 @@ class InstanceDialog(_Dialog):
                                                               "time. Restart the instance to apply.")
         _select(self.arm_row, ARM, self.info.get("arm_translation", "houdini"))
         g.add(self.arm_row)
+        self.gpu_row = _combo("Graphics", GPU, subtitle="Software works on any PC but is slower. "
+                                                        "Restart the instance to apply.")
+        _select(self.gpu_row, GPU, self.info.get("gpu", "auto"))
+        g.add(self.gpu_row)
         self._android_changed()
         if mode == "edit":
             self.apps_row = Adw.SwitchRow(title="App shortcuts in the app grid",
@@ -285,6 +290,10 @@ class InstanceDialog(_Dialog):
         self.root_row.set_sensitive(ok)
         if not ok:
             self.root_row.set_active(False)
+        soft = catalog.get(key, "software", True) is not False
+        self.gpu_row.set_sensitive(soft)
+        if not soft:
+            _select(self.gpu_row, GPU, "auto")
         if self.mode == "create":
             self.android_row.set_subtitle("About {:.1f} GB to download the first time".format(catalog.get(key, "gb")))
 
@@ -313,6 +322,7 @@ class InstanceDialog(_Dialog):
         v["system_writable"] = "true" if self.writable_row.get_active() else "false"
         v["root"] = "true" if self.root_row.get_active() else "false"
         v["arm_translation"] = ARM[self.arm_row.get_selected()][0]
+        v["gpu"] = GPU[self.gpu_row.get_selected()][0]
         if self.mode == "edit":
             v["desktop_apps"] = "true" if self.apps_row.get_active() else "false"
             seen = set()

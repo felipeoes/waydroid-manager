@@ -20,7 +20,7 @@ import dbus
 import dbus.mainloop.glib
 from gi.repository import GLib
 
-from .. import paths
+from .. import gpu, paths
 from ..client import Daemon, DaemonError
 from ..instance import Instance
 from ..glibcompat import signal_add
@@ -88,7 +88,8 @@ class Session:
             [sys.executable, "-m", "waydroid_manager.session.wlproxy", "--listen", listen,
              "--upstream", upstream, "--id", self.iid, "--name", inst.name,
              "--width", inst.get("width"), "--height", inst.get("height"), "--zoom", inst.get("zoom"),
-             "--theme", color_scheme(), "--close-action", inst.get("close_action")],
+             "--theme", color_scheme(), "--close-action", inst.get("close_action")]
+            + (["--cpu-buffers"] if gpu.on_vkms(inst.get("android"), inst.get("gpu")) else []),
             stdout=subprocess.PIPE, stdin=subprocess.DEVNULL, env=env,
             stderr=open(os.path.join(paths.user_runtime_dir(self.iid), "wlproxy.log"), "w")
             if os.environ.get("WDM_PROXY_TRACE") == "1" else None)

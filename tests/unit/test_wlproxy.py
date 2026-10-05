@@ -492,6 +492,51 @@ class ClipboardTest(unittest.TestCase):
         self.assertEqual(self.hwc_reads()[0], b"")
 
 
+class CpuBufferTest(unittest.TestCase):
+    """Software rendering: Android's dmabufs reach the compositor as shm over the same fd."""
+    SHM, DMABUF, PARAMS, BUF = 30, 31, 32, 33
+    AB24 = 0x34324241
+
+    def setUp(self):
+        self.h = h = Harness()
+        h.s.cfg.cpu_buffers = True
+        h.c2s = h.s.c2s = wp.Stream(h.s.on_request, h.s.post_feed_c2s, count_fds=lambda o, op: int(
+            h.s.objs.get(o) == "zwp_linux_buffer_params_v1" and op == P.ZWP_LINUX_BUFFER_PARAMS_ADD))
+        h.setup_globals()
+        h.req(msg(REG, P.WL_REGISTRY_BIND, "usun", 7, "wl_shm", 1, self.SHM),
+              msg(REG, P.WL_REGISTRY_BIND, "usun", 11, "zwp_linux_dmabuf_v1", 3, self.DMABUF))
+        h.ev(msg(self.SHM, P.WL_SHM_EV_FORMAT, "u", 0), msg(self.SHM, P.WL_SHM_EV_FORMAT, "u", self.AB24))
+        self.fd = os.memfd_create("dmabuf")
+        os.ftruncate(self.fd, 64 * 4 * 32)
+
+    def create(self, modifier=0):
+        h = self.h
+        sent = h.req(msg(self.DMABUF, P.ZWP_LINUX_DMABUF_CREATE_PARAMS, "n", self.PARAMS),
+                     msg(self.PARAMS, P.ZWP_LINUX_BUFFER_PARAMS_ADD, "uuuuu", 0, 0, 64 * 4, modifier >> 32,
+                         modifier & 0xffffffff), fds=[self.fd])
+        sent += h.req(msg(self.PARAMS, P.ZWP_LINUX_BUFFER_PARAMS_CREATE_IMMED, "niiuu", self.BUF, 64, 32,
+                          self.AB24, 0))
+        fds = h.c2s.fds[:h.c2s.out_fds]
+        return [(o, op) for o, op, _ in sent], sent[-2:], fds
+
+    def test_linear_buffer_becomes_shm_on_its_own_fd(self):
+        ops, (create, destroy), fds = self.create()
+        pool = create[0]
+        self.assertEqual(ops[:2], [(self.DMABUF, P.ZWP_LINUX_DMABUF_CREATE_PARAMS),
+                                   (self.PARAMS, P.ZWP_LINUX_BUFFER_PARAMS_ADD)])
+        self.assertEqual(ops[2], (self.SHM, P.WL_SHM_CREATE_POOL))
+        self.assertEqual((create[1], args(create[2], "niiiiu")), (P.WL_SHM_POOL_CREATE_BUFFER,
+                                                                  [self.BUF, 0, 64, 32, 256, self.AB24]))
+        self.assertEqual(destroy[:2], (pool, P.WL_SHM_POOL_DESTROY))
+        self.assertEqual(len(fds), 2)          # the dmabuf for add, a copy of it for create_pool
+        self.assertEqual(os.fstat(fds[1]).st_ino, os.fstat(self.fd).st_ino)
+
+    def test_tiled_buffer_stays_a_dmabuf(self):
+        ops, _, fds = self.create(modifier=1 << 56 | 4)
+        self.assertEqual(ops[-1], (self.PARAMS, P.ZWP_LINUX_BUFFER_PARAMS_CREATE_IMMED))
+        self.assertEqual(len(fds), 1)
+
+
 class FileDropTest(unittest.TestCase):
     """Files dropped on the window are the proxy's: the APKs among them are reported for installing."""
 

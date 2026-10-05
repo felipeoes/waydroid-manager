@@ -1,0 +1,2 @@
+# The hidden vkms device software rendering draws into: GNOME must not take it for a GPU
+SUBSYSTEM=="drm", KERNELS=="waydroid-manager", TAG+="mutter-device-ignore"

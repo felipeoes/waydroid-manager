@@ -8,7 +8,7 @@ import unittest
 import zipfile
 from unittest import mock
 
-from waydroid_manager import catalog
+from waydroid_manager import catalog, gpu
 from waydroid_manager.daemon import container, gapps, images, layers, storage, util
 from waydroid_manager.instance import CREATE_ONLY, Instance, validate_setting
 
@@ -22,6 +22,7 @@ class CatalogTest(unittest.TestCase):
         for key, v in catalog.VERSIONS.items():
             self.assertTrue(("ota" in v) != ("zip" in v), key)    # exactly one source
             self.assertIn(v.get("gapps", "image"), ("image", "mtg14", "gms_apex"), key)
+            self.assertIn(v.get("software", True), (True, False, "vkms"), key)
 
     def test_android_is_chosen_at_creation(self):
         self.assertEqual(validate_setting("android", "16"), "16")
@@ -129,6 +130,17 @@ class PropsTest(unittest.TestCase):
         inst = Instance.new("4", 4, 1000, "", {}, {})
         inst.set("android", "16")       # create-only is enforced by the daemon, not the model
         self.assertEqual(container.android_of(inst), "16")
+
+
+class GpuTest(unittest.TestCase):
+    def test_android_17_renders_on_vkms_in_software(self):
+        with mock.patch.object(gpu, "host_gpu", return_value="/dev/dri/renderD128"):
+            self.assertTrue(gpu.on_vkms("17", "software"))
+            self.assertFalse(gpu.on_vkms("17", "auto"))
+            self.assertFalse(gpu.on_vkms("16", "software"))      # stock Waydroid's software path
+            self.assertFalse(gpu.on_vkms(None, "software"))      # stock Waydroid on Android 10
+        with mock.patch.object(gpu, "host_gpu", return_value=None):
+            self.assertTrue(gpu.on_vkms("17", "auto"))           # no usable GPU
 
 
 class AppArmorTest(unittest.TestCase):

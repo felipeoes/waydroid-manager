@@ -78,6 +78,7 @@ install -Dm644 "$SRC/data/dbus/system-services/io.github.waydroidmanager.Manager
 mkdir -p "$D$UNITDIR"
 sed "s|@BINDIR@|$BINDIR|g" "$SRC/data/systemd/waydroid-manager.service" > "$D$UNITDIR/waydroid-manager.service"
 chmod 644 "$D$UNITDIR/waydroid-manager.service"
+install -Dm644 "$SRC/data/udev/70-waydroid-manager.rules" "$D/usr/lib/udev/rules.d/70-waydroid-manager.rules"
 install -Dm644 "$SRC/data/applications/io.github.waydroidmanager.desktop" \
     "$D/usr/share/applications/io.github.waydroidmanager.desktop"
 # a configuration file: never overwrite the user's copy
