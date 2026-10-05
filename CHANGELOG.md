@@ -6,6 +6,17 @@ All notable changes to waydroid-multi are listed here. The format follows
 
 ## [Unreleased]
 
+## [0.4.1] - 2026-10-04
+
+### Changed
+- The instance window's Back, Home and Recents buttons sit at the bottom of the toolbar, like
+  Android's navigation bar. The resize grip below them is gone: drag any edge to resize.
+
+### Fixed
+- Instance windows no longer open maximized. Waydroid maximizes its window before naming it,
+  and that request reached the desktop. A phone-sized instance then showed its screen small in
+  the middle of a wide window.
+
 ## [0.4.0] - 2026-10-04
 
 ### Added
@@ -93,7 +104,8 @@ First release.
 - Root daemon hardened against symlink and race attacks, root-enabling Android properties,
   and misuse of passed file descriptors. Each user sees and controls only their own instances.
 
-[Unreleased]: https://github.com/felipeoes/waydroid-multi-instances/compare/v0.4.0...HEAD
+[Unreleased]: https://github.com/felipeoes/waydroid-multi-instances/compare/v0.4.1...HEAD
+[0.4.1]: https://github.com/felipeoes/waydroid-multi-instances/compare/v0.4.0...v0.4.1
 [0.4.0]: https://github.com/felipeoes/waydroid-multi-instances/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/felipeoes/waydroid-multi-instances/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/felipeoes/waydroid-multi-instances/compare/v0.1.0...v0.2.0

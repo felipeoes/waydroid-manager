@@ -905,8 +905,10 @@ class Session:
                     self.zoom = self.initial_zoom()
             return [msg(tid, op, "s", self.app_id_for(app_id))]
         if op in (P.XDG_TOPLEVEL_SET_MAXIMIZED, P.XDG_TOPLEVEL_UNSET_MAXIMIZED) and \
-                self.window and self.window.toplevel == tid:
-            return []   # calibration maximize would skew the zoom; the window size is ours
+                self.toplevels.get(tid, {}).get("app_id") in (None, FULL_UI_APP_ID):
+            # The HWC's calibration maximize would skew the zoom; the window size is ours. It
+            # comes before set_app_id, so a toplevel not yet known as an app's counts as full-UI.
+            return []
         if op == P.XDG_TOPLEVEL_DESTROY:
             if self.window and self.window.toplevel == tid:
                 out = [msg(tid, op)]
@@ -1668,11 +1670,6 @@ class Session:
                 elif self.seat:
                     self.to_server(msg(w.toplevel, P.XDG_TOPLEVEL_MOVE, "ou", self.seat, serial))
                 self.last_title_click = now
-            return
-        if kind == "toolbar" and action == "resize":
-            if pressed and self.seat:
-                self.to_server(msg(w.toplevel, P.XDG_TOPLEVEL_RESIZE, "oou", self.seat, serial,
-                                   P.RESIZE_EDGE["bottom_right"]))
             return
         if pressed:
             self._tip(None)

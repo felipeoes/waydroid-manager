@@ -101,6 +101,27 @@ class LabelTest(unittest.TestCase):
         self.assertIsNotNone(h.s.window)
 
 
+class CalibrationMaximizeTest(unittest.TestCase):
+    def test_maximize_before_app_id_is_dropped(self):
+        # The HWC maximizes its full-UI toplevel before naming it: left alone, GNOME keeps it
+        # maximized (the unmaximize comes once it is known, and is dropped)
+        h = Harness()
+        h.setup_globals()
+        h.req(msg(COMP, P.WL_COMPOSITOR_CREATE_SURFACE, "n", S),
+              msg(WM, P.XDG_WM_BASE_GET_XDG_SURFACE, "no", XS, S),
+              msg(XS, P.XDG_SURFACE_GET_TOPLEVEL, "n", TL))
+        self.assertEqual(h.req(msg(TL, P.XDG_TOPLEVEL_SET_MAXIMIZED)), [])
+        h.req(msg(TL, P.XDG_TOPLEVEL_SET_APP_ID, "s", "Waydroid"))
+        self.assertEqual(h.req(msg(TL, P.XDG_TOPLEVEL_UNSET_MAXIMIZED)), [])
+
+    def test_app_windows_may_maximize(self):
+        h = Harness()
+        h.setup_globals()
+        h.create_window(app_id="waydroid.com.example.game")
+        (o, op, _), = h.req(msg(TL, P.XDG_TOPLEVEL_SET_MAXIMIZED))
+        self.assertEqual((o, op), (TL, P.XDG_TOPLEVEL_SET_MAXIMIZED))
+
+
 class ZoomTest(unittest.TestCase):
     def setUp(self):
         self.h = Harness(zoom="50")
@@ -212,7 +233,10 @@ class FrameTest(unittest.TestCase):
     def test_toolbar_back_sends_key(self):
         h = self.h
         toolbar = h.s.window.frame["toolbar"]
-        y = 4 + wp.fr.BUTTON_H / 2                               # first button: back
+        height = h.s.window.frame["sizes"]["toolbar"][1]
+        y0, y1 = [(a, b) for x, a, b in wp.fr.toolbar_layout(height) if x == "back"][0]
+        self.assertGreater(y0, height / 2)                       # with Home and Recents at the bottom
+        y = (y0 + y1) / 2
         out = h.ev(msg(PTR, P.WL_POINTER_EV_ENTER, "uoff", 9, toolbar, fixed(20.0), fixed(y)),
                    msg(PTR, P.WL_POINTER_EV_BUTTON, "uuuu", 10, 0, P.BTN_LEFT, 1),
                    msg(PTR, P.WL_POINTER_EV_BUTTON, "uuuu", 11, 0, P.BTN_LEFT, 0))

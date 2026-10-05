@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 """waydroid-multi: run several Waydroid instances side by side."""
 
-__version__ = "0.4.0"
+__version__ = "0.4.1"
 
 HOMEPAGE = "https://github.com/felipeoes/waydroid-multi-instances"

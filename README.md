@@ -75,7 +75,7 @@ before, you can switch to the `.deb` at any time; your instances are kept.
 | | |
 |---|---|
 | Move | drag the title bar |
-| Resize | drag any edge or the grip at the bottom of the toolbar |
+| Resize | drag any edge |
 | Maximize / restore | double-click the title bar |
 | Fullscreen | toolbar button or **F11**; leave with **Esc** or **F11** |
 | Android buttons | ◁ Back, ○ Home, □ Recents, volume up/down |
