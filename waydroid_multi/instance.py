@@ -30,6 +30,7 @@ CPUSET_RE = re.compile(r"^[0-9]+(-[0-9]+)?(,[0-9]+(-[0-9]+)?)*$")
 MEM_RE = re.compile(r"^[0-9]+[KMG]?$")
 MAX_INDEX = 240
 ACTIONS = ("stop", "freeze", "none")
+ARM = ("houdini", "libndk", "none")
 
 
 def validate_id(iid, legacy=False):
@@ -126,11 +127,13 @@ def _device(v):
     return s
 
 
-def _action(v):
-    s = str(v).strip().lower()
-    if s not in ACTIONS:
-        raise ValueError("expected one of {}".format(", ".join(ACTIONS)))
-    return s
+def _choice(options):
+    def f(v):
+        s = str(v).strip().lower()
+        if s not in options:
+            raise ValueError("expected one of {}".format(", ".join(options)))
+        return s
+    return f
 
 
 def _name(v):
@@ -153,18 +156,20 @@ SETTINGS = {
     "memory": (_memory, default_memory, "memory limit, e.g. 4G"),
     "device_model": (_device, "waydroid", "device model preset (see 'waydroid-multi devices')"),
     "zoom": (_zoom, "auto", "window zoom in % (25-200) or auto (fit the screen)"),
-    "close_action": (_action, "stop", "what closing the window does: stop|freeze|none"),
-    "idle_action": (_action, "freeze", "what Android idle-suspend does: freeze|stop|none"),
-    "window_labels": (_bool, "true", "label windows per instance (Wayland proxy)"),
-    "window_frame": (_bool, "true", "title bar, toolbar and resizing (needs window_labels)"),
+    "close_action": (_choice(ACTIONS), "stop", "what closing the window does: stop|freeze|none"),
+    "idle_action": (_choice(ACTIONS), "freeze", "what Android idle-suspend does: freeze|stop|none"),
     "root": (_bool, "false", "Root: Magisk Delta in the instance (restart)"),
     "system_writable": (_bool, "false", "Android system partition is writable (restart)"),
+    "arm_translation": (_choice(ARM), "houdini", "runs ARM apps: houdini|libndk|none (restart)"),
     "desktop_apps": (_bool, "false", "create desktop entries for this instance's apps"),
 }
 
+# Gone settings a manager from an older version may still send: ignored, not refused
+REMOVED_SETTINGS = {"window_labels", "window_frame"}
+
 # Settings that only take effect at the next start
 RESTART_SETTINGS = {"width", "height", "dpi", "cpus", "cpuset", "memory", "device_model",
-                    "window_labels", "window_frame", "system_writable", "root"}
+                    "system_writable", "root", "arm_translation"}
 
 
 def setting_default(key):

@@ -84,8 +84,7 @@ class Session:
             [sys.executable, "-m", "waydroid_multi.session.wlproxy", "--listen", listen,
              "--upstream", upstream, "--id", self.iid, "--name", inst.name,
              "--width", inst.get("width"), "--height", inst.get("height"), "--zoom", inst.get("zoom"),
-             "--frame", "on" if inst.getbool("window_frame") else "off", "--theme", color_scheme(),
-             "--close-action", inst.get("close_action")],
+             "--theme", color_scheme(), "--close-action", inst.get("close_action")],
             stdout=subprocess.PIPE, stdin=subprocess.DEVNULL, env=env,
             stderr=open(os.path.join(paths.user_runtime_dir(self.iid), "wlproxy.log"), "w")
             if os.environ.get("WDM_PROXY_TRACE") == "1" else None)
@@ -145,6 +144,8 @@ class Session:
             self.screenshot()
         elif ev == "action install":
             self.pick_apk()
+        elif ev.startswith("install "):           # an APK dropped on the window
+            self.install_apk(ev[len("install "):])
         elif ev.startswith("action key "):
             log.info("sending key %s", ev.split()[2])
             self._async("SendKey", self.iid, dbus.UInt32(int(ev.split()[2])))
@@ -345,8 +346,8 @@ class Session:
         upstream = wayland_socket()
         if not os.path.exists(upstream):
             raise RuntimeError("Wayland socket {} not found; is a Wayland compositor running?".format(upstream))
-        wl = self.start_proxy(upstream) if self.inst.getbool("window_labels") else upstream
-        if self.inst.getbool("window_labels") and not os.path.exists(desktop.launcher_path(self.iid)):
+        wl = self.start_proxy(upstream)
+        if not os.path.exists(desktop.launcher_path(self.iid)):
             desktop.write_launcher(self.iid, self.inst.name)
         self.session = self.session_dict(wl)
         self.bus.add_signal_receiver(self.on_state, signal_name="StateChanged", dbus_interface=paths.DBUS_IFACE,

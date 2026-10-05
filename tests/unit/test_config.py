@@ -150,7 +150,7 @@ class InstanceTest(unittest.TestCase):
         self.assertEqual(validate_setting("memory", "4gb"), "4G")
         self.assertEqual(validate_setting("cpus", "2.0"), "2")
         self.assertEqual(validate_setting("cpuset", "ALL"), "all")
-        self.assertEqual(validate_setting("window_labels", "off"), "false")
+        self.assertEqual(validate_setting("root", "off"), "false")
         self.assertEqual(validate_setting("close_action", "FREEZE"), "freeze")
         self.assertEqual(validate_setting("zoom", "75%"), "75")
         self.assertEqual(validate_setting("zoom", "AUTO"), "auto")

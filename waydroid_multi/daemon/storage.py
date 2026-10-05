@@ -100,55 +100,90 @@ def delete_instance_files(inst):
 
 
 def install_apk(inst, fd, filename):
-    """Stream the APK into 'pm install -S' over stdin.
+    """Stream an APK into 'pm install -S' over stdin, or the APKs of an XAPK into one install session.
 
     Nothing is staged in the instance's data dir: its top level belongs to the
     user, so a root write there could be redirected through a planted symlink.
     """
+    src = os.fdopen(fd, "rb", closefd=True)
+    try:
+        if filename.lower().endswith(".xapk"):
+            out = _install_xapk(inst, src)
+        else:
+            out = _pm(inst, ["install", "-r", "-S", str(os.fstat(src.fileno()).st_size)], src)
+    finally:
+        src.close()
+    log.info("%s: install %r: %s", inst.id, filename, out)
+    return out
+
+
+def _install_xapk(inst, src):
+    """An XAPK is a zip of the app's APKs (base and splits): each is streamed from it into
+    one pm install session. OBB files some XAPKs carry are not copied."""
+    import zipfile
+    try:
+        z = zipfile.ZipFile(src)
+    except zipfile.BadZipFile:
+        raise RuntimeError("install failed: not an XAPK file")
+    with z:
+        apks = [i for i in z.infolist() if "/" not in i.filename and i.filename.lower().endswith(".apk")]
+        if not apks:
+            raise RuntimeError("install failed: no APKs in this XAPK")
+        out = _pm(inst, ["install-create", "-r", "-S", str(sum(i.file_size for i in apks))])
+        session = out[out.find("[") + 1:out.find("]")]
+        if not session.isdigit():
+            raise RuntimeError("install failed: " + out[-500:])
+        try:
+            for n, i in enumerate(apks):
+                with z.open(i) as member:  # names are the zip's: never handed to pm
+                    _pm(inst, ["install-write", "-S", str(i.file_size), session, "{}.apk".format(n), "-"],
+                        member)
+            return _pm(inst, ["install-commit", session])
+        except BaseException:
+            _pm(inst, ["install-abandon", session], check=False)
+            raise
+
+
+def _pm(inst, args, src=None, check=True):
+    """Run 'pm ARGS' in the instance, src (a file object) on its stdin; returns its output."""
     import subprocess
     import threading
     from .util import android_attach_env
     # lxc-attach chowns/chmods its stdio, so it must never get the caller's
     # file descriptor directly: feed the APK through a pipe instead.
-    src = os.fdopen(fd, "rb", closefd=True)
-    try:
-        size = os.fstat(src.fileno()).st_size
-        env = android_attach_env(inst.id)
-        cmd = ["lxc-attach", "-P", paths.LXC_PATH, "-n", inst.container, "--clear-env"]
-        for k, v in env.items():
-            cmd += ["--set-var", "{}={}".format(k, v)]
-        cmd += ["--", "/system/bin/pm", "install", "-r", "-S", str(size)]
-        p = subprocess.Popen(cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-        chunks = {"out": b"", "err": b""}
+    env = android_attach_env(inst.id)
+    cmd = ["lxc-attach", "-P", paths.LXC_PATH, "-n", inst.container, "--clear-env"]
+    for k, v in env.items():
+        cmd += ["--set-var", "{}={}".format(k, v)]
+    cmd += ["--", "/system/bin/pm"] + args
+    p = subprocess.Popen(cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    chunks = {"out": b"", "err": b""}
 
-        def drain(stream, key):
-            chunks[key] = stream.read()
-        readers = [threading.Thread(target=drain, args=(p.stdout, "out"), daemon=True),
-                   threading.Thread(target=drain, args=(p.stderr, "err"), daemon=True)]
-        for t in readers:
-            t.start()
-        try:
+    def drain(stream, key):
+        chunks[key] = stream.read()
+    readers = [threading.Thread(target=drain, args=(p.stdout, "out"), daemon=True),
+               threading.Thread(target=drain, args=(p.stderr, "err"), daemon=True)]
+    for t in readers:
+        t.start()
+    try:
+        if src is not None:
             shutil.copyfileobj(src, p.stdin, 1024 * 1024)
-        except (BrokenPipeError, OSError):
-            pass  # pm exited early; its output says why
-        finally:
-            try:
-                p.stdin.close()
-            except OSError:
-                pass
-        try:
-            p.wait(timeout=900)
-        except subprocess.TimeoutExpired:
-            p.kill()
-            p.wait()
-        for t in readers:
-            t.join(5)
-        r = subprocess.CompletedProcess(cmd, p.returncode, chunks["out"], chunks["err"])
+    except (BrokenPipeError, OSError):
+        pass  # pm exited early; its output says why
     finally:
-        src.close()
-    out = (r.stdout + r.stderr).decode("utf-8", "replace").strip()
-    log.info("%s: install %r: %s", inst.id, filename, out)
-    if r.returncode != 0 or "Success" not in out:
+        try:
+            p.stdin.close()
+        except OSError:
+            pass
+    try:
+        p.wait(timeout=900)
+    except subprocess.TimeoutExpired:
+        p.kill()
+        p.wait()
+    for t in readers:
+        t.join(5)
+    out = (chunks["out"] + chunks["err"]).decode("utf-8", "replace").strip()
+    if check and (p.returncode != 0 or "Success" not in out):
         raise RuntimeError("install failed: " + out[-500:])
     return out
 

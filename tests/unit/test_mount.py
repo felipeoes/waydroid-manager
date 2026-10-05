@@ -4,10 +4,10 @@ import tempfile
 import types
 import unittest
 
-from waydroid_multi.daemon import magisk
+from waydroid_multi.daemon import armtrans, magisk
 
 from waydroid_multi.daemon.util import overlay_opts
-from waydroid_multi.instance import RESTART_SETTINGS, validate_setting
+from waydroid_multi.instance import RESTART_SETTINGS, setting_default, validate_setting
 
 
 class OverlayOptsTest(unittest.TestCase):
@@ -30,6 +30,24 @@ class OverlayOptsTest(unittest.TestCase):
         self.assertEqual(validate_setting("root", "false"), "false")
         with self.assertRaises(ValueError):
             validate_setting("root", "yes please")
+
+    def test_arm_translation_setting(self):
+        self.assertIn("arm_translation", RESTART_SETTINGS)
+        self.assertEqual(setting_default("arm_translation"), "houdini")
+        self.assertEqual(validate_setting("arm_translation", " LibNDK "), "libndk")
+        with self.assertRaises(ValueError):
+            validate_setting("arm_translation", "qemu")
+
+
+class ArmTranslationTest(unittest.TestCase):
+    def test_no_layer_without_a_build(self):
+        # neither may download anything
+        self.assertIsNone(armtrans.layer("none", "33"))
+        self.assertIsNone(armtrans.layer("houdini", "28"))
+
+    def test_every_build_has_props(self):
+        for kind, sdk in armtrans.BUILDS:
+            self.assertIn("arm64-v8a", armtrans.PROPS[kind]["ro.product.cpu.abilist"])
 
 
 class MagiskRemoveTest(unittest.TestCase):

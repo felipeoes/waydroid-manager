@@ -2,10 +2,13 @@
 """Small root-side helpers: running commands, mounts, attaching to containers."""
 import ctypes
 import ctypes.util
+import hashlib
 import logging
 import os
+import shutil
 import stat
 import subprocess
+import urllib.request
 
 from .. import paths, stock
 
@@ -40,6 +43,37 @@ def run(cmd, check=True, env=None, input=None, timeout=300):
         raise CommandError("{} failed ({}): {}".format(" ".join(cmd[:3]), r.returncode,
                                                      (r.stderr or r.stdout).strip()[-500:]))
     return r
+
+
+def download(url, sha256, dest, what):
+    """Fetch url to dest unless dest already has the expected sha256; returns dest.
+    Callers serialize calls for the same dest (they share its temp file)."""
+    if os.path.isfile(dest) and sha256_file(dest) == sha256:
+        return dest
+    log.info("downloading %s", what)
+    tmp = dest + ".tmp"
+    try:
+        with urllib.request.urlopen(url, timeout=60) as r, open(tmp, "wb") as f:
+            shutil.copyfileobj(r, f)
+        ok = sha256_file(tmp) == sha256
+        if ok:
+            os.replace(tmp, dest)
+    except OSError as e:
+        raise CommandError("cannot download {}: {}".format(what, e))
+    finally:
+        if os.path.lexists(tmp):
+            os.unlink(tmp)
+    if not ok:
+        raise CommandError("the downloaded {} does not match the expected checksum".format(what))
+    return dest
+
+
+def sha256_file(path):
+    h = hashlib.sha256()
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(1 << 20), b""):
+            h.update(chunk)
+    return h.hexdigest()
 
 
 def bind_mount(src, dst):

@@ -15,7 +15,7 @@ import time
 
 from .. import devices, lxcconfig, paths, stock, stockctl
 from ..instance import PROTECTED_PROP_RE, Instance
-from . import binder, images, magisk, storage
+from . import armtrans, binder, images, magisk, storage
 from .util import (CommandError, apparmor_profile_loaded, attach, bind, bind_file, bind_mount, chown_tree_top,
                    is_mount, log, lxc_state, mount_image, mount_overlay, run, stage_socket, umount_tree)
 
@@ -225,12 +225,15 @@ def sync_root(inst):
 
 
 def mount_rootfs(inst, images_dir):
-    """system.img + overlays, vendor.img + overlays, like stock mount_rootfs."""
+    """system.img + overlays, vendor.img + overlays, like stock mount_rootfs.
+    Returns the ARM translation layer it mounted, or None."""
     rootfs = inst.rootfs
     sync_root(inst)
     umount_tree(rootfs)
     mount_image(os.path.join(images_dir, "system.img"), rootfs)
-    lowers = [os.path.join(inst.dir, "overlay")]
+    sdk = stock.read_prop_file(rootfs + "/system/build.prop", "ro.build.version.sdk")
+    arm = armtrans.layer(inst.get("arm_translation"), sdk)
+    lowers = [os.path.join(inst.dir, "overlay")] + ([arm] if arm else [])
     if os.path.isdir(paths.STOCK_OVERLAY):
         lowers.append(paths.STOCK_OVERLAY)
     mount_overlay(lowers + [rootfs], rootfs, os.path.join(inst.dir, "overlay_rw/system"),
@@ -250,6 +253,7 @@ def mount_rootfs(inst, images_dir):
         bind("/odm", rootfs + "/odm_extra")
     elif os.path.isdir("/vendor/odm"):
         bind("/vendor/odm", rootfs + "/odm_extra")
+    return arm
 
 
 def detect_protocols(inst):
@@ -267,8 +271,9 @@ def detect_protocols(inst):
         inst.save()
 
 
-def write_props(inst, session):
-    """Generate waydroid_base.prop and waydroid.prop for this start."""
+def write_props(inst, session, arm):
+    """Generate waydroid_base.prop and waydroid.prop for this start. arm: the mounted ARM
+    translation layer (None: off, or its download failed and stock's props stay)."""
     # Effective config: stock [properties] overridden by the instance's own
     eff = configparser.ConfigParser(interpolation=None)
     eff.read_dict(inst.cfg)
@@ -276,6 +281,12 @@ def write_props(inst, session):
     eff["properties"] = {}
     for k, v in stock_props.items():
         eff["properties"][k] = v
+    kind = inst.get("arm_translation")
+    if arm:
+        eff["properties"].update(armtrans.PROPS[kind])
+    elif kind == "none":  # also switches off a translation waydroid_script gave stock Waydroid
+        for k in armtrans.ALL_PROPS:
+            eff["properties"].pop(k, None)
     for k, v in inst.cfg["properties"].items():
         if inst.owner_uid != 0 and PROTECTED_PROP_RE.match(k):
             log.warning("%s: ignoring property %s (only root may set it)", inst.id, k)
@@ -348,7 +359,7 @@ def start(inst, net, hosts, session_in, uid, images_in_use=(), cpus_busy=list):
     try:
         if inst.index == 0:
             mount_stock_data(inst)
-        mount_rootfs(inst, images_dir)
+        arm = mount_rootfs(inst, images_dir)
         detect_protocols(inst)
         session = {
             "user_name": pw.pw_name, "user_id": str(uid), "group_id": str(pw.pw_gid),
@@ -356,7 +367,7 @@ def start(inst, net, hosts, session_in, uid, images_in_use=(), cpus_busy=list):
             "background_start": "true" if session_in.get("background_start") == "true" else "false",
             "lcd_density": inst.get("dpi"),
         }
-        write_props(inst, session)
+        write_props(inst, session, arm)
         r = run(["lxc-start", "-P", paths.LXC_PATH, "-n", inst.container, "-d",
                  "-o", os.path.join(inst.dir, "container.log"), "-l", "NOTICE", "--", "/init"], check=False)
         if r.returncode != 0:

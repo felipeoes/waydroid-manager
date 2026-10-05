@@ -16,10 +16,11 @@ from .confirm import APP_ID  # noqa: E402
 
 
 def apk_dialog(title):
-    """File dialog showing only .apk files (also used by the manager's Install APK…)."""
+    """File dialog showing only .apk and .xapk files (also used by the manager's Install APK…)."""
     f = Gtk.FileFilter()
     f.set_name("Android packages")
     f.add_pattern("*.apk")
+    f.add_pattern("*.xapk")
     filters = Gio.ListStore.new(Gtk.FileFilter)
     filters.append(f)
     return Gtk.FileDialog(title=title, filters=filters)
