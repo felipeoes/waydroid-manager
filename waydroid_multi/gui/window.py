@@ -9,6 +9,7 @@ gi.require_version("Adw", "1")
 from gi.repository import Adw, Gio, GLib, Gtk  # noqa: E402
 
 from .. import paths  # noqa: E402
+from ..instance import RESTART_SETTINGS  # noqa: E402
 from ..session import desktop  # noqa: E402
 from .backend import Backend  # noqa: E402
 from .dialogs import CloneDialog, InstanceDialog  # noqa: E402
@@ -170,21 +171,23 @@ class MainWindow(Adw.ApplicationWindow):
         if os.path.exists(UNINSTALL_SCRIPT):
             about.append("Uninstall Waydroid Multi…", "app.uninstall")
         menu.append_section(None, about)
-        header.pack_end(Gtk.MenuButton(icon_name="open-menu-symbolic", menu_model=menu, tooltip_text="Menu"))
+        header.pack_start(Gtk.MenuButton(icon_name="open-menu-symbolic", menu_model=menu, tooltip_text="Menu"))
         view.add_top_bar(header)
 
 
         self.stack = Gtk.Stack()
-        page = Adw.PreferencesPage()
+        # Like an Adw.PreferencesPage, but not capped at its 600 px: the list uses the window's width
+        page = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=24, margin_top=24, margin_bottom=24,
+                       margin_start=12, margin_end=12)
         # Default (stock Waydroid, #0) first, then the instances
         self.stock_group = Adw.PreferencesGroup(title="Default", visible=False)
-        page.add(self.stock_group)
+        page.append(self.stock_group)
         self.group = Adw.PreferencesGroup(title="Instances")
         new_btn = Gtk.Button(child=Adw.ButtonContent(icon_name="list-add-symbolic", label="New Instance"),
                              valign=Gtk.Align.CENTER, css_classes=["flat"])
         new_btn.connect("clicked", lambda *_: self.new_instance())
         self.group.set_header_suffix(new_btn)
-        page.add(self.group)
+        page.append(self.group)
         # Batch actions on the checked instances: the list's first row, its checkbox in line with
         # theirs (an invisible dot stands in for the status dot)
         self.batch_row = Adw.ActionRow(title="Select all", visible=False)
@@ -207,7 +210,9 @@ class MainWindow(Adw.ApplicationWindow):
         new_btn.connect("clicked", lambda *_: self.new_instance())
         self.empty_row.add_suffix(new_btn)
         self.group.add(self.empty_row)
-        self.stack.add_named(page, "list")
+        scroll = Gtk.ScrolledWindow(hscrollbar_policy=Gtk.PolicyType.NEVER, propagate_natural_height=True,
+                                    child=Adw.Clamp(maximum_size=1200, child=page))
+        self.stack.add_named(scroll, "list")
 
         self.error_page = Adw.StatusPage(icon_name="dialog-error-symbolic", title="Daemon not available",
                                          description="Start it with: sudo systemctl start waydroid-multi")
@@ -254,6 +259,12 @@ class MainWindow(Adw.ApplicationWindow):
         self.empty_row.set_visible(not others)
         self.batch_row.set_visible(bool(others))
         self.selection_changed()
+        if not getattr(self, "_fitted", False):
+            # Open as tall as the list (scrolling past 800 px), not with empty space below it
+            self._fitted = True
+            width = self.get_width() or 720
+            height = self.get_content().measure(Gtk.Orientation.VERTICAL, width)[1]
+            self.set_default_size(width, min(height, 800))
 
     def toast(self, msg, timeout=4):
         t = Adw.Toast(title=GLib.markup_escape_text(msg))
@@ -395,20 +406,39 @@ class MainWindow(Adw.ApplicationWindow):
 
     def edit(self, iid):
         def got(info):
-            InstanceDialog("edit", self._save, info=info).present(self)
+            InstanceDialog("edit", lambda iid, values: self._save(iid, values, info), info=info).present(self)
         self.backend.call("Get", iid, ok=got, fail=self.toast, timeout=30)
 
-    def _save(self, iid, values):
+    def _save(self, iid, values, before):
+        # the dialog sends every field: only what it changed may need a restart
+        changed = {k for k, v in values.items() if before.get(k, "") != v}
+        restart = any(k in RESTART_SETTINGS or k.startswith("prop:") for k in changed)
+
         def ok(*_):
             info = next((i for i in self.instances if i["id"] == iid), {})
             if "name" in values and os.path.exists(desktop.launcher_path(iid)):
                 desktop.write_launcher(iid, values["name"])
-            msg = "Saved"
-            if info.get("state") in ACTIVE:
-                msg += " — restart the instance to apply"
-            self.toast(msg)
             self.refresh()
+            if restart and info.get("state") in ACTIVE:
+                self.ask_restart(info)
+            else:
+                self.toast("Saved")
         self.backend.call("SetConfig", iid, values, ok=ok, fail=self.toast, timeout=60)
+
+    def ask_restart(self, info):
+        dlg = Adw.AlertDialog(heading="Restart “{}”?".format(info["name"]),
+                              body="The new settings apply when the instance restarts.")
+        dlg.add_response("later", "Restart Later")
+        dlg.add_response("restart", "Restart Now")
+        dlg.set_response_appearance("restart", Adw.ResponseAppearance.SUGGESTED)
+        dlg.set_default_response("restart")
+
+        def respond(_d, resp):
+            if resp == "restart":
+                self._cli(info["id"], ["stop", info["id"]], "Failed to stop " + info["name"],
+                          then=lambda ok: ok and self.start_or_show(info))
+        dlg.connect("response", respond)
+        dlg.present(self)
 
     def uninstall(self):
         running = [i for i in self.instances if i.get("state") in ACTIVE]

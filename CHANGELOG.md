@@ -6,6 +6,23 @@ All notable changes to waydroid-multi are listed here. The format follows
 
 ## [Unreleased]
 
+### Added
+- ARM translation per instance ("ARM translation" in Settings, `arm_translation` in the CLI):
+  Houdini (default), libndk or off, so ARM-only apps install and run. Each build is downloaded
+  once on first use and shared by all instances. Existing instances get Houdini at their next start.
+- Drop `.apk` or `.xapk` files on an instance window to install them. XAPKs (an app split into
+  several APKs) also install from the toolbar's and the manager's Install APK and `app install`.
+- Saving settings of a running instance that need a restart asks to restart it now or later.
+
+### Fixed
+- The manager shows the disk space of your normal Waydroid (#0) also when it has not run
+  since the daemon started: its data, in your home, is measured too.
+
+### Removed
+- The "Title bar and toolbar" switch: every instance window has them. The `window_frame` and
+  `window_labels` settings and the `--no-frame` and `--no-window-labels` options of `create` are gone
+  (a manager from an older version that still sends them is not refused).
+
 ## [0.3.0] - 2026-10-04
 
 ### Added

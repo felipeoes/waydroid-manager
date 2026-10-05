@@ -83,7 +83,9 @@ names, launcher `waydroid-multi.N.desktop` and window app_id `waydroid-multi.N`.
   - draws the title bar, side toolbar and resize border as its own subsurfaces;
   - scales the picture when the window is resized, and scales input back;
   - handles maximize, fullscreen, F11 and Esc;
-  - synthesizes key presses for the toolbar.
+  - synthesizes key presses for the toolbar;
+  - takes file drags over the window away from the HWC and reports dropped APKs (`install <path>`)
+    to the session, which installs them like the toolbar's Install APK.
 
   Details are in [Wayland proxy notes](#wayland-proxy-notes).
 - **Image store** (`daemon/images.py`): instances run from copies of the stock
@@ -173,10 +175,9 @@ Stored in `instance.cfg` and changed with `waydroid-multi config N set KEY VALUE
 | `zoom` | `auto` | window scale in %, saved when the window is resized |
 | `close_action` | `stop` | closing the window: `stop` (asks first), `freeze` or `none` |
 | `idle_action` | `freeze` | Android idle-suspend: `freeze`, `stop` or `none` |
-| `window_labels` | true | run the Wayland proxy (restart) |
 | `root` | false | install Magisk Delta into the instance (`daemon/magisk.py`, restart) |
 | `system_writable` | false | mount system/vendor overlays writable (restart) |
-| `window_frame` | true | title bar, toolbar and resizing (restart) |
+| `arm_translation` | `houdini` | `houdini`, `libndk` or `none`: a shared read-only system layer (`daemon/armtrans.py`) plus native bridge props (restart) |
 | `desktop_apps` | false | launchers for the instance's apps |
 
 Android properties are set with `prop:<key>`. They go into the instance's `vendor/waydroid.prop`,
@@ -197,6 +198,11 @@ which Android reads last.
   instance's own overlay layer. Magisk then decides which apps get root. Other props that would give root
   (`ro.debuggable`, `ro.secure`, `ro.adb.*`, `service.adb.*`, `ro.boot.*`, …; `PROTECTED_PROP_RE`
   in `instance.py`) still can only be set by root and are filtered when props are written.
+- **ARM translation runs third-party binaries in every instance by default.** The Houdini and
+  libndk builds are the ones `waydroid_script` uses, pinned by commit and sha256 in
+  `daemon/armtrans.py`, and unpacked once into a root-owned layer under
+  `/var/lib/waydroid-multi/arm/` that all instances share read-only. Their init scripts register
+  binfmt_misc handlers, which are host-wide (the containers are privileged) and stay until reboot.
 - **Everything below a user's home, and everything inside a container, is hostile.**
   - `storage.open_stock_data` opens `~/.local/share/waydroid/data` one step at a time with
     `O_NOFOLLOW`. Clone from stock copies through `/proc/<pid>/fd/N`, and #0 bind-mounts it onto

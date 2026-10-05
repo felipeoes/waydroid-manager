@@ -19,6 +19,8 @@ It gives every instance window an identity and a frame:
   until the owner has sent it, so a slow owner (or the HWC itself, after a copy in
   Android) holds back its pongs and GNOME calls the window not responding. The
   proxy fetches the text itself and answers the HWC's reads (see Clip).
+* **APK drops**: files dragged onto the window are taken over from the HWC (it has no
+  use for them); the APKs and XAPKs among them are reported for installing.
 
 Toolbar keys are delivered as synthetic ``wl_keyboard.key`` events (the HWC
 forwards evdev codes and needs no focus; codes >= 239 are dropped, hence
@@ -26,8 +28,9 @@ Alt+Tab for Recents).
 
 Run as a separate process (no gbinder here):
   python3 -m waydroid_multi.session.wlproxy --listen SOCK --upstream SOCK --id ID --name NAME \\
-      [--width W --height H --zoom auto|PCT --frame on|off --theme dark|light --close-action stop|freeze|none]
-Events are written to stdout, one per line: "ready", "close", "zoom <pct>", "action <name>".
+      [--width W --height H --zoom auto|PCT --theme dark|light --close-action stop|freeze|none]
+Events are written to stdout, one per line: "ready", "close", "zoom <pct>", "action <name>",
+"install <path>".
 """
 import argparse
 import array
@@ -42,6 +45,7 @@ import struct
 import sys
 import threading
 import time
+import urllib.parse
 
 from . import frame as fr
 from . import wlschema
@@ -60,6 +64,19 @@ PANEL_ALLOWANCE = 64          # room for a desktop panel when fitting to the scr
 CLIP_TYPES = ("text/plain;charset=utf-8", "UTF8_STRING", "text/plain", "TEXT", "STRING")
 CLIP_WAIT = 1.0               # longest the HWC waits on a slow clipboard owner (GNOME pings time out at 5 s)
 CLIP_MAX = 1 << 20            # more text than this is not passed to Android
+URI_LIST = "text/uri-list"    # what file managers offer when files are dragged
+
+
+def apk_paths(uri_list):
+    """Local .apk and .xapk paths in a dropped text/uri-list."""
+    paths = []
+    for line in uri_list.decode("utf-8", "replace").splitlines():
+        u = urllib.parse.urlsplit(line.strip())
+        path = urllib.parse.unquote(u.path)
+        if (u.scheme == "file" and u.netloc in ("", "localhost") and path.lower().endswith((".apk", ".xapk"))
+                and "\n" not in path and "\r" not in path):
+            paths.append(path)
+    return paths
 
 
 def read_string(payload, off):
@@ -549,6 +566,10 @@ class Session:
         self.clips = {}           # selection offer id -> Clip
         self.clip_stats = {"answered": 0, "late": 0}
         self.own_source = None    # the HWC's wl_data_source while it owns the selection
+        self.dnd_version = 1      # of the HWC's wl_data_device_manager (actions and finish need 3)
+        self.file_drag = None     # offer of the file drag over the window, kept from the HWC
+        self.drag_action = 0      # what the compositor chose for it
+        self.watch = None         # (fd, done(bytes)) -> read fd to EOF from the main loop
 
     # -- helpers ------------------------------------------------------------------
     def new_id(self, kind):
@@ -697,10 +718,12 @@ class Session:
         if iface == "wl_registry" and op == P.WL_REGISTRY_BIND:
             r.u()
             name_iface = r.s()
-            r.u()
+            version = r.u()
             new = r.n()
             self.objs[new] = name_iface
-            if name_iface == "wl_seat":
+            if name_iface == "wl_data_device_manager":
+                self.dnd_version = version
+            elif name_iface == "wl_seat":
                 self.seat = new
             elif name_iface == "wl_output":
                 self.outputs.setdefault(new, {})
@@ -988,6 +1011,9 @@ class Session:
         if iface == "wl_data_offer" and op == P.WL_DATA_OFFER_EV_OFFER and obj in self.offers:
             self.offers[obj].append(r.s())
             return None
+        if iface == "wl_data_offer" and op == P.WL_DATA_OFFER_EV_ACTION and obj == self.file_drag:
+            self.drag_action = r.u()
+            return []
         if iface == "wl_data_source" and op == P.WL_DATA_SOURCE_EV_CANCELLED and obj == self.own_source:
             self.own_source = None
         return None
@@ -1187,6 +1213,9 @@ class Session:
             return None
         if op == P.WL_DATA_DEVICE_EV_ENTER:
             serial, sid, x, y, offer = r.u(), r.o(), r.f(), r.f(), r.o()
+            self.file_drag = None
+            if URI_LIST in self.offers.get(offer, ()) and (sid in self.mine or self.in_tree(sid)):
+                return self._file_drag(offer, serial)
             if sid in self.mine:
                 return []
             if self.in_tree(sid):
@@ -1195,11 +1224,43 @@ class Session:
                 return [msg(did, op, "uoffo", serial, sid, ux, uy, offer)]
             self._dnd_surface = None
             return None
+        if self.file_drag and op in (P.WL_DATA_DEVICE_EV_MOTION, P.WL_DATA_DEVICE_EV_LEAVE,
+                                     P.WL_DATA_DEVICE_EV_DROP):
+            if op == P.WL_DATA_DEVICE_EV_DROP:
+                self._drop_files(self.file_drag)
+            elif op == P.WL_DATA_DEVICE_EV_LEAVE:          # also after a drop: never the HWC's
+                self.file_drag = None
+            return []
         if op == P.WL_DATA_DEVICE_EV_MOTION and getattr(self, "_dnd_surface", None):
             t, x, y = r.u(), r.f(), r.f()
             ux, uy = self.unscale_point(self._dnd_surface, x, y)
             return [msg(did, op, "uff", t, ux, uy)]
         return None
+
+    def _file_drag(self, offer, serial):
+        """Files dragged onto the window: accept them as copies, unseen by the HWC."""
+        self._dnd_surface = None
+        self.file_drag, self.drag_action = offer, 0
+        self.to_server(msg(offer, P.WL_DATA_OFFER_ACCEPT, "us", serial, URI_LIST))
+        if self.dnd_version >= 3:
+            copy = P.DND_ACTION_COPY
+            self.to_server(msg(offer, P.WL_DATA_OFFER_SET_ACTIONS, "uu", copy, copy))
+        return []
+
+    def _drop_files(self, offer):
+        """Read the dropped file list; report its APKs, then end the drag for the source."""
+        if not self.watch:
+            return
+        finish = self.dnd_version >= 3 and self.drag_action != 0   # finish without an action is an error
+        rfd, wfd = os.pipe()
+        self.to_server(msg(offer, P.WL_DATA_OFFER_RECEIVE, "s", URI_LIST), fds=[wfd])
+
+        def done(data):
+            for path in apk_paths(data):
+                self.emit("install " + path)
+            if finish and offer in self.offers:            # the HWC may have destroyed it meanwhile
+                self.to_server(msg(offer, P.WL_DATA_OFFER_FINISH))
+        self.watch(rfd, done)
 
     def _clip_selection(self, offer):
         """A new selection: start fetching its text for the HWC (see Clip)."""
@@ -1685,6 +1746,31 @@ class Session:
 
 # -- I/O ----------------------------------------------------------------------------------
 
+class PipeReader:
+    """Reads a pipe to EOF from the main loop, then calls done(data) and flushes the connection."""
+
+    def __init__(self, conn, fd, done):
+        self.conn, self.fd, self.done, self.data = conn, fd, done, b""
+        os.set_blocking(fd, False)
+        conn.proxy.sel.register(fd, selectors.EVENT_READ, self)
+
+    def on_event(self, _fileobj, _mask):
+        try:
+            b = os.read(self.fd, 65536)
+        except BlockingIOError:
+            return
+        except OSError:
+            b = b""
+        self.data += b
+        if b and len(self.data) <= CLIP_MAX:
+            return
+        self.conn.proxy.sel.unregister(self.fd)
+        os.close(self.fd)
+        if not self.conn.closed:
+            self.done(self.data)
+            self.conn.pump()
+
+
 class Connection:
     def __init__(self, proxy, client, upstream):
         self.proxy = proxy
@@ -1696,6 +1782,7 @@ class Connection:
                           count_fds=self.tr.request_fds)
         self.s2c = Stream(self._event)
         self.session.c2s, self.session.s2c = self.c2s, self.s2c
+        self.session.watch = lambda fd, done: PipeReader(self, fd, done)
         self.closed = False
 
     def _event(self, obj, op, payload):
@@ -1900,11 +1987,10 @@ def main(argv=None):
     p.add_argument("--width", type=int, default=0)
     p.add_argument("--height", type=int, default=0)
     p.add_argument("--zoom", default="auto")
-    p.add_argument("--frame", default="on", choices=("on", "off"))
     p.add_argument("--theme", default="dark", choices=("dark", "light"))
     p.add_argument("--close-action", default="stop", choices=("stop", "freeze", "none"))
     o = p.parse_args(argv)
-    cfg = Config(o.id, o.name, o.width, o.height, o.zoom, o.frame == "on", o.theme, o.close_action)
+    cfg = Config(o.id, o.name, o.width, o.height, o.zoom, True, o.theme, o.close_action)
     global LOG_PATH
     cache = os.environ.get("XDG_CACHE_HOME") or os.path.expanduser("~/.cache")
     os.makedirs(os.path.join(cache, "waydroid-multi"), exist_ok=True)

@@ -6,7 +6,8 @@ import gi
 
 gi.require_version("Gtk", "4.0")
 gi.require_version("Adw", "1")
-from gi.repository import Adw, GLib, Gtk  # noqa: E402
+gi.require_version("Pango", "1.0")
+from gi.repository import Adw, GLib, Gtk, Pango  # noqa: E402
 
 from .. import devices  # noqa: E402
 from ..instance import host_memory_bytes, setting_default  # noqa: E402
@@ -16,6 +17,7 @@ TABLET = [(960, 540, 160), (1280, 720, 240), (1600, 900, 240), (1920, 1080, 280)
 PHONE = [(540, 960, 240), (720, 1280, 320), (900, 1600, 320), (1080, 1920, 440), (1440, 2560, 560)]
 ACTIONS = [("stop", "Stop the instance"), ("freeze", "Freeze (pause)"), ("none", "Keep running")]
 IDLE = [("freeze", "Freeze (pause)"), ("none", "Keep running"), ("stop", "Stop the instance")]
+ARM = [("houdini", "Houdini"), ("libndk", "libndk"), ("none", "Off")]
 
 
 def cpu_options():
@@ -46,8 +48,18 @@ def classify(width, height, dpi):
     return "custom", 0
 
 
+def _wrapping(row):
+    """Options wrap onto more lines instead of ending in "…" when they don't fit."""
+    f = Gtk.SignalListItemFactory()
+    f.connect("setup", lambda _f, item: item.set_child(
+        Gtk.Label(wrap=True, wrap_mode=Pango.WrapMode.WORD_CHAR, max_width_chars=22, xalign=0)))
+    f.connect("bind", lambda _f, item: item.get_child().set_label(item.get_item().get_string()))
+    row.set_factory(f)
+    return row
+
+
 def _combo(title, options, subtitle=None):
-    row = Adw.ComboRow(title=title)
+    row = _wrapping(Adw.ComboRow(title=title))
     if subtitle:
         row.set_subtitle(subtitle)
     row.set_model(Gtk.StringList.new([label for _, label in options]))
@@ -134,7 +146,7 @@ class InstanceDialog(_Dialog):
             self.kind.add(Adw.Toggle(name=name, label=label))
         type_row.add_suffix(self.kind)
         g.add(type_row)
-        self.res_row = Adw.ComboRow(title="Resolution")
+        self.res_row = _wrapping(Adw.ComboRow(title="Resolution"))
         g.add(self.res_row)
         self.width_row = _spin("Width", 240, 7680, 2, cw)
         self.height_row = _spin("Height", 240, 7680, 2, ch)
@@ -145,20 +157,11 @@ class InstanceDialog(_Dialog):
         self._kind_changed(select=idx)
         self.kind.connect("notify::active-name", lambda *_: self._kind_changed())
 
-        # -- window
-        g = Adw.PreferencesGroup(title="Window")
-        page.add(g)
-        self.frame_row = Adw.SwitchRow(title="Title bar and toolbar",
-                                       subtitle="Move and resize the window (its size is remembered), "
-                                                "Android buttons (Back, Home, …)")
-        self.frame_row.set_active(self.info.get("window_frame", "true") == "true")
-        g.add(self.frame_row)
-
         # -- device
         g = Adw.PreferencesGroup(title="Device", description="What apps see as this device (next start)")
         page.add(g)
         self.dev_keys = list(devices.PRESETS)
-        self.device_row = Adw.ComboRow(title="Device model")
+        self.device_row = _wrapping(Adw.ComboRow(title="Device model"))
         self.device_row.set_model(Gtk.StringList.new([devices.label(k) for k in self.dev_keys]))
         cur = self.info.get("device_model", "waydroid")
         self.device_row.set_selected(self.dev_keys.index(cur) if cur in self.dev_keys else 0)
@@ -205,6 +208,10 @@ class InstanceDialog(_Dialog):
                                                "Restart the instance to apply.")
         self.root_row.set_active(self.info.get("root", "false") == "true")
         g.add(self.root_row)
+        self.arm_row = _combo("ARM translation", ARM, subtitle="Runs ARM-only apps; needs internet the first "
+                                                              "time. Restart the instance to apply.")
+        _select(self.arm_row, ARM, self.info.get("arm_translation", "houdini"))
+        g.add(self.arm_row)
         if mode == "edit":
             self.apps_row = Adw.SwitchRow(title="App shortcuts in the app grid",
                                           subtitle="Create launchers for this instance's apps")
@@ -270,9 +277,6 @@ class InstanceDialog(_Dialog):
         else:
             _, w, h, dpi = self.presets[self.res_row.get_selected()]
         v["width"], v["height"], v["dpi"] = str(w), str(h), str(dpi)
-        v["window_frame"] = "true" if self.frame_row.get_active() else "false"
-        if self.frame_row.get_active():
-            v["window_labels"] = "true"  # the frame needs it; it has no row of its own
         key = self.dev_keys[self.device_row.get_selected()]
         v["device_model"] = key
         if key == "custom":
@@ -284,6 +288,7 @@ class InstanceDialog(_Dialog):
         v["idle_action"] = IDLE[self.idle_row.get_selected()][0]
         v["system_writable"] = "true" if self.writable_row.get_active() else "false"
         v["root"] = "true" if self.root_row.get_active() else "false"
+        v["arm_translation"] = ARM[self.arm_row.get_selected()][0]
         if self.mode == "edit":
             v["desktop_apps"] = "true" if self.apps_row.get_active() else "false"
             seen = set()

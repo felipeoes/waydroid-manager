@@ -20,8 +20,10 @@ window. Your normal Waydroid keeps working exactly as before.
     is remembered)
   - double-click the title bar to maximize
   - **◁ ○ □** Back / Home / Recents, volume buttons, screenshots, Install APK and fullscreen
+  - drop `.apk` files on the window to install them
 - Find each instance in the dock and app grid under its own name
 - Install APKs, launch apps, and connect with `adb`, per instance
+- Run **ARM-only apps**: each instance picks its ARM translation (Houdini, libndk or off)
 
 ## Requirements
 
@@ -57,7 +59,7 @@ before, you can switch to the `.deb` at any time; your instances are kept.
 
 ## Using the manager app
 
-![The manager: your normal Waydroid as #0 under Default, the other instances below, and an instance's ⋮ menu](docs/screenshots/manager.png)
+![The manager: your normal Waydroid as #0 under Default, the other instances below with their disk use, some running](docs/screenshots/manager.png)
 
 - **+ New Instance** creates an instance. Instances are numbered automatically: your normal
   Waydroid is **#0**, new ones get the next free number (#1, #2, …).
@@ -78,7 +80,7 @@ before, you can switch to the `.deb` at any time; your instances are kept.
 | Fullscreen | toolbar button or **F11**; leave with **Esc** or **F11** |
 | Android buttons | ◁ Back, ○ Home, □ Recents, volume up/down |
 | Screenshot | toolbar camera button, saved to `~/Pictures/Waydroid/<instance name>` |
-| Install APK | toolbar **APK** button, then pick an `.apk` |
+| Install APK | toolbar **APK** button, then pick an `.apk`; or drop `.apk` files on the window |
 
 Closing the window stops the instance after asking you to confirm. In its Settings you can
 make closing pause it or keep it running instead.
@@ -115,6 +117,10 @@ Run `waydroid-multi --help` to see all commands.
   `waydroid-multi app install N /var/lib/waydroid-multi/magisk-delta.apk`. Official Magisk does
   not work on Waydroid (no boot image). The switch is open to the instance owner, and root in
   Android is close to root on the host, so only enable it on machines you trust.
+- **ARM translation:** instances run ARM-only apps through Houdini by default. In Settings, or with
+  `config set N arm_translation libndk` (or `none`), pick libndk or turn it off, then restart. The
+  first start with each one downloads it (the builds `waydroid_script` uses), so it needs internet;
+  without internet the instance starts without it. Works on x86_64 with Android 11 or 13 images.
 - **Updating Waydroid:** run `waydroid upgrade` as usual. Instances pick up the new Android
   version the next time they start.
 - **Google Play on a clone:** a clone counts as a new device, so register it once. Run
