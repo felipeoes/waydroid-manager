@@ -1049,6 +1049,8 @@ class Session:
     def _toplevel_event(self, tid, op, r):
         w = self.window
         if not w or tid != w.toplevel:
+            if op == P.XDG_TOPLEVEL_EV_CONFIGURE and tid in self.toplevels:
+                return self._app_configure(self.toplevels[tid], tid, op, r)
             return None
         if op == P.XDG_TOPLEVEL_EV_CLOSE:
             self._close_requested()
@@ -1061,6 +1063,18 @@ class Session:
         self._configure(width, height, states)
         # The HWC would hotplug Android's display on any real size: hide it
         return [msg(tid, op, "iia", 0, 0, raw_states)]
+
+    @staticmethod
+    def _app_configure(t, tid, op, r):
+        """An app window: the HWC hotplugs Android's display (new buffers, touch reset, a
+        visible stall) on every sized configure, and the desktop sends one on each focus
+        change. Only a new size gets through, so resizing still works."""
+        width, height, raw_states = r.i(), r.i(), r.a()
+        if (width, height) == t.get("size"):
+            width = height = 0
+        elif width > 1 and height > 1:
+            t["size"] = (width, height)
+        return [msg(tid, op, "iia", width, height, raw_states)]
 
     FILL_STATES = {P.XDG_TOPLEVEL_STATE_MAXIMIZED, 5, 6, 7, 8}     # maximized, tiled_*
 

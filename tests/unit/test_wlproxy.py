@@ -101,6 +101,22 @@ class LabelTest(unittest.TestCase):
         self.assertIsNotNone(h.s.window)
 
 
+class AppWindowConfigureTest(unittest.TestCase):
+    def test_unchanged_size_hidden(self):
+        # The HWC hotplugs Android's display on every sized configure, and the desktop sends one
+        # on each focus change (the activated state, 4): only a new size may reach it
+        h = Harness()
+        h.setup_globals()
+        h.create_window(app_id="waydroid.com.example.game")
+        focused = struct.pack("=I", 4)
+        sizes = []
+        for w, ht, states in ((1280, 720, b""), (1280, 720, focused), (0, 0, b""), (1280, 720, b""),
+                              (1000, 600, focused)):
+            (_, _, p), = h.ev(msg(TL, P.XDG_TOPLEVEL_EV_CONFIGURE, "iia", w, ht, states))
+            sizes.append(args(p, "ii"))
+        self.assertEqual(sizes, [[1280, 720], [0, 0], [0, 0], [0, 0], [1000, 600]])
+
+
 class CalibrationMaximizeTest(unittest.TestCase):
     def test_maximize_before_app_id_is_dropped(self):
         # The HWC maximizes its full-UI toplevel before naming it: left alone, GNOME keeps it
