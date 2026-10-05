@@ -50,7 +50,11 @@ is single-instance in stock Waydroid, and runs **next to** stock Waydroid withou
 Instances are numbered: stock Waydroid is **#0** (`default`), and new instances take the lowest
 free number from 1 to 240 (`registry.allocate_index`). The number is the instance id
 everywhere: directory, container name, veth `wdmNv`, MAC `02:57:44:4d:HH:LL`, IP, binder node
-names, launcher `waydroid-multi.N.desktop` and window app_id `waydroid-multi.N`.
+names, launcher `waydroid-multi.N.desktop` and window app_id `waydroid-multi.N`. #0's launcher is
+named plain "Waydroid", and stock's `Waydroid.desktop` is hidden for the user by a per-user
+override (`NoDisplay=true`, marked `X-WaydroidMulti=true`), so there is a single Waydroid icon.
+Overriding stock's entry with #0's own doesn't work: GNOME Shell's app grid keeps launching the
+entry it first loaded.
 
 ### Components
 
@@ -133,6 +137,7 @@ names, launcher `waydroid-multi.N.desktop` and window app_id `waydroid-multi.N`.
 | `/var/lib/waydroid-multi/images/` | image store with a `current` symlink |
 | `/run/waydroid-multi/` | network env, dnsmasq hosts file, staged sockets |
 | `~/.local/share/applications/waydroid-multi.*` | per-user launchers |
+| `~/.local/share/applications/Waydroid.desktop` | hides stock's Waydroid icon (#0's is the Waydroid icon) |
 | `~/.cache/waydroid-multi/` | proxy logs (`wlproxy-N.log`) |
 
 ## D-Bus API
