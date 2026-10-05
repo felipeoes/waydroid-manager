@@ -185,30 +185,44 @@ def apparmor_profile_loaded(name):
         return False
 
 
-def stage_socket(src_path, dst_path, uid):
-    """Validate a user's socket and bind it at a root-owned path.
-
-    The socket must be a real (non-symlink) unix socket owned by uid that
-    lives under /run/user/<uid>. It is opened with O_PATH|O_NOFOLLOW and bound
-    through /proc/self/fd so the checked inode is exactly the one mounted.
-    """
+def _open_user_path(src_path, uid, flags, is_kind, kind):
+    """O_PATH fd of a user's src_path: a real (non-symlink) kind owned by uid, under
+    /run/user/<uid>. Binding it through /proc/self/fd mounts exactly the checked inode."""
     runtime = "/run/user/{}/".format(uid)
     norm = os.path.normpath(src_path)
     if not norm.startswith(runtime):
-        raise PermissionError("socket {} is not under {}".format(src_path, runtime))
-    fd = os.open(norm, os.O_PATH | os.O_NOFOLLOW | os.O_CLOEXEC)
+        raise PermissionError("{} {} is not under {}".format(kind, src_path, runtime))
+    fd = os.open(norm, os.O_PATH | os.O_NOFOLLOW | os.O_CLOEXEC | flags)
+    st = os.fstat(fd)
+    if not is_kind(st.st_mode) or st.st_uid != uid:
+        os.close(fd)
+        raise PermissionError("{} is not a {} owned by uid {}".format(src_path, kind, uid))
+    return fd
+
+
+def stage_socket(src_path, dst_path, uid):
+    """Validate a user's socket and bind it at a root-owned path."""
+    fd = _open_user_path(src_path, uid, 0, stat.S_ISSOCK, "socket")
     try:
-        st = os.fstat(fd)
-        if not stat.S_ISSOCK(st.st_mode):
-            raise PermissionError("{} is not a socket".format(src_path))
-        if st.st_uid != uid:
-            raise PermissionError("{} is not owned by uid {}".format(src_path, uid))
         os.makedirs(os.path.dirname(dst_path), mode=0o755, exist_ok=True)
         if is_mount(dst_path):
             umount_tree(dst_path)
         if not os.path.exists(dst_path):
             with open(dst_path, "w"):
                 pass
+        bind_mount("/proc/self/fd/{}".format(fd), dst_path)
+    finally:
+        os.close(fd)
+
+
+def stage_dir(src_path, dst_path, uid):
+    """Validate a user's directory and bind it at a root-owned path. A socket made anew in it
+    (a restarted renderer) shows up there too, which a bind of the socket itself would miss."""
+    fd = _open_user_path(src_path, uid, os.O_DIRECTORY, stat.S_ISDIR, "directory")
+    try:
+        if is_mount(dst_path):
+            umount_tree(dst_path)
+        os.makedirs(dst_path, mode=0o755, exist_ok=True)
         bind_mount("/proc/self/fd/{}".format(fd), dst_path)
     finally:
         os.close(fd)

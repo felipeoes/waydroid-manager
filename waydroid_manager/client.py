@@ -85,6 +85,10 @@ class Daemon:
     def set_config(self, iid, values):
         self.call("SetConfig", iid, dbus.Dictionary(values, signature="ss"), timeout=60)
 
+    def prepare_gpu(self, iid):
+        """{"mode", "renderer"}: see the daemon's PrepareGpu (may download NVIDIA's binaries)."""
+        return self.plain(self.call("PrepareGpu", iid))
+
     def start(self, iid, session):
         self.call("Start", iid, dbus.Dictionary(session, signature="ss"), timeout=300)
 

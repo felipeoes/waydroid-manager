@@ -30,7 +30,7 @@ from ..instance import (CREATE_ONLY, Instance, SETTINGS, list_ids, validate_adb_
                         validate_setting)
 from ..netconfig import host_names
 from ..registry import allocate_index
-from . import container, images, storage
+from . import container, images, nvidia, storage
 from .network import Network
 from .util import active_ids, adb_disconnect, container_pid, log, lxc_state, open_in_container
 
@@ -171,6 +171,8 @@ class Manager(dbus.service.Object):
         if settings.get("gpu") == "software" and android in catalog.VERSIONS \
                 and catalog.get(android, "software", True) is False:
             raise Error("Android {} can't render in software: it needs a GPU".format(android), "InvalidArgs")
+        if settings.get("gpu") == "nvidia" and android in catalog.VERSIONS and not catalog.get(android, "nvidia"):
+            raise Error("Android {} has no NVIDIA build".format(android), "InvalidArgs")
 
     def cpus_busy(self, iid):
         """The other instances' (cpus limit, pinned CPUs), for iid's pick: called under
@@ -838,6 +840,26 @@ class Manager(dbus.service.Object):
         except Error as e:
             return error(e)
         self.run_async(inst.id, lambda: storage.gsf_id(inst), reply, error, lock=False)
+
+    @dbus.service.method(paths.DBUS_IFACE, in_signature="s", out_signature="a{ss}",
+                         sender_keyword="sender", async_callbacks=("reply", "error"))
+    def PrepareGpu(self, iid, sender, reply, error):
+        """How the instance renders at its next start, called by its session before Start:
+        {"mode": see gpu.mode, "renderer": for nvidia, the directory of the renderer the session
+        runs}. NVIDIA's binaries are downloaded on first use."""
+        try:
+            inst = self.load(iid)
+            self.check_owner(inst, self.caller(sender))
+        except Error as e:
+            return error(e)
+
+        def prepare():
+            mode = container.render_for(inst)[0]
+            if mode != "nvidia":
+                return {"mode": mode, "renderer": ""}
+            nvidia.guest_layers(catalog.get(container.android_of(inst), "nvidia"))
+            return {"mode": mode, "renderer": nvidia.host_dir()}
+        self.run_async(inst.id, prepare, reply, error, lock=False)
 
     @dbus.service.method(paths.DBUS_IFACE, in_signature="", out_signature="s",
                          sender_keyword="sender", async_callbacks=("reply", "error"))

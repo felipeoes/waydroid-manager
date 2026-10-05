@@ -6,9 +6,11 @@ starts the window-labelling proxy, asks the daemon to start the container
 with this session's Wayland/PulseAudio sockets, then hosts the instance's
 clipboard/notification/user-monitor services until the instance stops.
 """
+import collections
 import logging
 import os
 import pwd
+import resource
 import shutil
 import signal
 import subprocess
@@ -20,7 +22,7 @@ import dbus
 import dbus.mainloop.glib
 from gi.repository import GLib
 
-from .. import gpu, paths
+from .. import paths
 from ..client import Daemon, DaemonError
 from ..instance import Instance
 from ..glibcompat import signal_add
@@ -78,7 +80,7 @@ class Session:
         self.adb_key = None      # our adb public key, once the adb server is up; "" if unreadable
 
     # -- proxy -------------------------------------------------------------------
-    def start_proxy(self, upstream):
+    def start_proxy(self, upstream, cpu_buffers=False):
         listen = os.path.join(paths.user_runtime_dir(self.iid), "wayland-0")
         env = dict(os.environ)
         env["PYTHONPATH"] = os.path.dirname(paths.PKG_DIR) + os.pathsep + env.get("PYTHONPATH", "")
@@ -89,7 +91,7 @@ class Session:
              "--upstream", upstream, "--id", self.iid, "--name", inst.name,
              "--width", inst.get("width"), "--height", inst.get("height"), "--zoom", inst.get("zoom"),
              "--theme", color_scheme(), "--close-action", inst.get("close_action")]
-            + (["--cpu-buffers"] if gpu.on_vkms(inst.get("android"), inst.get("gpu")) else []),
+            + (["--cpu-buffers"] if cpu_buffers else []),
             stdout=subprocess.PIPE, stdin=subprocess.DEVNULL, env=env,
             stderr=open(os.path.join(paths.user_runtime_dir(self.iid), "wlproxy.log"), "w")
             if os.environ.get("WDM_PROXY_TRACE") == "1" else None)
@@ -267,6 +269,66 @@ class Session:
             "background_start": "true" if self.background else "false",
         }
 
+    # -- NVIDIA renderer ------------------------------------------------------------
+    RENDERER_RESTARTS = 5      # starts within RENDERER_WINDOW seconds before it is given up
+
+    RENDERER_WINDOW = 60
+
+    def start_renderer(self, host):
+        """Run the renderer Android's Venus driver talks to (gpu mode nvidia): as us, in its own
+        process group, restarted when it dies. Returns its socket's directory."""
+        self.renderer_dir = os.path.join(paths.user_runtime_dir(self.iid), "venus")
+        os.makedirs(self.renderer_dir, exist_ok=True)
+        os.chmod(self.renderer_dir, 0o755)          # Android's apps connect too, as other uids
+        self.renderer_host = host
+        self.renderer_starts = collections.deque(maxlen=self.RENDERER_RESTARTS)
+        soft, hard = resource.getrlimit(resource.RLIMIT_NOFILE)   # inherited: a socket per Android client
+        resource.setrlimit(resource.RLIMIT_NOFILE, (max(soft, min(65536, hard)), hard))
+        self.spawn_renderer()
+        return self.renderer_dir
+
+    def spawn_renderer(self):
+        sock = os.path.join(self.renderer_dir, "venus.sock")
+        if os.path.lexists(sock):
+            os.unlink(sock)
+        host = self.renderer_host
+        env = dict(os.environ, RENDER_SERVER_EXEC_PATH=host + "/bin/virgl_render_server",
+                   LD_LIBRARY_PATH=host + "/lib")
+        os.makedirs(paths.user_cache_dir(), exist_ok=True)
+        log_path = os.path.join(paths.user_cache_dir(), "renderer-{}.log".format(self.iid))
+        with open(log_path, "ab") as out:
+            self.renderer = subprocess.Popen(
+                [host + "/bin/virgl_test_server", "--no-virgl", "--venus", "--multi-clients", "--socket-path", sock],
+                env=env, stdin=subprocess.DEVNULL, stdout=out, stderr=out, start_new_session=True)
+        self.renderer_starts.append(time.monotonic())
+        GLib.child_watch_add(GLib.PRIORITY_DEFAULT, self.renderer.pid, self.renderer_exited)
+        deadline = time.monotonic() + 10
+        while not os.path.exists(sock):           # Android connects as it boots
+            if self.renderer.poll() is not None or time.monotonic() > deadline:
+                raise RuntimeError("the NVIDIA renderer didn't start; see " + log_path)
+            time.sleep(0.05)
+
+    def renderer_exited(self, pid, status):
+        if self.stopping or pid != self.renderer.pid:
+            return
+        starts = self.renderer_starts
+        if len(starts) == starts.maxlen and time.monotonic() - starts[0] < self.RENDERER_WINDOW:
+            log.error("the NVIDIA renderer keeps exiting; see %s", os.path.join(paths.user_cache_dir(),
+                                                                               "renderer-{}.log".format(self.iid)))
+            return
+        log.warning("the NVIDIA renderer exited (status %s); restarting it", status)
+        try:
+            self.spawn_renderer()
+        except (OSError, RuntimeError) as e:
+            log.error("%s", e)
+
+    def stop_renderer(self):
+        if getattr(self, "renderer", None):
+            try:
+                os.killpg(self.renderer.pid, signal.SIGTERM)   # its per-client render servers too
+            except ProcessLookupError:
+                pass
+
     def on_state(self, iid, state):
         if str(iid) == self.iid and str(state) in ("STOPPED", "DELETED") and self.started:
             log.info("instance stopped")
@@ -354,10 +416,13 @@ class Session:
         upstream = wayland_socket()
         if not os.path.exists(upstream):
             raise RuntimeError("Wayland socket {} not found; is a Wayland compositor running?".format(upstream))
-        wl = self.start_proxy(upstream)
+        render = self.daemon.prepare_gpu(self.iid)
+        wl = self.start_proxy(upstream, cpu_buffers=render["mode"] == "vkms")
         if not os.path.exists(desktop.launcher_path(self.iid)):
             desktop.write_launcher(self.iid, self.inst.name)
         self.session = self.session_dict(wl)
+        if render["mode"] == "nvidia":
+            self.session["venus_dir"] = self.start_renderer(render["renderer"])
         self.bus.add_signal_receiver(self.on_state, signal_name="StateChanged", dbus_interface=paths.DBUS_IFACE,
                                      bus_name=paths.DBUS_NAME, path=paths.DBUS_PATH)
         # A rename, or another instance taking or freeing our name, changes our adb name
@@ -442,6 +507,8 @@ class Session:
         log.warning("adb connect %s: %s", serial, out)
 
     def cleanup(self):
+        self.stopping = True
+        self.stop_renderer()
         if getattr(self, "confirm", None) and self.confirm.poll() is None:
             self.confirm.terminate()
         for s in self.services:

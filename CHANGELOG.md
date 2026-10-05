@@ -17,9 +17,14 @@ All notable changes to waydroid-multi are listed here. The format follows
   Waydroid's own images are reused when they are the same build.
 - Android 14 and 15 get Google Play from MindTheGapps; Android 17's Google services are unpacked
   from the image so they run in a container.
-- **Graphics** setting ("Graphics" in Settings, `config <id> set gpu software`): Automatic, or
-  Software, which renders on the CPU: slower, but it works on any PC. Android 17 renders in
-  software into a hidden virtual display device (the kernel's vkms module) that no desktop shows.
+- **Full GPU speed on NVIDIA**, with NVIDIA's proprietary driver: Android 13 to 17 render on the
+  NVIDIA card when it shows your desktop. Android's Vulkan goes to a renderer that runs as you, one
+  per device (quinovax/waydroid-nvidia's build of virglrenderer with Venus, downloaded on first use);
+  GLES runs on it through ANGLE. Several devices can share the card.
+- **Graphics** setting ("Graphics" in Settings, `config <id> set gpu …`): Automatic (the GPU that
+  shows your desktop when Android can use it, else software), NVIDIA, or Software, which renders
+  on the CPU: slower, but it works on any PC. Android 17 renders in software into a hidden virtual
+  display device (the kernel's vkms module) that no desktop shows. `doctor` reports which applies.
 
 ### Changed
 - **waydroid-multi is now Waydroid Manager.** The command is `waydroid-manager`, the package

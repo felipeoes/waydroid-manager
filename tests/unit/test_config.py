@@ -129,6 +129,9 @@ class LxcConfigTest(unittest.TestCase):
         self.assertIn("lxc.mount.entry = /run/waydroid-manager/instances/t1/wayland-0 run/xdg/wayland-0 none rbind,create=file 0 0", text)
         self.assertIn("lxc.mount.entry = /var/lib/waydroid-manager/instances/t1/data data none rbind 0 0", text)
         self.assertNotIn("pulse", text)
+        self.assertNotIn("venus", text)
+        text = lxcconfig.session_entries("/w", "", "/d", "/run/waydroid-manager/instances/t1/venus")
+        self.assertIn("/run/waydroid-manager/instances/t1/venus dev/venus none rbind,ro,create=dir 0 0", text)
         with self.assertRaises(lxcconfig.ConfigError):
             lxcconfig.session_entries("/run/a b", "", "/data")
 

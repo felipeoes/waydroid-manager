@@ -3,13 +3,14 @@ import io
 import json
 import os
 import sqlite3
+import tarfile
 import tempfile
 import unittest
 import zipfile
 from unittest import mock
 
 from waydroid_manager import catalog, gpu
-from waydroid_manager.daemon import container, gapps, images, layers, storage, util
+from waydroid_manager.daemon import container, gapps, images, layers, nvidia, storage, util
 from waydroid_manager.instance import CREATE_ONLY, Instance, validate_setting
 
 
@@ -133,14 +134,51 @@ class PropsTest(unittest.TestCase):
 
 
 class GpuTest(unittest.TestCase):
-    def test_android_17_renders_on_vkms_in_software(self):
-        with mock.patch.object(gpu, "host_gpu", return_value="/dev/dri/renderD128"):
-            self.assertTrue(gpu.on_vkms("17", "software"))
-            self.assertFalse(gpu.on_vkms("17", "auto"))
-            self.assertFalse(gpu.on_vkms("16", "software"))      # stock Waydroid's software path
-            self.assertFalse(gpu.on_vkms(None, "software"))      # stock Waydroid on Android 10
-        with mock.patch.object(gpu, "host_gpu", return_value=None):
-            self.assertTrue(gpu.on_vkms("17", "auto"))           # no usable GPU
+    def host(self, nvidia_desktop, igpu):
+        exists = os.path.exists
+        return mock.patch.multiple(gpu, nvidia_display=lambda: nvidia_desktop,
+                                   host_gpu=lambda: "/dev/dri/renderD129" if igpu else None), \
+            mock.patch.object(gpu.os.path, "exists", lambda p: nvidia_desktop if p == "/dev/nvidiactl" else exists(p))
+
+    def modes(self, android, **host):
+        a, b = self.host(**host)
+        with a, b:
+            return [gpu.mode(android, s) for s in gpu.GPU_MODES]      # auto, nvidia, software
+
+    def test_desktop_on_nvidia(self):
+        self.assertEqual(self.modes("13", nvidia_desktop=True, igpu=True), ["nvidia", "nvidia", "software"])
+        self.assertEqual(self.modes("17", nvidia_desktop=True, igpu=True), ["nvidia", "nvidia", "vkms"])
+        # no NVIDIA build for 11: never the iGPU, whose buffers the desktop can't show
+        self.assertEqual(self.modes("11", nvidia_desktop=True, igpu=True)[0], "software")
+
+    def test_desktop_on_another_gpu_or_none(self):
+        self.assertEqual(self.modes("16", nvidia_desktop=False, igpu=True)[0], "gpu")
+        self.assertEqual(self.modes("17", nvidia_desktop=False, igpu=False)[0], "vkms")
+        self.assertEqual(self.modes(None, nvidia_desktop=False, igpu=False)[0], "software")   # stock on 10
+
+
+class NvidiaLayerTest(unittest.TestCase):
+    def tarball(self, d, files):
+        path = os.path.join(d, "a.tar.gz")
+        with tarfile.open(path, "w:gz") as t:
+            for name in files:
+                data = name.encode()
+                info = tarfile.TarInfo("./" + name)
+                info.size = len(data)
+                t.addfile(info, io.BytesIO(data))
+        return path
+
+    def test_only_what_is_used_is_unpacked(self):
+        with tempfile.TemporaryDirectory() as d:
+            guest = self.tarball(d, ["vendor/lib64/hw/hwcomposer.waydroid.so", "system/bin/surfaceflinger",
+                                     "README.txt"])
+            nvidia._unpack(guest, os.path.join(d, "g"), lambda n: n if n.startswith("vendor/") else None)
+            self.assertEqual(os.listdir(os.path.join(d, "g")), ["vendor"])
+            host = self.tarball(d, ["virgl_test_server", "virgl_render_server", "libvirglrenderer.so.1"])
+            nvidia._unpack(host, os.path.join(d, "h"), nvidia._host_place)
+            self.assertEqual(sorted(os.listdir(os.path.join(d, "h", "bin"))), ["virgl_render_server",
+                                                                               "virgl_test_server"])
+            self.assertTrue(os.path.isfile(os.path.join(d, "h", "lib", "libvirglrenderer.so.1")))
 
 
 class AppArmorTest(unittest.TestCase):

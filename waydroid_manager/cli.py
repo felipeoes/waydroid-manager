@@ -481,6 +481,19 @@ def cmd_doctor(o):
     check(shutil.which("dnsmasq"), "dnsmasq installed", "dnsmasq not installed")
     check(shutil.which("wl-copy"), "wl-clipboard installed", "wl-clipboard missing: no clipboard sharing")
     check(os.environ.get("WAYLAND_DISPLAY"), "Wayland session", "WAYLAND_DISPLAY not set")
+    from ctypes.util import find_library
+    from . import gpu
+    if gpu.nvidia_display():
+        check(os.path.exists("/dev/nvidiactl"), "the desktop is on NVIDIA: devices render there (Graphics: auto)",
+              "the desktop is on an NVIDIA GPU without NVIDIA's proprietary driver: devices render in software")
+        check(find_library("epoxy") and find_library("gbm"), "libepoxy and libgbm (NVIDIA's renderer needs them)",
+              "libepoxy or libgbm missing: NVIDIA's renderer can't run")
+    else:
+        node = gpu.host_gpu()
+        check(True, "devices render on {} (Graphics: auto)".format(node) if node else
+              "no usable GPU: devices render in software", "")
+    check(subprocess.run(["modinfo", "vkms"], capture_output=True).returncode == 0,
+          "vkms module available (Android 17 in software)", "no vkms module: Android 17 can't render in software")
     try:
         info = Daemon().info()
         check(True, "daemon {} running".format(info["version"]), "")

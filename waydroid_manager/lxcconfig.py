@@ -149,12 +149,15 @@ def _entry(src, dst, fstype="none", options="rbind,create=file 0 0"):
     return "lxc.mount.entry = {} {} {} {}".format(src, dst, fstype, options)
 
 
-def session_entries(wayland_src, pulse_src, data_dir,
+def session_entries(wayland_src, pulse_src, data_dir, venus_src="",
                     xdg_runtime="/run/xdg", wayland_name="wayland-0"):
-    """Mount entries for config_session (mirrors stock generate_session_lxc_config)."""
+    """Mount entries for config_session (mirrors stock generate_session_lxc_config). venus_src:
+    the NVIDIA renderer's socket directory, read-only at /dev/venus (sockets stay connectable)."""
     lines = ["lxc.mount.entry = tmpfs {} none create=dir 0 0".format(xdg_runtime)]
     lines.append(_entry(wayland_src, os.path.join(xdg_runtime, wayland_name).lstrip("/")))
     if pulse_src:
         lines.append(_entry(pulse_src, os.path.join(xdg_runtime, "pulse", "native").lstrip("/")))
     lines.append(_entry(data_dir, "data", options="rbind 0 0"))
+    if venus_src:
+        lines.append(_entry(venus_src, "dev/venus", options="rbind,ro,create=dir 0 0"))
     return "\n".join(lines) + "\n"

@@ -161,7 +161,8 @@ SETTINGS = {
     "arm_translation": (_choice(ARM), "houdini", "runs ARM apps: houdini|libndk|none (restart)"),
     "android": (_choice(tuple(catalog.VERSIONS)), catalog.DEFAULT,
                 "Android version: " + "|".join(catalog.VERSIONS) + " (chosen at creation)"),
-    "gpu": (_choice(gpu.GPU_MODES), "auto", "graphics: auto (a GPU if usable) | software (restart)"),
+    "gpu": (_choice(gpu.GPU_MODES), "auto", "graphics: auto (the GPU that shows the desktop, if usable) | "
+            "nvidia | software (restart)"),
     "desktop_apps": (_bool, "false", "create desktop entries for this instance's apps"),
 }
 

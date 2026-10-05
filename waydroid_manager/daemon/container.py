@@ -16,9 +16,10 @@ import time
 
 from .. import catalog, devices, gpu, lxcconfig, paths, stock, stockctl
 from ..instance import PROTECTED_PROP_RE, Instance
-from . import armtrans, binder, images, magisk, storage
+from . import armtrans, binder, images, magisk, nvidia, storage
 from .util import (CommandError, apparmor_profile_loaded, attach, bind, bind_file, bind_mount, chown_tree_top,
-                   is_mount, log, lxc_state, mount_image, mount_overlay, run, stage_socket, umount_tree)
+                   is_mount, log, lxc_state, mount_image, mount_overlay, run, stage_dir, stage_socket,
+                   umount_tree)
 
 DEVICE_NODES = [
     "/dev/ashmem", "/dev/sw_sync", "/sys/kernel/debug/sync/sw_sync",
@@ -200,8 +201,8 @@ def pinned_cpus(inst):
         return []
 
 
-def write_lxc_config(inst, net, cpus_busy=(), card=None):
-    """card: our vkms device's node when Android renders on the CPU (see vkms_card)."""
+def write_lxc_config(inst, net, cpus_busy=(), render=("gpu", None)):
+    """render: (gpu mode, our vkms device's node or None), see render_for."""
     a = stock_args(inst)
     cpuset = inst.get("cpuset")
     if cpuset == "all":
@@ -223,8 +224,10 @@ def write_lxc_config(inst, net, cpus_busy=(), card=None):
     nodes = stock.tools().helpers.lxc.generate_nodes_lxc_config(a)
     if catalog.get(inst.get("android"), "loop") and inst.index != 0:
         nodes += loop_entries()
-    if card:     # the only DRM device: minigbm takes the first one it can use
+    mode, card = render
+    if mode != "gpu":       # Venus needs no DRM device, and software must not take a GPU
         nodes = [n for n in nodes if "= /dev/dri/" not in n]
+    if card:                # the only DRM device: minigbm takes the first one it can use
         nodes.append("lxc.mount.entry = {} {} none bind,create=file 0 0".format(card, card[1:]))
     _write(os.path.join(inst.lxc_dir, "config_nodes"), "\n".join(nodes) + "\n")
     session = os.path.join(inst.lxc_dir, "config_session")
@@ -294,6 +297,21 @@ def loop_entries():
 VKMS_DEVICE = "/sys/kernel/config/vkms/waydroid-manager"
 
 
+def render_for(inst):
+    """(gpu mode, our vkms device's node or None) of this start; refuses what can't run. The
+    vkms node is Android's only DRM device in software (vkms) and NVIDIA modes."""
+    key = android_of(inst)
+    mode = gpu.mode(key, inst.get("gpu"))
+    if mode == "nvidia":
+        if not (key and catalog.get(key, "nvidia")):
+            raise RuntimeError("Android {} has no NVIDIA build; set Graphics to Automatic or Software".format(key))
+        if not nvidia.available():
+            raise RuntimeError("NVIDIA rendering needs NVIDIA's proprietary driver")
+    if mode == "software" and key and catalog.get(key, "software", True) is False:
+        raise RuntimeError("Android {} can't render in software: it needs a GPU".format(key))
+    return mode, (vkms_card() if mode in ("vkms", "nvidia") else None)
+
+
 def vkms_card():
     """Our vkms device's node, made on first use: Android renders on the CPU into its buffers,
     which minigbm can map for any use. Its one output is disconnected, so no desktop shows it,
@@ -341,18 +359,19 @@ def sync_root(inst):
         magisk.remove(inst)
 
 
-def mount_rootfs(inst, images_dir):
+def mount_rootfs(inst, images_dir, gpu_layers=()):
     """system.img + overlays, vendor.img + overlays, like stock mount_rootfs. Below the instance's
-    own layer come the shared ones: ARM translation, Google Play, and stock Waydroid's overlay
-    when the image is stock's Android version (it was made for that). Each layer's system/ and
-    vendor/ join the matching stack. Returns the ARM translation layer it mounted, or None."""
+    own layer come the shared ones: GPU (NVIDIA's guest build), ARM translation, Google Play,
+    and stock Waydroid's overlay when the image is stock's Android version (it was made for
+    that). Each layer's system/ and vendor/ join the matching stack. Returns the ARM
+    translation layer it mounted, or None."""
     rootfs = inst.rootfs
     sync_root(inst)
     umount_tree(rootfs)
     mount_image(os.path.join(images_dir, "system.img"), rootfs)
     sdk = stock.read_prop_file(rootfs + "/system/build.prop", "ro.build.version.sdk")
     arm = armtrans.layer(inst.get("arm_translation"), sdk)
-    shared = [d for d in (arm, images.gapps_layer(inst.image_id)) if d]
+    shared = list(gpu_layers) + [d for d in (arm, images.gapps_layer(inst.image_id)) if d]
     if os.path.isdir(paths.STOCK_OVERLAY) and \
             (inst.index == 0 or sdk == images.read_cfg(images.current_id()).get("sdk")):
         shared.append(paths.STOCK_OVERLAY)
@@ -408,10 +427,10 @@ def host_timezone():
         return ""
 
 
-def write_props(inst, session, arm, card=None):
+def write_props(inst, session, arm, render=("gpu", None)):
     """Generate waydroid_base.prop and waydroid.prop for this start. arm: the mounted ARM
-    translation layer (None: off, or its download failed and stock's props stay). card: our
-    vkms device's node when Android renders on the CPU."""
+    translation layer (None: off, or its download failed and stock's props stay). render: see
+    render_for."""
     # Effective config: stock [properties], then ours (the image's needs), then the instance's own
     eff = configparser.ConfigParser(interpolation=None)
     eff.read_dict(inst.cfg)
@@ -429,8 +448,16 @@ def write_props(inst, session, arm, card=None):
     key = android_of(inst)
     if key:
         eff["properties"].update(catalog.get(key, "props", {}))
-    if card:
+    mode, card = render
+    if mode == "vkms":
         eff["properties"].update(gpu.VKMS_PROPS)
+    elif mode == "software":
+        eff["properties"].update(gpu.SOFTWARE_PROPS)
+    elif mode == "nvidia":
+        eff["properties"].update(gpu.NVIDIA_PROPS)
+        eff["properties"]["ro.hardware.gralloc"] = nvidia.GRALLOC[catalog.get(key, "nvidia")]
+        eff["properties"].update(catalog.get(key, "nvidia_props", {}))
+    if card:
         eff["properties"]["gralloc.gbm.device"] = card
     for k, v in inst.cfg["properties"].items():
         if inst.owner_uid != 0 and PROTECTED_PROP_RE.match(k):
@@ -485,9 +512,9 @@ def start(inst, net, hosts, session_in, uid, keep_images=(), cpus_busy=list):
     a = stock_args(inst)
     binder.ensure_binderfs(a)
     binder.ensure_nodes(a, inst.index)
-    card = vkms_card() if gpu.on_vkms(android_of(inst), inst.get("gpu")) else None
+    render = render_for(inst)
     with _pin_lock:
-        write_lxc_config(inst, net, cpus_busy(), card)
+        write_lxc_config(inst, net, cpus_busy(), render)
     net.ensure_up(hosts)
     set_device_permissions()
 
@@ -505,13 +532,18 @@ def start(inst, net, hosts, session_in, uid, keep_images=(), cpus_busy=list):
         except (OSError, PermissionError) as e:
             log.warning("%s: no audio: %s", inst.id, e)
             pulse = ""
+    venus = ""
+    if render[0] == "nvidia":
+        venus = os.path.join(stage, "venus")
+        stage_dir(session_in.get("venus_dir", ""), venus, uid)
     _write(os.path.join(inst.lxc_dir, "config_session"),
-           lxcconfig.session_entries(wl, pulse, inst.data_dir))
+           lxcconfig.session_entries(wl, pulse, inst.data_dir, venus))
 
     try:
         if inst.index == 0:
             mount_stock_data(inst)
-        arm = mount_rootfs(inst, images_dir)
+        guest = nvidia.guest_layers(catalog.get(android_of(inst), "nvidia")) if render[0] == "nvidia" else []
+        arm = mount_rootfs(inst, images_dir, guest)
         detect_protocols(inst)
         session = {
             "user_name": pw.pw_name, "user_id": str(uid), "group_id": str(pw.pw_gid),
@@ -519,7 +551,7 @@ def start(inst, net, hosts, session_in, uid, keep_images=(), cpus_busy=list):
             "background_start": "true" if session_in.get("background_start") == "true" else "false",
             "lcd_density": inst.get("dpi"),
         }
-        write_props(inst, session, arm, card)
+        write_props(inst, session, arm, render)
         r = run(["lxc-start", "-P", paths.LXC_PATH, "-n", inst.container, "-d",
                  "-o", os.path.join(inst.dir, "container.log"), "-l", "NOTICE", "--", "/init"], check=False)
         if r.returncode != 0:
