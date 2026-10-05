@@ -15,10 +15,6 @@ BORDER = 8            # invisible resize border around the window
 # (action, icon name); None = drawn here
 TITLE_BUTTONS = [("minimize", "window-minimize-symbolic"), ("close", "window-close-symbolic")]
 TOOLBAR = [
-    ("back", "go-previous-symbolic"),
-    ("home", "go-home-symbolic"),
-    ("recents", "view-paged-symbolic"),
-    None,
     ("volume_up", "audio-volume-high-symbolic"),
     ("volume_down", "audio-volume-low-symbolic"),
     None,
@@ -26,11 +22,11 @@ TOOLBAR = [
     ("install", None),
     ("fullscreen", "view-fullscreen-symbolic"),
 ]
+NAV = ["back", "home", "recents"]   # at the toolbar's bottom, like Android's navigation bar
 TOOLTIPS = {"back": "Back", "home": "Home", "recents": "Recent apps", "volume_up": "Volume up",
             "volume_down": "Volume down", "screenshot": "Screenshot", "install": "Install APK",
             "fullscreen": "Fullscreen (F11)"}
 SEPARATOR_H = 9
-GRIP_H = 24
 
 THEMES = {
     "dark": {"bg": (0.19, 0.19, 0.19), "fg": (1, 1, 1, 0.92), "dim": (1, 1, 1, 0.55),
@@ -164,13 +160,13 @@ def render_title(width, scale, text, theme="dark", hover=None, pressed=None):
 # -- toolbar ------------------------------------------------------------------------
 
 def toolbar_layout(height):
-    """[(action|None, y0, y1)] for the entries that fit, plus the resize grip at the bottom."""
+    """[(action|None, y0, y1)]: the entries that fit from the top, the navigation buttons at the bottom."""
+    nav_top = height - 4 - BUTTON_H * len(NAV)
     out = []
     y = 4
-    limit = height - GRIP_H
-    # Drop optional buttons from the end if the window is short
+    # Drop the top buttons from the end if the window is short; the navigation buttons stay
     entries = list(TOOLBAR)
-    while entries and sum(SEPARATOR_H if e is None else BUTTON_H for e in entries) > limit - 4:
+    while entries and sum(SEPARATOR_H if e is None else BUTTON_H for e in entries) > nav_top - SEPARATOR_H - 4:
         entries.pop()
         while entries and entries[-1] is None:
             entries.pop()
@@ -178,7 +174,7 @@ def toolbar_layout(height):
         h = SEPARATOR_H if e is None else BUTTON_H
         out.append((None if e is None else e[0], y, y + h))
         y += h
-    out.append(("resize", height - GRIP_H, height))
+    out += [(a, nav_top + i * BUTTON_H, nav_top + (i + 1) * BUTTON_H) for i, a in enumerate(NAV)]
     return out
 
 
@@ -202,14 +198,6 @@ def render_toolbar(height, scale, theme="dark", hover=None, pressed=None, fullsc
             cr.set_source_rgba(*t["sep"])
             cr.rectangle(10, cy - 0.5, w - 20, 1)
             cr.fill()
-            continue
-        if action == "resize":
-            cr.set_source_rgba(*t["dim"])
-            cr.set_line_width(1.2)
-            for d in (6, 11, 16):
-                cr.move_to(w - 6, y1 - 6 - d)
-                cr.line_to(w - 6 - d, y1 - 6)
-            cr.stroke()
             continue
         if action == hover:
             cr.set_source_rgba(*(t["press"] if action == pressed else t["hover"]))

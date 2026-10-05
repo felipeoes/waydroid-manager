@@ -8,6 +8,10 @@ All notable changes to waydroid-multi are listed here. The format follows
 
 ## [0.4.1] - 2026-10-04
 
+### Changed
+- The instance window's Back, Home and Recents buttons sit at the bottom of the toolbar, like
+  Android's navigation bar. The resize grip below them is gone: drag any edge to resize.
+
 ### Fixed
 - Instance windows no longer open maximized. Waydroid maximizes its window before naming it,
   and that request reached the desktop. A phone-sized instance then showed its screen small in
