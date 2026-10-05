@@ -4,10 +4,11 @@ import os
 import pwd
 import secrets
 import shutil
+import sqlite3
 import stat
 
 from .. import paths
-from .util import attach, log, run, umount_tree
+from .util import attach, log, open_beneath, run, umount_tree
 
 SSAID_FILES = ("system/users/0/settings_ssaid.xml", "system/users/0/settings_ssaid.xml.fallback")
 GMS_PACKAGES = ("com.google.android.gsf", "com.google.android.gms")
@@ -77,17 +78,25 @@ def reset_ids_online(iid):
     return out
 
 
-def gsf_id(iid):
-    """The Google Services Framework ID (decimal) used for device registration, or ''."""
-    r = attach(iid, ["/system/bin/sh", "-c",
-                     "content query --uri content://com.google.android.gsf.gservices "
-                     "--where \"name='android_id'\""], check=False)
-    for part in r.stdout.replace(",", " ").split():
-        if part.startswith("value="):
-            v = part[len("value="):]
-            if v.isdigit():
-                return v
-    return ""
+def gsf_id(inst):
+    """The Google Services Framework ID (decimal) used for device registration, or ''.
+    Read from GSF's database: Android's own provider query answers nothing on 14 and newer."""
+    try:
+        fd = open_beneath(inst.data_dir, "data/com.google.android.gsf/databases/gservices.db", os.O_RDONLY)
+    except OSError:
+        return ""
+    try:
+        # immutable: no lock or journal files are looked up next to the /proc path
+        db = sqlite3.connect("file:/proc/self/fd/{}?mode=ro&immutable=1".format(fd), uri=True)
+        try:
+            row = db.execute("SELECT value FROM main WHERE name = 'android_id'").fetchone()
+        finally:
+            db.close()
+    except sqlite3.Error:
+        return ""
+    finally:
+        os.close(fd)
+    return row[0] if row and str(row[0]).isdigit() else ""
 
 
 def delete_instance_files(inst):

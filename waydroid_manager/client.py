@@ -107,8 +107,11 @@ class Daemon:
     def gsf_id(self, iid):
         return str(self.call("GetGsfId", iid, timeout=120))
 
-    def sync_images(self):
-        return str(self.call("SyncImages"))
+    def update_images(self):
+        return str(self.call("UpdateImages"))
+
+    def images(self):
+        return self.plain(self.call("Images", timeout=60))
 
 
 # -- binder access (CLI only: sync gbinder calls block the whole process) -------

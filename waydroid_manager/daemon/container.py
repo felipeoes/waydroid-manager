@@ -10,10 +10,11 @@ import os
 import platform
 import pwd
 import shutil
+import stat
 import threading
 import time
 
-from .. import devices, lxcconfig, paths, stock, stockctl
+from .. import catalog, devices, lxcconfig, paths, stock, stockctl
 from ..instance import PROTECTED_PROP_RE, Instance
 from . import armtrans, binder, images, magisk, storage
 from .util import (CommandError, apparmor_profile_loaded, attach, bind, bind_file, bind_mount, chown_tree_top,
@@ -100,23 +101,48 @@ def wipe_overlay_rw(inst):
         shutil.rmtree(os.path.join(inst.dir, d), ignore_errors=True)
 
 
-def select_image(inst, in_use=()):
-    """Make the instance use the current image set; returns its directory."""
-    cur = images.ensure_synced(in_use)
-    if inst.image_id != cur:
-        if inst.image_id:
-            log.info("%s: switching image set %s -> %s", inst.id, inst.image_id, cur)
-        wipe_overlay_rw(inst)
-        inst.cfg["instance"]["image_id"] = cur
-        inst.cfg["waydroid"]["images_path"] = images.image_dir(cur)
-        stock_cfg = stock.load_stock_cfg()["waydroid"]
-        for k in ("system_datetime", "vendor_datetime", "system_ota", "vendor_ota"):
-            if k in stock_cfg:
-                inst.cfg["waydroid"][k] = stock_cfg[k]
-        inst.save()
+def stock_android():
+    """The catalog version stock Waydroid's images are, or None (one Waydroid Manager doesn't
+    offer, or not synced yet)."""
+    sdk = images.read_cfg(images.current_id()).get("sdk", "")
+    return catalog.key_for_sdk(int(sdk)) if sdk.isdigit() else None
+
+
+def android_of(inst):
+    """The catalog version an instance runs: #0 runs stock's images."""
+    return stock_android() if inst.index == 0 else inst.get("android")
+
+
+def finish_setup(inst):
+    """Images without a setup wizard of their own (MindTheGapps' is left out: it crashes):
+    mark the device set up, or Google Play's check-in never happens."""
+    for args in (("global", "device_provisioned", "1"), ("secure", "user_setup_complete", "1")):
+        attach(inst.id, ["/system/bin/cmd", "settings", "put"] + list(args), check=False)
+
+
+def select_image(inst, keep=()):
+    """Pick the image set the instance runs: #0 stock's, any other the newest of its Android
+    version (downloaded first if there is none yet). Returns its directory."""
+    key = inst.get("android")
+    if inst.index != 0 and not images.latest(key):
+        images.install(key)
+    with images.lock:   # the set is recorded before a gc can see it unused
+        cur = images.ensure_synced(keep) if inst.index == 0 else images.latest(key)
+        if inst.image_id != cur:
+            if inst.image_id:
+                log.info("%s: switching image set %s -> %s", inst.id, inst.image_id, cur)
+            wipe_overlay_rw(inst)
+            inst.cfg["instance"]["image_id"] = cur
+            inst.cfg["waydroid"]["images_path"] = images.image_dir(cur)
+            if inst.index == 0:
+                stock_cfg = stock.load_stock_cfg()["waydroid"]
+                for k in ("system_datetime", "vendor_datetime", "system_ota", "vendor_ota"):
+                    if k in stock_cfg:
+                        inst.cfg["waydroid"][k] = stock_cfg[k]
+            inst.save()
     d = images.image_dir(cur)
     if not os.path.isfile(os.path.join(d, "system.img")):
-        raise RuntimeError("image set {} is missing; run 'waydroid-manager images sync'".format(cur))
+        raise RuntimeError("image set {} is missing; run 'waydroid-manager images update'".format(cur))
     return d
 
 
@@ -193,6 +219,8 @@ def write_lxc_config(inst, net, cpus_busy=()):
     _write(os.path.join(inst.lxc_dir, "config"), text)
     shutil.copy(stock.seccomp_profile(), os.path.join(inst.lxc_dir, "waydroid.seccomp"))
     nodes = stock.tools().helpers.lxc.generate_nodes_lxc_config(a)
+    if catalog.get(inst.get("android"), "loop") and inst.index != 0:
+        nodes += loop_entries()
     _write(os.path.join(inst.lxc_dir, "config_nodes"), "\n".join(nodes) + "\n")
     session = os.path.join(inst.lxc_dir, "config_session")
     if not os.path.exists(session):
@@ -216,33 +244,69 @@ def set_device_permissions():
             run(["chmod", "777", "-R", p], check=False)
 
 
+LOOP_DEVICES = 256
+
+
+def loop_entries():
+    """Android 17's apexd mounts its APEXes through loop devices: the container gets
+    loop-control and the host's loop nodes, at /dev/block/loopN where apexd looks for them.
+    The kernel makes a node only once its device is used, so missing ones are made here."""
+    # ponytail: shares every host loop device with the (already privileged) container;
+    # a dedicated range needs loop numbers apexd doesn't pick itself
+    entries = ["lxc.mount.entry = /dev/loop-control dev/loop-control none bind,create=file 0 0"]
+    for n in range(LOOP_DEVICES):
+        node = "/dev/loop{}".format(n)
+        if not os.path.exists(node):
+            os.mknod(node, 0o660 | stat.S_IFBLK, os.makedev(7, n))
+        entries.append("lxc.mount.entry = {} dev/block/loop{} none bind,create=file 0 0".format(node, n))
+    return entries
+
+
+def ensure_videodev():
+    """Android 17's ueventd aborts when /sys/class/video4linux is missing; loading videodev
+    (no device needed) creates it."""
+    if not os.path.isdir("/sys/class/video4linux"):
+        run(["modprobe", "videodev"], check=False)
+    if not os.path.isdir("/sys/class/video4linux"):
+        raise RuntimeError("Android 17 needs the kernel's videodev module (/sys/class/video4linux)")
+
+
+ROOT_SDKS = (30, 33)   # the Android versions Magisk Delta works on in Waydroid
+
+
 def sync_root(inst):
     """Root switch: Magisk Delta in the instance's own lower layer (removed when off)."""
-    if inst.getbool("root"):
+    key = android_of(inst)
+    if inst.getbool("root") and (not key or catalog.get(key, "sdk") not in ROOT_SDKS):
+        log.warning("%s: root is only available on Android 11 and 13; starting without it", inst.id)
+    elif inst.getbool("root"):
         magisk.install(inst)
     elif os.path.isdir(os.path.join(inst.dir, "overlay", magisk.MAGISK.lstrip("/"))):
         magisk.remove(inst)
 
 
 def mount_rootfs(inst, images_dir):
-    """system.img + overlays, vendor.img + overlays, like stock mount_rootfs.
-    Returns the ARM translation layer it mounted, or None."""
+    """system.img + overlays, vendor.img + overlays, like stock mount_rootfs. Below the instance's
+    own layer come the shared ones: ARM translation, Google Play, and stock Waydroid's overlay
+    when the image is stock's Android version (it was made for that). Each layer's system/ and
+    vendor/ join the matching stack. Returns the ARM translation layer it mounted, or None."""
     rootfs = inst.rootfs
     sync_root(inst)
     umount_tree(rootfs)
     mount_image(os.path.join(images_dir, "system.img"), rootfs)
     sdk = stock.read_prop_file(rootfs + "/system/build.prop", "ro.build.version.sdk")
     arm = armtrans.layer(inst.get("arm_translation"), sdk)
-    lowers = [os.path.join(inst.dir, "overlay")] + ([arm] if arm else [])
-    if os.path.isdir(paths.STOCK_OVERLAY):
-        lowers.append(paths.STOCK_OVERLAY)
+    shared = [d for d in (arm, images.gapps_layer(inst.image_id)) if d]
+    if os.path.isdir(paths.STOCK_OVERLAY) and \
+            (inst.index == 0 or sdk == images.read_cfg(images.current_id()).get("sdk")):
+        shared.append(paths.STOCK_OVERLAY)
+    lowers = [os.path.join(inst.dir, "overlay")] + [d for d in shared if d == paths.STOCK_OVERLAY or
+                                                    os.path.isdir(os.path.join(d, "system"))]
     mount_overlay(lowers + [rootfs], rootfs, os.path.join(inst.dir, "overlay_rw/system"),
                   os.path.join(inst.dir, "overlay_work/system"),
                   writable=inst.getbool("system_writable"))
     mount_image(os.path.join(images_dir, "vendor.img"), rootfs + "/vendor")
-    vlowers = [os.path.join(inst.dir, "overlay/vendor")]
-    if os.path.isdir(paths.STOCK_OVERLAY + "/vendor"):
-        vlowers.append(paths.STOCK_OVERLAY + "/vendor")
+    vlowers = [d + "/vendor" for d in [os.path.join(inst.dir, "overlay")] + shared if os.path.isdir(d + "/vendor")]
     mount_overlay(vlowers + [rootfs + "/vendor"], rootfs + "/vendor",
                   os.path.join(inst.dir, "overlay_rw/vendor"), os.path.join(inst.dir, "overlay_work/vendor"),
                   writable=inst.getbool("system_writable"))
@@ -271,10 +335,27 @@ def detect_protocols(inst):
         inst.save()
 
 
+def one_per_key(lines):
+    """One line per property, the last value winning in the first one's place: Android 13
+    takes a repeated key's last line, 14 and newer its first."""
+    out = {}
+    for line in lines:
+        if line.strip():
+            out[line.partition("=")[0]] = line
+    return list(out.values())
+
+
+def host_timezone():
+    try:
+        return os.readlink("/etc/localtime").partition("zoneinfo/")[2]
+    except OSError:
+        return ""
+
+
 def write_props(inst, session, arm):
     """Generate waydroid_base.prop and waydroid.prop for this start. arm: the mounted ARM
     translation layer (None: off, or its download failed and stock's props stay)."""
-    # Effective config: stock [properties] overridden by the instance's own
+    # Effective config: stock [properties], then ours (the image's needs), then the instance's own
     eff = configparser.ConfigParser(interpolation=None)
     eff.read_dict(inst.cfg)
     stock_props = stock.load_stock_cfg()["properties"]
@@ -287,6 +368,10 @@ def write_props(inst, session, arm):
     elif kind == "none":  # also switches off a translation waydroid_script gave stock Waydroid
         for k in armtrans.ALL_PROPS:
             eff["properties"].pop(k, None)
+        eff["properties"]["ro.dalvik.vm.native.bridge"] = "0"   # and the image's own
+    key = android_of(inst)
+    if key:
+        eff["properties"].update(catalog.get(key, "props", {}))
     for k, v in inst.cfg["properties"].items():
         if inst.owner_uid != 0 and PROTECTED_PROP_RE.match(k):
             log.warning("%s: ignoring property %s (only root may set it)", inst.id, k)
@@ -303,7 +388,7 @@ def write_props(inst, session, arm):
         props = [p for p in f.read().splitlines()
                  if not p.startswith(("waydroid.system_ota=", "waydroid.vendor_ota=", "waydroid.updater.disabled="))]
     props.append("waydroid.updater.disabled=true")
-    _write(base, "\n".join(props) + "\n")
+    _write(base, "\n".join(one_per_key(props)) + "\n")
 
     full = os.path.join(inst.dir, "waydroid.prop")
     t.helpers.images.make_prop(a, session, full)
@@ -315,18 +400,24 @@ def write_props(inst, session, arm):
         extra.append("persist.waydroid.width=" + inst.get("width"))
     if inst.get("height") != "0":
         extra.append("persist.waydroid.height=" + inst.get("height"))
-    with open(full, "a") as f:
-        f.write("\n".join(extra) + "\n")
+    if host_timezone():
+        extra.append("persist.sys.timezone=" + host_timezone())
+    with open(full) as f:
+        lines = f.read().splitlines()
+    _write(full, "\n".join(one_per_key(lines + extra)) + "\n")
     bind_file(full, inst.rootfs + "/vendor/waydroid.prop")
 
 
-def start(inst, net, hosts, session_in, uid, images_in_use=(), cpus_busy=list):
+def start(inst, net, hosts, session_in, uid, keep_images=(), cpus_busy=list):
     """Bring the container up. session_in: validated dict from the session process.
+    keep_images: every instance's image set (the store's gc keeps them).
     cpus_busy(): the other running or starting instances' (cpus limit, pinned CPUs)."""
     pw = pwd.getpwuid(uid)
     if inst.index == 0:
         _stock_stopped()
-    images_dir = select_image(inst, images_in_use)
+    images_dir = select_image(inst, keep_images)
+    if inst.index != 0 and catalog.get(inst.get("android"), "videodev"):
+        ensure_videodev()
     if inst.index == 0 and inst.image_id != images.stock_image_id():
         # stock's data must never boot an older Android than stock's own
         raise RuntimeError("stock Waydroid's images are changing; try again in a minute")

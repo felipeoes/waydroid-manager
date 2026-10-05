@@ -7,3 +7,4 @@ dist/
 .pytest_cache/
 SUDO_SETUP.txt
 SUDO_REMOVE_LATER.txt
+/lib/

@@ -8,7 +8,7 @@ import subprocess
 import sys
 import time
 
-from . import __version__, paths
+from . import __version__, catalog, paths
 from .client import Daemon, DaemonError, platform_service, start_session, statusbar_service, stop_session, session_active
 from .instance import SETTINGS, RESTART_SETTINGS
 
@@ -61,7 +61,7 @@ def cmd_list(o):
     items = sorted(d.list(), key=lambda x: int(x["index"]))
     from .session import desktop
     desktop.cleanup_launchers([i["id"] for i in items])
-    rows = [("#", "NAME", "STATE", "IP", "SCREEN", "DEVICE", "LIMITS")]
+    rows = [("#", "NAME", "ANDROID", "STATE", "IP", "SCREEN", "DEVICE", "LIMITS")]
     from . import devices
     for i in items:
         screen = "{}x{}@{}".format(i["width"], i["height"], i["dpi"])
@@ -69,7 +69,8 @@ def cmd_list(o):
         pin = i.get("pinned") or i["cpuset"]
         if pin:
             lim += ", cpus " + pin
-        rows.append((i["id"], i["name"], i["state"], i["ip"], screen, devices.label(i["device_model"]), lim))
+        rows.append((i["id"], i["name"], i.get("android") or "?", i["state"], i["ip"], screen,
+                     devices.label(i["device_model"]), lim))
     widths = [max(len(r[c]) for r in rows) for c in range(len(rows[0]))]
     for r in rows:
         print("  ".join(v.ljust(w) for v, w in zip(r, widths)).rstrip())
@@ -78,7 +79,7 @@ def cmd_list(o):
 def settings_from_args(o):
     s = {}
     for key in ("name", "width", "height", "dpi", "cpus", "cpuset", "memory", "close_action", "idle_action",
-                "device_model", "zoom"):
+                "device_model", "zoom", "android"):
         v = getattr(o, key, None)
         if v is not None:
             s[key] = str(v)
@@ -432,12 +433,20 @@ def cmd_log(o):
 
 def cmd_images(o):
     d = daemon()
-    if o.subaction == "sync":
-        print("Syncing images from stock Waydroid (this copies ~3 GB once per image version)...")
-        print("Current image set:", d.sync_images())
-    else:
-        info = d.info()
-        print("current: {}\nstock:   {}".format(info["image"] or "(none)", info["stock_image"]))
+    if o.subaction == "update":
+        print("Looking for newer builds of the installed Android versions (downloads can take a while)...")
+        done = d.update_images()
+        print("Updated: Android " + ", ".join(done.split(",")) if done else "Everything is up to date.")
+        return
+    rows = [("SET", "ANDROID", "SIZE", "USED BY")]
+    for i in sorted(d.images(), key=lambda i: (i.get("android", ""), i.get("built", ""))):
+        android = i.get("android") or ("stock" if i.get("stock") == "true" else "?")
+        users = " ".join("#" + u for u in i["used_by"].split(",") if u) or "-"
+        rows.append((i["id"] + (" (stock)" if i["current"] == "true" else ""), android,
+                     "{:.1f} GB".format(int(i["size"]) / 1024 ** 3), users))
+    widths = [max(len(r[c]) for r in rows) for c in range(len(rows[0]))]
+    for r in rows:
+        print("  ".join(v.ljust(w) for v, w in zip(r, widths)).rstrip())
 
 
 def cmd_gsf(o):
@@ -476,7 +485,7 @@ def cmd_doctor(o):
         info = Daemon().info()
         check(True, "daemon {} running".format(info["version"]), "")
         check(not info["warnings"], "no warnings", info["warnings"])
-        check(info["image"], "image store: " + (info["image"] or ""), "no image set yet: run 'waydroid-manager images sync'")
+        check(info["image"], "image store: " + (info["image"] or ""), "no image set yet: run 'waydroid-manager images update'")
         from .netconfig import NetConfig
         bad = NetConfig.load().overlapping_routes()
         check(not bad, "subnet {} is free".format(info["subnet"]), "subnet overlaps: " + ", ".join(bad))
@@ -499,6 +508,9 @@ def cmd_gui(o):
 
 def add_settings(p, create=True):
     p.add_argument("--name", help="display name")
+    if create:
+        p.add_argument("--android", choices=tuple(catalog.VERSIONS),
+                       help="Android version (default {}; a new version is downloaded first)".format(catalog.DEFAULT))
     p.add_argument("--width", type=int, help="window width in px")
     p.add_argument("--height", type=int, help="window height in px")
     p.add_argument("--dpi", type=int, help="screen density")
@@ -514,13 +526,14 @@ def add_settings(p, create=True):
 
 
 def parser():
-    p = argparse.ArgumentParser(prog="waydroid-manager", description="Run several Waydroid instances side by side.")
+    p = argparse.ArgumentParser(prog="waydroid-manager",
+                                description="Create and run Android devices with Waydroid (Android 11 to 17).")
     p.add_argument("-V", "--version", action="version", version="waydroid-manager " + __version__)
     sub = p.add_subparsers(dest="cmd", metavar="COMMAND")
 
     sub.add_parser("list", help="list instances").set_defaults(fn=cmd_list)
 
-    c = sub.add_parser("create", help="create a fresh instance from the stock Android image (gets the next free number)")
+    c = sub.add_parser("create", help="create a fresh instance on the Android version you pick (gets the next free number)")
     add_settings(c)
     c.set_defaults(fn=cmd_create)
 
@@ -528,7 +541,7 @@ def parser():
                                      "data and settings into a new one")
     c.add_argument("src", help="instance number or name; 0 or 'default' is stock Waydroid")
     c.add_argument("--keep-ids", action="store_true", help="keep the source's device identity")
-    add_settings(c)
+    add_settings(c, create=False)   # a copy runs its source's Android
     c.set_defaults(fn=cmd_clone)
 
     c = sub.add_parser("delete", help="delete instances and their data")
@@ -619,8 +632,8 @@ def parser():
     c.add_argument("--window", action="store_true", help="dump and show the window proxy's state and recent messages")
     c.set_defaults(fn=cmd_log)
 
-    c = sub.add_parser("images", help="manage the image store")
-    c.add_argument("subaction", choices=("sync", "list"))
+    c = sub.add_parser("images", help="Android images: list them, or fetch newer builds")
+    c.add_argument("subaction", choices=("list", "update"))
     c.set_defaults(fn=cmd_images)
 
     c = sub.add_parser("gsf-id", help="print the Google Services Framework ID (for Play Store registration)")

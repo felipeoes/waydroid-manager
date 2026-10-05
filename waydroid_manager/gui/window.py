@@ -35,6 +35,8 @@ def describe(info):
     parts = []
     if info.get("index"):
         parts.append("#" + info["index"])
+    if info.get("android"):
+        parts.append("Android " + info["android"])
     parts.append(STATE_LABEL.get(info["state"], info["state"].title()))
     lim = []
     if info.get("cpus"):
@@ -166,6 +168,7 @@ class MainWindow(Adw.ApplicationWindow):
         menu = Gio.Menu()
         menu.append("Start all", "app.start-all")
         menu.append("Stop all", "app.stop-all")
+        menu.append("Check for Android updates", "app.update-images")
         about = Gio.Menu()
         about.append("About", "app.about")
         if os.path.exists(UNINSTALL_SCRIPT):
@@ -371,7 +374,7 @@ class MainWindow(Adw.ApplicationWindow):
 
     def _create(self, values):
         name = values.get("name") or "new instance"
-        self.toast("Creating “{}”…".format(name))
+        self.toast("Creating “{}”… (the first device of an Android version downloads it)".format(name), timeout=8)
 
         def ok(iid):
             info_name = values.get("name") or "Instance {}".format(iid)
@@ -379,6 +382,14 @@ class MainWindow(Adw.ApplicationWindow):
             self.toast("Created #{} “{}”".format(iid, info_name))
             self.refresh()
         self.backend.call("Create", values, ok=ok, fail=self.toast)
+
+    def update_images(self):
+        self.toast("Looking for newer Android builds…")
+
+        def ok(done):
+            self.toast("Updated Android {}; devices switch at their next start".format(done.replace(",", ", "))
+                       if done else "Every Android version is up to date")
+        self.backend.call("UpdateImages", ok=ok, fail=self.toast)
 
     def clone(self, info):
         CloneDialog(info, self._clone).present(self)

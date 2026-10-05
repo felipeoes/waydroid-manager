@@ -6,6 +6,18 @@ All notable changes to waydroid-multi are listed here. The format follows
 
 ## [Unreleased]
 
+### Added
+- **Pick the Android version of each device: 11, 13, 14, 15, 16 or 17**, every one with Google Play
+  (`create --android 16`, or the version list in the New Instance dialog). A version is downloaded
+  and checked the first time a device uses it, and shared by all devices on it. `images update` (or
+  "Check for Android updates" in the menu) fetches newer builds, which devices switch to at their
+  next start; `images list` shows what is installed. 11 and 13 are the official Waydroid builds;
+  14, 16 and 17 are WayDroid-ATV's, and 15 is minhmc2007's. 15 and 17 are experimental, and 14, 15
+  and 17 need a GPU (they can't render in software). Android 12 has no Waydroid build. Stock
+  Waydroid's own images are reused when they are the same build.
+- Android 14 and 15 get Google Play from MindTheGapps; Android 17's Google services are unpacked
+  from the image so they run in a container.
+
 ### Changed
 - **waydroid-multi is now Waydroid Manager.** The command is `waydroid-manager`, the package
   `waydroid-manager`, the app "Waydroid Manager", and the bridge `wdm0`. Installing it over
@@ -13,6 +25,9 @@ All notable changes to waydroid-multi are listed here. The format follows
   settings, to `/var/lib/waydroid-manager`. The `waydroid-multi` command is gone.
 - The package is built for amd64 and ships its own libgbinder 1.1.53: Waydroid's 1.1.43 lacks the
   servicemanager protocols of Android 15 and newer. `doctor` checks for them.
+
+### Fixed
+- `gsf-id` reads the ID from Google Services' database, so it works on Android 14 and newer too.
 
 ### Removed
 - Support for upgrading from 0.4 and older: name-based instance ids from 0.1, the settings removed in

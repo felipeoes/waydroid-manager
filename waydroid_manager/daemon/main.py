@@ -25,8 +25,8 @@ import dbus.mainloop.glib
 import dbus.service
 from gi.repository import GLib
 
-from .. import __version__, paths, stock, stockctl
-from ..instance import (Instance, SETTINGS, list_ids, validate_adb_key, validate_id, validate_prop,
+from .. import __version__, catalog, paths, stock, stockctl
+from ..instance import (CREATE_ONLY, Instance, SETTINGS, list_ids, validate_adb_key, validate_id, validate_prop,
                         validate_setting)
 from ..netconfig import host_names
 from ..registry import allocate_index
@@ -160,11 +160,14 @@ class Manager(dbus.service.Object):
             self.net.write_names([(self.net.ip_for(i), self.names[i.id]) for i in insts])
 
     def images_in_use(self):
-        """Image sets loop-mounted by running instances (stopped ones switch
-        to the current set at their next start)."""
-        up = active_ids()
-        return [i.image_id for i in self.all_instances()
-                if i.image_id and (i.id in self.transient or i.id in up)]
+        """Every instance's image set: the store keeps them (a stopped instance switches to
+        a newer set of its Android version at its next start)."""
+        return [i.image_id for i in self.all_instances() if i.image_id]
+
+    def check_android(self, android, settings):
+        """Refuse settings an instance's Android version can't run."""
+        if settings.get("root") == "true" and catalog.get(android, "sdk") not in container.ROOT_SDKS:
+            raise Error("root is only available on Android 11 and 13", "InvalidArgs")
 
     def cpus_busy(self, iid):
         """The other instances' (cpus limit, pinned CPUs), for iid's pick: called under
@@ -225,6 +228,7 @@ class Manager(dbus.service.Object):
         d["ip"] = self.net.ip_for(inst)
         d["session"] = "yes" if inst.id in self.sessions else "no"
         d["pending_id_reset"] = inst.cfg["instance"].get("pending_id_reset", "false")
+        d["android"] = container.android_of(inst) or ""
         d["disk_used"] = self.disk_used(inst)
         d["adb_host"] = self.names.get(inst.id, "")
         d["mem_used"] = ""
@@ -298,7 +302,7 @@ class Manager(dbus.service.Object):
             self.run_async(iid, lambda: self._restart(iid), lambda *a: None, lambda e: log.error("%s", e))
         elif word == "upgrade":
             log.warning("%s: in-Android OTA upgrade refused (images are shared); "
-                        "use 'waydroid upgrade' then 'waydroid-manager images sync'", iid)
+                        "use 'waydroid-manager images update'", iid)
         return False
 
     def apply_action(self, iid, action):
@@ -332,6 +336,22 @@ class Manager(dbus.service.Object):
             self.picked.discard(iid)
         if inst.cfg["instance"].get("pending_id_reset") == "true":
             threading.Thread(target=self._finish_id_reset, args=(iid,), daemon=True).start()
+        if inst.index and catalog.get(inst.get("android"), "provision") and \
+                inst.cfg["instance"].get("set_up") != "true":
+            threading.Thread(target=self._finish_setup, args=(iid,), daemon=True).start()
+
+    def _finish_setup(self, iid):
+        try:
+            if not container.wait_boot(Instance.load(iid)):
+                return
+            with self.locks[iid]:
+                inst = Instance.load(iid)
+                container.finish_setup(inst)
+                inst.cfg["instance"]["set_up"] = "true"
+                inst.save()
+            log.info("%s: marked as set up", iid)
+        except Exception:  # noqa: BLE001
+            log.exception("%s: marking the device set up failed", iid)
 
     def _finish_id_reset(self, iid):
         try:
@@ -510,9 +530,16 @@ class Manager(dbus.service.Object):
         if os.path.exists(paths.instance_dir(iid)):
             raise Error("instance #{} already exists on disk".format(iid), "Exists")
         settings.setdefault("name", "Instance {}".format(iid))
-        image_id = images.ensure_synced(self.images_in_use())
+        if clone_from == "default":   # the copy of stock's data must run stock's Android
+            android = container.stock_android()
+            if not android:
+                raise Error("stock Waydroid's Android version can't be cloned: it isn't one of "
+                            + ", ".join(catalog.VERSIONS), "InvalidArgs")
+            settings["android"] = android
+        android = settings.setdefault("android", catalog.DEFAULT)
+        self.check_android(android, settings)
+        image_id = images.latest(android) or images.install(android)
         inst = Instance.new(iid, index, uid, image_id, stock_waydroid_cfg(), props)
-        inst.cfg["waydroid"]["images_path"] = images.image_dir(image_id)
         for k, v in settings.items():
             inst.cfg["instance"][k] = v
         # The instance becomes visible with save(): hold its lock (Start waits) and mark
@@ -641,8 +668,11 @@ class Manager(dbus.service.Object):
                             inst.cfg["properties"].pop(key, None)
                         else:
                             inst.cfg["properties"][key] = validate_prop(key, v, trusted=uid == 0)
+                    elif k in CREATE_ONLY:
+                        raise ValueError("{} is chosen when an instance is created".format(k))
                     else:
                         inst.set(k, v)
+                self.check_android(container.android_of(inst), {k: inst.get(k) for k in SETTINGS})
             except ValueError as e:
                 raise Error(e, "InvalidArgs")
             inst.save()
@@ -804,17 +834,29 @@ class Manager(dbus.service.Object):
             self.check_owner(inst, self.caller(sender))
         except Error as e:
             return error(e)
-        self.run_async(inst.id, lambda: storage.gsf_id(inst.id) if lxc_state(inst.id) == "RUNNING" else "",
-                       reply, error, lock=False)
+        self.run_async(inst.id, lambda: storage.gsf_id(inst), reply, error, lock=False)
 
     @dbus.service.method(paths.DBUS_IFACE, in_signature="", out_signature="s",
                          sender_keyword="sender", async_callbacks=("reply", "error"))
-    def SyncImages(self, sender, reply, error):
-        def work():
-            iid = images.sync()
-            images.gc(self.images_in_use())
-            return iid
-        self.run_async("__images__", work, reply, error)
+    def UpdateImages(self, sender, reply, error):
+        """Fetch newer builds of the installed Android versions (and sync stock's); returns
+        the versions updated, comma-separated."""
+        self.run_async("__images__", lambda: ",".join(images.update(self.images_in_use())), reply, error)
+
+    @dbus.service.method(paths.DBUS_IFACE, in_signature="", out_signature="aa{ss}")
+    def Images(self):
+        """The image sets in the store, with the instances using them."""
+        users = collections.defaultdict(list)
+        for i in self.all_instances():
+            users[i.image_id].append(i.id)
+        out = []
+        for sid in images.available():
+            d = dict(images.read_cfg(sid), id=sid, current="true" if sid == images.current_id() else "false",
+                     used_by=",".join(users.get(sid, [])))
+            d["size"] = str(sum(os.path.getsize(os.path.join(images.image_dir(sid), f))
+                                for f in ("system.img", "vendor.img")))
+            out.append(d)
+        return out
 
     @dbus.service.signal(paths.DBUS_IFACE, signature="ss")
     def StateChanged(self, iid, state):

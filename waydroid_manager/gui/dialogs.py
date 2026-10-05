@@ -9,7 +9,7 @@ gi.require_version("Adw", "1")
 gi.require_version("Pango", "1.0")
 from gi.repository import Adw, GLib, Gtk, Pango  # noqa: E402
 
-from .. import devices  # noqa: E402
+from .. import catalog, devices  # noqa: E402
 from ..instance import host_memory_bytes, setting_default  # noqa: E402
 
 # LDPlayer-style presets: (width, height, dpi)
@@ -18,6 +18,8 @@ PHONE = [(540, 960, 240), (720, 1280, 320), (900, 1600, 320), (1080, 1920, 440),
 ACTIONS = [("stop", "Stop the instance"), ("freeze", "Freeze (pause)"), ("none", "Keep running")]
 IDLE = [("freeze", "Freeze (pause)"), ("none", "Keep running"), ("stop", "Stop the instance")]
 ARM = [("houdini", "Houdini"), ("libndk", "libndk"), ("none", "Off")]
+ANDROID = [(k, catalog.label(k)) for k in catalog.VERSIONS]
+ROOT_VERSIONS = ("11", "13")    # Magisk Delta works there only
 
 
 def cpu_options():
@@ -130,8 +132,15 @@ class InstanceDialog(_Dialog):
         self.name_row.set_text(self.info.get("name", ""))
         g.add(self.name_row)
         if mode == "create":
-            g.set_description("A fresh Android from the stock Waydroid image; it gets the next free number. "
+            g.set_description("A fresh Android device; it gets the next free number. "
                               "To copy an existing instance, use Clone.")
+            self.android_row = _combo("Android version", ANDROID)
+            _select(self.android_row, ANDROID, catalog.DEFAULT)
+            self.android_row.connect("notify::selected", lambda *_: self._android_changed())
+            g.add(self.android_row)
+        else:
+            g.add(Adw.ActionRow(title="Android version", subtitle=catalog.label(self.info["android"])
+                                if self.info.get("android") in catalog.VERSIONS else "Stock Waydroid's own"))
 
         # -- display
         g = Adw.PreferencesGroup(title="Display", description="Takes effect at the next start")
@@ -212,6 +221,7 @@ class InstanceDialog(_Dialog):
                                                               "time. Restart the instance to apply.")
         _select(self.arm_row, ARM, self.info.get("arm_translation", "houdini"))
         g.add(self.arm_row)
+        self._android_changed()
         if mode == "edit":
             self.apps_row = Adw.SwitchRow(title="App shortcuts in the app grid",
                                           subtitle="Create launchers for this instance's apps")
@@ -266,11 +276,25 @@ class InstanceDialog(_Dialog):
         for r in self.custom_rows.values():
             r.set_visible(custom)
 
+    def android(self):
+        return ANDROID[self.android_row.get_selected()][0] if self.mode == "create" else self.info.get("android")
+
+    def _android_changed(self):
+        key = self.android()
+        ok = key in ROOT_VERSIONS
+        self.root_row.set_sensitive(ok)
+        if not ok:
+            self.root_row.set_active(False)
+        if self.mode == "create":
+            self.android_row.set_subtitle("About {:.1f} GB to download the first time".format(catalog.get(key, "gb")))
+
     def values(self):
         v = {}
         name = self.name_row.get_text().strip()
         if name:
             v["name"] = name
+        if self.mode == "create":
+            v["android"] = self.android()
         if self.kind.get_active_name() == "custom":
             w, h, dpi = (int(self.width_row.get_value()), int(self.height_row.get_value()),
                          int(self.dpi_row.get_value()))

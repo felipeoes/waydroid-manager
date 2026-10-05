@@ -1,0 +1,164 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+import io
+import json
+import os
+import sqlite3
+import tempfile
+import unittest
+import zipfile
+from unittest import mock
+
+from waydroid_manager import catalog
+from waydroid_manager.daemon import container, gapps, images, layers, storage, util
+from waydroid_manager.instance import CREATE_ONLY, Instance, validate_setting
+
+
+class CatalogTest(unittest.TestCase):
+    def test_versions(self):
+        self.assertEqual(list(catalog.VERSIONS), ["11", "13", "14", "15", "16", "17"])
+        self.assertEqual(catalog.key_for_sdk(33), "13")
+        self.assertIsNone(catalog.key_for_sdk(29))      # stock Waydroid on Android 10
+        self.assertEqual(catalog.label("17"), "Android 17 (experimental)")
+        for key, v in catalog.VERSIONS.items():
+            self.assertTrue(("ota" in v) != ("zip" in v), key)    # exactly one source
+            self.assertIn(v.get("gapps", "image"), ("image", "mtg14", "gms_apex"), key)
+
+    def test_android_is_chosen_at_creation(self):
+        self.assertEqual(validate_setting("android", "16"), "16")
+        with self.assertRaises(ValueError):
+            validate_setting("android", "12")
+        self.assertIn("android", CREATE_ONLY)
+        self.assertEqual(Instance.new("5", 5, 1000, "", {}, {}).get("android"), catalog.DEFAULT)
+
+
+class ImageStoreTest(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        patcher = mock.patch.object(images.paths, "IMAGES_DIR", self.tmp.name)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        self.addCleanup(self.tmp.cleanup)
+        mock.patch.object(images, "CURRENT", os.path.join(self.tmp.name, "current")).start()
+        self.addCleanup(mock.patch.stopall)
+
+    def make_set(self, sid, **cfg):
+        d = os.path.join(self.tmp.name, sid)
+        os.makedirs(d)
+        for f in ("system.img", "vendor.img"):
+            open(os.path.join(d, f), "w").close()
+        if cfg:
+            images._write_cfg(d, **cfg)
+
+    def test_latest_and_gc(self):
+        self.make_set("100-101", android="16", built="100")
+        self.make_set("200-201", android="16", built="200")
+        self.make_set("300-301", stock="true", built="300")     # stock's, for #0
+        os.makedirs(os.path.join(self.tmp.name, "400-401.tmp"))  # an install in progress
+        os.symlink("300-301", images.CURRENT)
+        self.assertEqual(images.latest("16"), "200-201")
+        self.assertEqual(images.latest("17"), "")
+        images.gc(["100-101"])        # a stopped device still on the older build keeps it
+        self.assertEqual(images.available(), ["100-101", "300-301"])
+
+    def test_newest_build_of_a_channel(self):
+        # two builds with one datetime (Android 17's vendor channel): the file name's date decides
+        listing = {"response": [
+            {"version": "24.0", "datetime": 7, "filename": "lineage-24.0-20260926-vendor.zip", "url": "a", "id": "x"},
+            {"version": "24.0", "datetime": 7, "filename": "lineage-24.0-20260927-vendor.zip", "url": "b", "id": "y"},
+            {"version": "23.2", "datetime": 9, "filename": "lineage-23.2-20261001-vendor.zip", "url": "c", "id": "z"}]}
+        with mock.patch.object(images.urllib.request, "urlopen",
+                               return_value=io.BytesIO(json.dumps(listing).encode())):
+            self.assertEqual(images._newest("chan", "24.0")["url"], "b")
+
+    def test_set_ids(self):
+        with mock.patch.object(images, "_newest", side_effect=[
+                {"datetime": 1790512621, "url": "s", "id": "sha-s"}, {"datetime": 1790542319, "url": "v", "id": "sha-v"}]):
+            # the same id stock's set has when stock runs that build: it isn't downloaded twice
+            self.assertEqual(images._build("13"), ("1790512621-1790542319", "1790512621",
+                                                   [("s", "sha-s"), ("v", "sha-v")]))
+        sid, built, sources = images._build("14")
+        self.assertEqual((sid, built), (catalog.VERSIONS["14"]["zip"][1][:16], "20260125"))
+
+    def test_gapps_layers(self):
+        self.make_set("aa", android="17")
+        self.make_set("bb", android="13")
+        self.assertEqual(images.gapps_layer("aa"), os.path.join(self.tmp.name, "aa", "gapps"))
+        self.assertIsNone(images.gapps_layer("bb"))
+        with mock.patch.object(gapps, "mtg_layer", return_value="/mtg"):
+            self.make_set("cc", android="15")
+            self.assertEqual(images.gapps_layer("cc"), "/mtg")
+
+
+class LayerTest(unittest.TestCase):
+    def test_mindthegapps_without_setupwizard_and_libs_extracted(self):
+        with tempfile.TemporaryDirectory() as d:
+            apk = io.BytesIO()
+            with zipfile.ZipFile(apk, "w") as z:
+                z.writestr("lib/x86_64/libgms.so", b"x")
+                z.writestr("lib/arm64-v8a/libgms.so", b"arm")
+            zpath = os.path.join(d, "mtg.zip")
+            with zipfile.ZipFile(zpath, "w") as z:
+                z.writestr("system/product/priv-app/GmsCore/GmsCore.apk", apk.getvalue())
+                z.writestr("system/system_ext/priv-app/SetupWizard/SetupWizard.apk", b"apk")
+                z.writestr("META-INF/com/google/android/update-binary", b"sh")
+            out = os.path.join(d, "layer")
+            gapps._unpack_mtg(zpath, out)
+            app = os.path.join(out, "system/product/priv-app/GmsCore")
+            self.assertTrue(os.path.isfile(os.path.join(app, "lib/x86_64/libgms.so")))
+            self.assertFalse(os.path.exists(os.path.join(app, "lib/arm64-v8a")))
+            self.assertFalse(os.path.exists(os.path.join(out, "system/system_ext/priv-app/SetupWizard")))
+            self.assertFalse(os.path.exists(os.path.join(out, "META-INF")))
+
+    def test_sourceforge_master_mirror(self):
+        self.assertEqual(util.mirror("https://sourceforge.net/projects/waydroid/files/images/a/b.zip/download"),
+                         "https://master.dl.sourceforge.net/project/waydroid/images/a/b.zip")
+        self.assertEqual(util.mirror("https://github.com/x/y.zip"), "https://github.com/x/y.zip")
+
+
+class PropsTest(unittest.TestCase):
+    def test_one_line_per_key(self):
+        # Android 14+ take a repeated key's first line, 13 its last: ours must be the only one
+        self.assertEqual(container.one_per_key(["ro.hardware.vulkan=radeon", "a=1", "", "ro.hardware.vulkan=virtio"]),
+                         ["ro.hardware.vulkan=virtio", "a=1"])
+
+    def test_stock_version(self):
+        with mock.patch.object(images, "current_id", return_value="x"), \
+                mock.patch.object(images, "read_cfg", return_value={"sdk": "33"}):
+            self.assertEqual(container.stock_android(), "13")
+            self.assertEqual(container.android_of(Instance.new("0", 0, 1000, "", {}, {})), "13")
+        inst = Instance.new("4", 4, 1000, "", {}, {})
+        inst.set("android", "16")       # create-only is enforced by the daemon, not the model
+        self.assertEqual(container.android_of(inst), "16")
+
+
+class GsfIdTest(unittest.TestCase):
+    def test_read_from_the_database_without_following_links(self):
+        with tempfile.TemporaryDirectory() as d:
+            inst = Instance.new("4", 4, 1000, "", {}, {})
+            db_dir = os.path.join(d, "data", "com.google.android.gsf", "databases")
+            os.makedirs(db_dir)
+            db = sqlite3.connect(os.path.join(db_dir, "gservices.db"))
+            db.execute("CREATE TABLE main (name TEXT, value TEXT)")
+            db.execute("INSERT INTO main VALUES ('android_id', '4154426684555490429')")
+            db.commit()
+            db.close()
+            with mock.patch.object(Instance, "data_dir", d):
+                self.assertEqual(storage.gsf_id(inst), "4154426684555490429")
+                # an Android or owner-planted link is never followed out of the data directory
+                os.rename(os.path.join(d, "data"), os.path.join(d, "real"))
+                os.symlink(os.path.join(d, "real"), os.path.join(d, "data"))
+                self.assertEqual(storage.gsf_id(inst), "")
+
+
+class LayerHelpersTest(unittest.TestCase):
+    def test_extract_apk_libs_only_for_x86(self):
+        with tempfile.TemporaryDirectory() as d:
+            with zipfile.ZipFile(os.path.join(d, "App.apk"), "w") as z:
+                z.writestr("lib/x86/libfoo.so", b"x")
+                z.writestr("lib/x86/sub/libbar.so", b"x")      # not a top-level lib
+            layers.extract_apk_libs(d)
+            self.assertEqual(sorted(os.listdir(os.path.join(d, "lib", "x86"))), ["libfoo.so"])
+
+
+if __name__ == "__main__":
+    unittest.main()

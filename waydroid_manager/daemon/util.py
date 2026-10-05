@@ -46,27 +46,41 @@ def run(cmd, check=True, env=None, input=None, timeout=300):
     return r
 
 
-def download(url, sha256, dest, what):
-    """Fetch url to dest unless dest already has the expected sha256; returns dest.
+def download(url, sha256, dest, what, attempts=5):
+    """Fetch url to dest unless dest already has the expected sha256; returns dest. An
+    interrupted download resumes (from dest.part, also on the next call).
     Callers serialize calls for the same dest (they share its temp file)."""
     if os.path.isfile(dest) and sha256_file(dest) == sha256:
         return dest
     log.info("downloading %s", what)
-    tmp = dest + ".tmp"
-    try:
-        with urllib.request.urlopen(url, timeout=60) as r, open(tmp, "wb") as f:
-            shutil.copyfileobj(r, f)
-        ok = sha256_file(tmp) == sha256
-        if ok:
-            os.replace(tmp, dest)
-    except OSError as e:
-        raise CommandError("cannot download {}: {}".format(what, e))
-    finally:
-        if os.path.lexists(tmp):
-            os.unlink(tmp)
-    if not ok:
+    part = dest + ".part"
+    if os.path.isfile(part) and sha256_file(part) == sha256:
+        attempts = 0          # finished before (a range past the end would fail)
+    for attempt in range(attempts):
+        have = os.path.getsize(part) if os.path.exists(part) else 0
+        req = urllib.request.Request(mirror(url), headers={"Range": "bytes={}-".format(have)} if have else {})
+        try:
+            with urllib.request.urlopen(req, timeout=60) as r, open(part, "ab" if r.status == 206 else "wb") as f:
+                shutil.copyfileobj(r, f, 1 << 20)
+            break
+        except OSError as e:
+            if attempt == attempts - 1:
+                raise CommandError("cannot download {}: {}".format(what, e))
+            log.info("download of %s interrupted (%s); resuming", what, e)
+    if sha256_file(part) != sha256:
+        os.unlink(part)
         raise CommandError("the downloaded {} does not match the expected checksum".format(what))
+    os.replace(part, dest)
     return dest
+
+
+def mirror(url):
+    """SourceForge's automatic mirrors can crawl at ~100 KB/s: use its master server."""
+    prefix = "https://sourceforge.net/projects/"
+    if url.startswith(prefix) and "/files/" in url:
+        project, _, path = url[len(prefix):].partition("/files/")
+        return "https://master.dl.sourceforge.net/project/{}/{}".format(project, path.rsplit("/download", 1)[0])
+    return url
 
 
 def sha256_file(path):
@@ -209,7 +223,13 @@ def chown_tree_top(path, uid, gid, mode):
 def open_in_container(pid, rel, flags, mode=0o600):
     """Open rel inside a running container's root without following symlinks:
     an absolute link planted inside would otherwise resolve against the host."""
-    fd = os.open("/proc/{}/root".format(int(pid)), os.O_PATH | os.O_DIRECTORY)
+    return open_beneath("/proc/{}/root".format(int(pid)), rel, flags, mode)
+
+
+def open_beneath(root, rel, flags, mode=0o600):
+    """Open root/rel without following a symlink in rel: its components are written by
+    Android or by the instance's owner, either of whom could point them at host files."""
+    fd = os.open(root, os.O_PATH | os.O_DIRECTORY)
     try:
         parts = rel.split("/")
         for part in parts[:-1]:

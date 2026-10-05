@@ -3,11 +3,11 @@
 import os
 import platform
 import shutil
-import threading
 import zipfile
 
 from .. import paths
-from .util import CommandError, download, log
+from . import layers
+from .util import CommandError, log
 
 # The builds waydroid_script installs, pinned to a commit and checked by hash; keyed by Android SDK level
 _HOUDINI = "https://github.com/supremegamers/vendor_intel_proprietary_houdini/archive/"
@@ -51,42 +51,29 @@ on property:ro.enable.native.bridge.exec=1
     copy /system/etc/binfmt_misc/arm64_dyn /proc/sys/fs/binfmt_misc/register
 """
 
-_lock = threading.Lock()
-
-
 def layer(kind, sdk):
-    """Directory to mount below the instance's own overlay layer, or None (off, unsupported, or
-    the download failed: the instance then starts without ARM translation)."""
+    """Directory to mount below the instance's own overlay layer, or None (off, an image with its
+    own translation, no build for this Android, or the download failed: the instance then
+    starts without ARM translation)."""
     if kind == "none":
         return None
     build = BUILDS.get((kind, sdk))
     if platform.machine() != "x86_64" or not build:
-        log.warning("no %s build for %s Android SDK %r; starting without ARM translation",
-                    kind, platform.machine(), sdk)
+        log.info("no %s build of ours for %s Android SDK %r; the image's own translation, if any, is used",
+                 kind, platform.machine(), sdk)
         return None
     url, sha = build
     # ponytail: layers of older pins are never removed; add cleanup if the pins change often
     d = os.path.join(paths.STATE_DIR, "arm", "{}-{}".format(kind, sha[:12]))
-    with _lock:  # parallel starts share the layer and its temp files
-        if os.path.isdir(d):
-            return d
-        try:
-            os.makedirs(os.path.dirname(d), exist_ok=True)
-            _unpack(download(url, sha, d + ".zip", kind), d + ".tmp", kind)
-            os.rename(d + ".tmp", d)  # named by hash: a mounted layer is never rewritten
-        except (CommandError, OSError, zipfile.BadZipFile) as e:
-            log.warning("starting without ARM translation: %s", e)
-            return None
-        finally:
-            shutil.rmtree(d + ".tmp", ignore_errors=True)
-            if os.path.lexists(d + ".zip"):
-                os.unlink(d + ".zip")
-    return d
+    try:
+        return layers.layer(d, url, sha, lambda z, tmp: _unpack(z, tmp, kind), kind)
+    except (CommandError, OSError, zipfile.BadZipFile) as e:
+        log.warning("starting without ARM translation: %s", e)
+        return None
 
 
 def _unpack(zpath, tmp, kind):
-    """The zip's prebuilts/ become tmp/system/, with waydroid_script's owners and modes."""
-    shutil.rmtree(tmp, ignore_errors=True)
+    """The zip's prebuilts/ become tmp/system/."""
     sysdir = os.path.join(tmp, "system")
     with zipfile.ZipFile(zpath) as z:
         for name in z.namelist():
@@ -100,11 +87,3 @@ def _unpack(zpath, tmp, kind):
     if kind == "houdini":
         with open(os.path.join(sysdir, "etc/init/houdini.rc"), "w") as f:
             f.write(HOUDINI_RC)
-    os.chmod(tmp, 0o755)
-    for d, dirs, files in os.walk(sysdir):
-        gid = 2000 if "bin" in os.path.relpath(d, sysdir).split(os.sep) else 0  # shell group
-        os.chown(d, 0, gid)
-        os.chmod(d, 0o755)
-        for n in files:
-            os.chown(os.path.join(d, n), 0, gid)
-            os.chmod(os.path.join(d, n), 0o755 if gid else 0o644)
