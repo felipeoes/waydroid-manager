@@ -131,6 +131,21 @@ class PropsTest(unittest.TestCase):
         self.assertEqual(container.android_of(inst), "16")
 
 
+class AppArmorTest(unittest.TestCase):
+    def test_stock_profile_renamed_with_uevent_writes_denied(self):
+        stock = ("#include <tunables/global>\n"
+                 "profile lxc-waydroid flags=(attach_disconnected, complain) {\n"
+                 "  /sys** rw,\n"
+                 "  /system/bin/app_process Pix -> lxc-waydroid//&android_app,\n}\n")
+        text = container.apparmor_profile(stock, "lxc-waydroid")
+        self.assertIn("profile lxc-waydroid-manager flags=(attach_disconnected, complain) {\n"
+                      "  deny /**/uevent w,\n", text)
+        self.assertIn("-> lxc-waydroid-manager//&android_app", text)
+        self.assertNotIn("profile lxc-waydroid ", text)
+        with self.assertRaises(RuntimeError):     # never load something that could replace stock's
+            container.apparmor_profile("profile other {\n}\n", "lxc-waydroid")
+
+
 class GsfIdTest(unittest.TestCase):
     def test_read_from_the_database_without_following_links(self):
         with tempfile.TemporaryDirectory() as d:

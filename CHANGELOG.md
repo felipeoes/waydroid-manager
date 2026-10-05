@@ -27,16 +27,14 @@ All notable changes to waydroid-multi are listed here. The format follows
   servicemanager protocols of Android 15 and newer. `doctor` checks for them.
 
 ### Fixed
+- An app opened in its own window (`app launch`, app launchers) no longer stalls for a moment each
+  time its window gains or loses focus: the desktop's focus change made Waydroid reconnect Android's
+  display every time.
 - `gsf-id` reads the ID from Google Services' database, so it works on Android 14 and newer too.
 
 ### Removed
 - Support for upgrading from 0.4 and older: name-based instance ids from 0.1, the settings removed in
   0.4, and the stock-UI unit from 0.2 are no longer handled.
-
-### Fixed
-- An app opened in its own window (`app launch`, app launchers) no longer stalls for a moment each
-  time its window gains or loses focus: the desktop's focus change made Waydroid reconnect Android's
-  display every time.
 
 ## [0.5.0] - 2026-10-05
 

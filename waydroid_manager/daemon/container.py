@@ -43,6 +43,8 @@ def stock_args(inst, config=None):
 
 STOCK_UNIT = "waydroid-container.service"
 STOCK_WAS_ACTIVE = os.path.join(paths.RUN_DIR, "stock-was-active")  # release_stock starts it again
+APPARMOR_PROFILE = "lxc-waydroid-manager"   # lxc-start may only switch to lxc-* profiles
+APPARMOR_FILE = os.path.join(paths.RUN_DIR, "apparmor-profile")
 
 
 def _stock_stopped():
@@ -212,8 +214,7 @@ def write_lxc_config(inst, net, cpus_busy=()):
         stock.lxc_snippets(),
         rootfs=inst.rootfs, lxc_dir=inst.lxc_dir, bridge=net.cfg.bridge, mac=inst.mac,
         veth=inst.veth, uts_name="waydroid-" + inst.id.replace("_", "-"), arch=platform.machine(),
-        apparmor_profile=stock.tools().helpers.lxc.LXC_APPARMOR_PROFILE
-        if apparmor_profile_loaded(stock.tools().helpers.lxc.LXC_APPARMOR_PROFILE) else None,
+        apparmor_profile=load_apparmor_profile(),
         poststop_hook=paths.POSTSTOP_SCRIPT,
         netup_hook=paths.NET_UP_SCRIPT if net.cfg.isolate else None, limits=limits)
     _write(os.path.join(inst.lxc_dir, "config"), text)
@@ -244,11 +245,35 @@ def set_device_permissions():
             run(["chmod", "777", "-R", p], check=False)
 
 
+def apparmor_profile(text, stock_name):
+    """Stock Waydroid's container profile under our name, denying writes to sysfs uevent files.
+    WayDroid-ATV's ueventd (16, 17) mounts its own read-write sysfs and writes "add" into every
+    device's uevent file at boot: the kernel replays those events on the host, where the desktop
+    re-adds its GPUs and input devices (GNOME can crash on it). Android needs only the nodes the
+    container config binds, and apexd's other sysfs writes stay allowed."""
+    head = "profile {} ".format(stock_name)
+    if head not in text:
+        raise RuntimeError("unexpected AppArmor profile " + stock_name)
+    text = text.replace(head, "profile {} ".format(APPARMOR_PROFILE), 1).replace(stock_name + "//", APPARMOR_PROFILE + "//")
+    return text.replace("{\n", "{\n  deny /**/uevent w,\n", 1)
+
+
+def load_apparmor_profile():
+    """Our profile's name once loaded; None without AppArmor or stock Waydroid's profile."""
+    name = stock.tools().helpers.lxc.LXC_APPARMOR_PROFILE
+    if not apparmor_profile_loaded(name):
+        return None
+    with open(os.path.join("/etc/apparmor.d/lxc", name)) as f:
+        _write(APPARMOR_FILE, apparmor_profile(f.read(), name))
+    run(["apparmor_parser", "--replace", "--skip-cache", APPARMOR_FILE])
+    return APPARMOR_PROFILE
+
+
 LOOP_DEVICES = 256
 
 
 def loop_entries():
-    """Android 17's apexd mounts its APEXes through loop devices: the container gets
+    """Android 16 and 17's apexd mounts its APEXes through loop devices: the container gets
     loop-control and the host's loop nodes, at /dev/block/loopN where apexd looks for them.
     The kernel makes a node only once its device is used, so missing ones are made here."""
     # ponytail: shares every host loop device with the (already privileged) container;
