@@ -6,6 +6,11 @@ All notable changes to waydroid-multi are listed here. The format follows
 
 ## [Unreleased]
 
+### Fixed
+- Instance windows no longer open maximized. Waydroid maximizes its window before naming it,
+  and that request reached the desktop. A phone-sized instance then showed its screen small in
+  the middle of a wide window.
+
 ## [0.4.0] - 2026-10-04
 
 ### Added

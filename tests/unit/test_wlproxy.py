@@ -101,6 +101,27 @@ class LabelTest(unittest.TestCase):
         self.assertIsNotNone(h.s.window)
 
 
+class CalibrationMaximizeTest(unittest.TestCase):
+    def test_maximize_before_app_id_is_dropped(self):
+        # The HWC maximizes its full-UI toplevel before naming it: left alone, GNOME keeps it
+        # maximized (the unmaximize comes once it is known, and is dropped)
+        h = Harness()
+        h.setup_globals()
+        h.req(msg(COMP, P.WL_COMPOSITOR_CREATE_SURFACE, "n", S),
+              msg(WM, P.XDG_WM_BASE_GET_XDG_SURFACE, "no", XS, S),
+              msg(XS, P.XDG_SURFACE_GET_TOPLEVEL, "n", TL))
+        self.assertEqual(h.req(msg(TL, P.XDG_TOPLEVEL_SET_MAXIMIZED)), [])
+        h.req(msg(TL, P.XDG_TOPLEVEL_SET_APP_ID, "s", "Waydroid"))
+        self.assertEqual(h.req(msg(TL, P.XDG_TOPLEVEL_UNSET_MAXIMIZED)), [])
+
+    def test_app_windows_may_maximize(self):
+        h = Harness()
+        h.setup_globals()
+        h.create_window(app_id="waydroid.com.example.game")
+        (o, op, _), = h.req(msg(TL, P.XDG_TOPLEVEL_SET_MAXIMIZED))
+        self.assertEqual((o, op), (TL, P.XDG_TOPLEVEL_SET_MAXIMIZED))
+
+
 class ZoomTest(unittest.TestCase):
     def setUp(self):
         self.h = Harness(zoom="50")
