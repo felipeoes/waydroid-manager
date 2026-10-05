@@ -6,6 +6,11 @@ All notable changes to waydroid-multi are listed here. The format follows
 
 ## [Unreleased]
 
+### Fixed
+- An app opened in its own window (`app launch`, app launchers) no longer stalls for a moment each
+  time its window gains or loses focus: the desktop's focus change made Waydroid reconnect Android's
+  display every time.
+
 ## [0.5.0] - 2026-10-05
 
 ### Added
