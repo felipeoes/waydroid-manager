@@ -6,7 +6,8 @@ import gi
 
 gi.require_version("Gtk", "4.0")
 gi.require_version("Adw", "1")
-from gi.repository import Adw, GLib, Gtk  # noqa: E402
+gi.require_version("Pango", "1.0")
+from gi.repository import Adw, GLib, Gtk, Pango  # noqa: E402
 
 from .. import devices  # noqa: E402
 from ..instance import host_memory_bytes, setting_default  # noqa: E402
@@ -47,8 +48,18 @@ def classify(width, height, dpi):
     return "custom", 0
 
 
+def _wrapping(row):
+    """Options wrap onto more lines instead of ending in "…" when they don't fit."""
+    f = Gtk.SignalListItemFactory()
+    f.connect("setup", lambda _f, item: item.set_child(
+        Gtk.Label(wrap=True, wrap_mode=Pango.WrapMode.WORD_CHAR, max_width_chars=22, xalign=0)))
+    f.connect("bind", lambda _f, item: item.get_child().set_label(item.get_item().get_string()))
+    row.set_factory(f)
+    return row
+
+
 def _combo(title, options, subtitle=None):
-    row = Adw.ComboRow(title=title)
+    row = _wrapping(Adw.ComboRow(title=title))
     if subtitle:
         row.set_subtitle(subtitle)
     row.set_model(Gtk.StringList.new([label for _, label in options]))
@@ -135,7 +146,7 @@ class InstanceDialog(_Dialog):
             self.kind.add(Adw.Toggle(name=name, label=label))
         type_row.add_suffix(self.kind)
         g.add(type_row)
-        self.res_row = Adw.ComboRow(title="Resolution")
+        self.res_row = _wrapping(Adw.ComboRow(title="Resolution"))
         g.add(self.res_row)
         self.width_row = _spin("Width", 240, 7680, 2, cw)
         self.height_row = _spin("Height", 240, 7680, 2, ch)
@@ -150,7 +161,7 @@ class InstanceDialog(_Dialog):
         g = Adw.PreferencesGroup(title="Device", description="What apps see as this device (next start)")
         page.add(g)
         self.dev_keys = list(devices.PRESETS)
-        self.device_row = Adw.ComboRow(title="Device model")
+        self.device_row = _wrapping(Adw.ComboRow(title="Device model"))
         self.device_row.set_model(Gtk.StringList.new([devices.label(k) for k in self.dev_keys]))
         cur = self.info.get("device_model", "waydroid")
         self.device_row.set_selected(self.dev_keys.index(cur) if cur in self.dev_keys else 0)

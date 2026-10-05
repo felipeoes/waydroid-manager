@@ -171,21 +171,23 @@ class MainWindow(Adw.ApplicationWindow):
         if os.path.exists(UNINSTALL_SCRIPT):
             about.append("Uninstall Waydroid Multi…", "app.uninstall")
         menu.append_section(None, about)
-        header.pack_end(Gtk.MenuButton(icon_name="open-menu-symbolic", menu_model=menu, tooltip_text="Menu"))
+        header.pack_start(Gtk.MenuButton(icon_name="open-menu-symbolic", menu_model=menu, tooltip_text="Menu"))
         view.add_top_bar(header)
 
 
         self.stack = Gtk.Stack()
-        page = Adw.PreferencesPage()
+        # Like an Adw.PreferencesPage, but not capped at its 600 px: the list uses the window's width
+        page = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=24, margin_top=24, margin_bottom=24,
+                       margin_start=12, margin_end=12)
         # Default (stock Waydroid, #0) first, then the instances
         self.stock_group = Adw.PreferencesGroup(title="Default", visible=False)
-        page.add(self.stock_group)
+        page.append(self.stock_group)
         self.group = Adw.PreferencesGroup(title="Instances")
         new_btn = Gtk.Button(child=Adw.ButtonContent(icon_name="list-add-symbolic", label="New Instance"),
                              valign=Gtk.Align.CENTER, css_classes=["flat"])
         new_btn.connect("clicked", lambda *_: self.new_instance())
         self.group.set_header_suffix(new_btn)
-        page.add(self.group)
+        page.append(self.group)
         # Batch actions on the checked instances: the list's first row, its checkbox in line with
         # theirs (an invisible dot stands in for the status dot)
         self.batch_row = Adw.ActionRow(title="Select all", visible=False)
@@ -208,7 +210,9 @@ class MainWindow(Adw.ApplicationWindow):
         new_btn.connect("clicked", lambda *_: self.new_instance())
         self.empty_row.add_suffix(new_btn)
         self.group.add(self.empty_row)
-        self.stack.add_named(page, "list")
+        scroll = Gtk.ScrolledWindow(hscrollbar_policy=Gtk.PolicyType.NEVER, propagate_natural_height=True,
+                                    child=Adw.Clamp(maximum_size=1200, child=page))
+        self.stack.add_named(scroll, "list")
 
         self.error_page = Adw.StatusPage(icon_name="dialog-error-symbolic", title="Daemon not available",
                                          description="Start it with: sudo systemctl start waydroid-multi")
@@ -255,6 +259,12 @@ class MainWindow(Adw.ApplicationWindow):
         self.empty_row.set_visible(not others)
         self.batch_row.set_visible(bool(others))
         self.selection_changed()
+        if not getattr(self, "_fitted", False):
+            # Open as tall as the list (scrolling past 800 px), not with empty space below it
+            self._fitted = True
+            width = self.get_width() or 720
+            height = self.get_content().measure(Gtk.Orientation.VERTICAL, width)[1]
+            self.set_default_size(width, min(height, 800))
 
     def toast(self, msg, timeout=4):
         t = Adw.Toast(title=GLib.markup_escape_text(msg))
