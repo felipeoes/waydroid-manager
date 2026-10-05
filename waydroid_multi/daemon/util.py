@@ -249,7 +249,7 @@ def android_attach_env(iid):
     return env
 
 
-def attach(iid, argv, check=True, timeout=300, env=None):
+def attach(iid, argv, check=True, timeout=300, env=None, input=None):
     """Run argv inside the container as root with the Android environment."""
     env = env or android_attach_env(iid)
     cmd = ["lxc-attach", "-P", paths.LXC_PATH, "-n", paths.container_name(iid), "--clear-env"]
@@ -257,4 +257,4 @@ def attach(iid, argv, check=True, timeout=300, env=None):
         cmd += ["--set-var", "{}={}".format(k, v)]
     cmd += ["--"] + list(argv)
     # Output goes through pipes: lxc-attach chmods its stdout otherwise
-    return run(cmd, check=check, timeout=timeout)
+    return run(cmd, check=check, timeout=timeout, input=input)

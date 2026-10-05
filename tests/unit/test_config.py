@@ -243,6 +243,14 @@ class InstanceTest(unittest.TestCase):
 
 
 class AdbNamesTest(unittest.TestCase):
+    def test_adb_key(self):
+        from waydroid_multi.instance import validate_adb_key
+        key = "QAAAA" + "b3BlbnNzaC1yc2E" * 30 + "= felipe@host"
+        self.assertEqual(validate_adb_key(key + "\n"), key)
+        for bad in ("short= x@y", key + "\nsecond line", key.replace("@", "@$(reboot)"), key + "; rm"):
+            with self.assertRaises(ValueError):
+                validate_adb_key(bad)
+
     def test_host_names(self):
         self.assertEqual(host_names([("2", "root dev"), ("0", "Stock Waydroid"), ("1", "Root-Dev!"), ("3", "日本")]),
                          {"0": "waydroid-stock-waydroid", "1": "waydroid-root-dev", "2": "waydroid-root-dev-2",

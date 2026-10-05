@@ -374,10 +374,32 @@ class Session:
         except DaemonError as e:
             log.warning("adb: %s", e)
             return False
-        if host:
-            self.adb_serial = host + ":5555"
+        if not host:
+            return False
+        self.adb_serial = host + ":5555"
+        # Trust our adb key in Android first, like the emulator, so there is no "Allow USB debugging?"
+        # prompt. The adb server creates the key the first time it starts.
+        home = os.environ.get("ANDROID_USER_HOME") or os.path.expanduser("~/.android")
+        try:
+            subprocess.run(["adb", "start-server"], stdin=subprocess.DEVNULL, capture_output=True, timeout=15)
+            with open(os.path.join(home, "adbkey.pub")) as f:
+                key = f.read().strip()
+        except (OSError, subprocess.TimeoutExpired) as e:
+            log.warning("adb key: %s", e)
+            key = ""
+
+        def connect(*_):
             subprocess.Popen(["adb", "connect", self.adb_serial], stdin=subprocess.DEVNULL,
                              stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+        def failed(e):
+            log.warning("adb key not authorized: %s", e)
+            connect()
+        if key:
+            self.daemon.iface.AuthorizeAdbKey(self.iid, key, reply_handler=connect, error_handler=failed,
+                                              timeout=60)
+        else:
+            connect()
         return False
 
     def cleanup(self):

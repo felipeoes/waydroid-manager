@@ -26,15 +26,18 @@ import dbus.service
 from gi.repository import GLib
 
 from .. import __version__, paths, stock, stockctl
-from ..instance import (Instance, REMOVED_SETTINGS, SETTINGS, legacy_ids, list_ids, validate_id, validate_prop,
-                        validate_setting)
+from ..instance import (Instance, REMOVED_SETTINGS, SETTINGS, legacy_ids, list_ids, validate_adb_key,
+                        validate_id, validate_prop, validate_setting)
 from ..netconfig import host_names
 from ..registry import allocate_index
 from . import container, images, storage
 from .network import Network
-from .util import active_ids, log, lxc_state, open_in_container
+from .util import active_ids, attach, log, lxc_state, open_in_container
 
 ERR = "io.github.waydroidmulti.Error"
+# Adds the adb public key on stdin to the keys adbd trusts (as Android does on "Always allow")
+ADB_KEYS_SCRIPT = ('read -r k; f=/data/misc/adb/adb_keys; grep -qxF "$k" $f 2>/dev/null || echo "$k" >> $f; '
+                   'chown system:shell $f; chmod 0640 $f')
 ACTIVE = ("RUNNING", "FROZEN")
 MAX_PER_USER = 64
 
@@ -705,6 +708,26 @@ class Manager(dbus.service.Object):
         except Error as e:
             return error(e)
         self.run_async(inst.id, lambda: self._stop(inst.id), reply, error)
+
+    @dbus.service.method(paths.DBUS_IFACE, in_signature="ss", out_signature="",
+                         sender_keyword="sender", async_callbacks=("reply", "error"))
+    def AuthorizeAdbKey(self, iid, key, sender, reply, error):
+        """Trust the caller's adb public key in their running instance, like the emulator does:
+        adb connects without Android's "Allow USB debugging?" prompt."""
+        try:
+            inst = self.load(iid)
+            self.check_owner(inst, self.caller(sender))
+            key = validate_adb_key(key)
+        except ValueError as e:
+            return error(Error(e, "InvalidArgs"))
+        except Error as e:
+            return error(e)
+
+        def work():
+            if lxc_state(inst.id) != "RUNNING":
+                raise Error("instance #{} is not running".format(inst.id), "NotRunning")
+            attach(inst.id, ["/system/bin/sh", "-c", ADB_KEYS_SCRIPT], input=key + "\n", timeout=30)
+        self.run_async(inst.id, work, reply, error, lock=False)
 
     @dbus.service.method(paths.DBUS_IFACE, in_signature="s", out_signature="",
                          sender_keyword="sender", async_callbacks=("reply", "error"))

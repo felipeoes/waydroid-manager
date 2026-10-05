@@ -152,6 +152,7 @@ are strings (`"1"` … `"240"`). Callers only see and control their own instance
 | `Start` | `sa{ss}` | called by the user session with its sockets and pid |
 | `ReportClose` | `s` | window closed; the daemon applies `close_action` |
 | `InstallApk` | `shs` | fd of a regular file opened for reading |
+| `AuthorizeAdbKey` | `ss` | the caller's `adbkey.pub`, added to the running instance's `/data/misc/adb/adb_keys` |
 | `SendKey` | `su` | evdev code, written into Android's keyboard FIFO (Recents = 580) |
 | `Screenshot` | `sh → t` | fd of a regular file opened for writing; returns the size |
 | `GetGsfId` | `s → s` | Google Services Framework id (for Play registration) |
@@ -207,6 +208,9 @@ which Android reads last.
   world-readable `/etc/hosts` (`netconfig.etc_hosts_text`) with one `waydroid-<name>` per instance,
   so adb can show instances by name. The names are reduced to `[a-z0-9-]`, so a display name can't
   inject lines. The session runs `adb connect` once Android is ready and `adb disconnect` at stop.
+  Before connecting, it has the daemon add the user's `adbkey.pub` to the instance's `adb_keys`
+  (`AuthorizeAdbKey`, owner only, key checked by `validate_adb_key`, passed on stdin to a fixed
+  script). That gives the owner adb, never adb root (`ro.debuggable` stays protected).
 - **Everything below a user's home, and everything inside a container, is hostile.**
   - `storage.open_stock_data` opens `~/.local/share/waydroid/data` one step at a time with
     `O_NOFOLLOW`. Clone from stock copies through `/proc/<pid>/fd/N`, and #0 bind-mounts it onto

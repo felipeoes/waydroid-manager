@@ -123,9 +123,9 @@ Run `waydroid-multi --help` to see all commands.
   first start with each one downloads it (the builds `waydroid_script` uses), so it needs internet;
   without internet the instance starts without it. Works on x86_64 with Android 11 or 13 images.
 - **adb:** once Android has started, each instance (#0 too) connects to adb by itself as
-  `waydroid-<name>:5555`. For example, `adb -s waydroid-account-1:5555 shell`. The first time,
-  accept the "Allow USB debugging?" prompt in the instance's window (tick "Always allow");
-  until then it is listed as `unauthorized`. The names are kept in a marked block in `/etc/hosts`.
+  `waydroid-<name>:5555`. For example, `adb -s waydroid-account-1:5555 shell`. Like the Android
+  Studio emulator, there is no "Allow USB debugging?" prompt: your adb key is trusted in your own
+  instances. The names are kept in a marked block in `/etc/hosts`.
 - **Updating Waydroid:** run `waydroid upgrade` as usual. Instances pick up the new Android
   version the next time they start.
 - **Google Play on a clone:** a clone counts as a new device, so register it once. Run
