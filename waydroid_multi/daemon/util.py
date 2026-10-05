@@ -6,6 +6,7 @@ import hashlib
 import logging
 import os
 import shutil
+import socket
 import stat
 import subprocess
 import urllib.request
@@ -205,7 +206,7 @@ def chown_tree_top(path, uid, gid, mode):
     os.chmod(path, mode)
 
 
-def open_in_container(pid, rel, flags):
+def open_in_container(pid, rel, flags, mode=0o600):
     """Open rel inside a running container's root without following symlinks:
     an absolute link planted inside would otherwise resolve against the host."""
     fd = os.open("/proc/{}/root".format(int(pid)), os.O_PATH | os.O_DIRECTORY)
@@ -215,7 +216,7 @@ def open_in_container(pid, rel, flags):
             nfd = os.open(part, os.O_PATH | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=fd)
             os.close(fd)
             fd = nfd
-        return os.open(parts[-1], flags | os.O_NOFOLLOW, dir_fd=fd)
+        return os.open(parts[-1], flags | os.O_NOFOLLOW, mode, dir_fd=fd)
     finally:
         os.close(fd)
 
@@ -227,6 +228,26 @@ def active_ids():
     r = run(["lxc-ls", "-P", paths.LXC_PATH, "--active", "-1"], check=False)
     return {n[len(paths.container_name("")):] for n in r.stdout.split()
             if n.startswith(paths.container_name(""))}
+
+
+def adb_disconnect(serial):
+    """Drop an `adb connect` device from the local adb server while adbd still answers. Once the
+    container is gone, adb keeps it in its reconnect loop as offline and ignores `adb disconnect`."""
+    cmd = "host:disconnect:" + serial
+    try:
+        # ponytail: the default server port; a user's ANDROID_ADB_SERVER_PORT isn't seen here
+        with socket.create_connection(("127.0.0.1", 5037), timeout=2) as s:
+            s.sendall(b"%04x%s" % (len(cmd), cmd.encode()))
+            s.recv(4)   # OKAY once the device is dropped
+    except OSError:
+        pass        # no adb server running
+
+
+def container_pid(iid):
+    """The container's init pid, or None when it isn't running."""
+    r = run(["lxc-info", "-P", paths.LXC_PATH, "-n", paths.container_name(iid), "-pH"], check=False)
+    pid = r.stdout.strip()
+    return int(pid) if pid.isdigit() else None
 
 
 def lxc_state(iid):

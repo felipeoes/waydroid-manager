@@ -84,6 +84,7 @@ remove_user_files() {
         [ "$uid" -ge 1000 ] 2>/dev/null && [ "$uid" -lt 60000 ] && [ -d "$home" ] || continue
         if [ "$1" = 1 ]; then extra="$home/.cache/waydroid-multi"; else extra=""; fi
         runuser -u "$user" -- sh -c '[ ! -d "$1" ] || rm -f "$1"/waydroid-multi.*.desktop
+                                      ! grep -qx X-WaydroidMulti=true "$1"/Waydroid.desktop || rm -f "$1"/Waydroid.desktop
                                       [ -z "$2" ] || rm -rf "$2"' \
             sh "$home/.local/share/applications" "$extra" 2>/dev/null
     done
@@ -100,6 +101,8 @@ remove_files() {
           /usr/share/applications/io.github.waydroidmulti.desktop \
           "$PREFIX/bin/waydroid-multi" "$PREFIX/bin/waydroid-multi-gui" "$PREFIX/bin/waydroid-multi-daemon"
     rm -rf "$LIBDIR" "$RUNDIR"
+    # the instance names adb uses (only our lines, even if END was deleted)
+    sed -i --follow-symlinks '/^# BEGIN waydroid-multi /,/^# END waydroid-multi$/{/^# BEGIN waydroid-multi \|^# END waydroid-multi$\|^[0-9a-fA-F.:]\+ waydroid-[a-z0-9-]\+$/d}' /etc/hosts 2>/dev/null || true
     systemctl daemon-reload
     systemctl reload dbus 2>/dev/null || true
 }

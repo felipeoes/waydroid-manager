@@ -9,7 +9,7 @@ import os
 import threading
 
 from .. import paths
-from ..netconfig import NetConfig, dhcp_hosts_text
+from ..netconfig import NetConfig, dhcp_hosts_text, etc_hosts_text
 from .util import log, run
 
 DNSMASQ_UNIT = "waydroid-multi-dnsmasq.service"
@@ -59,6 +59,21 @@ class Network:
                 cmd.append("--setenv={}={}".format(k, v))
             cmd += ["sh", paths.NET_SCRIPT, "run-dnsmasq"]
             run(cmd)
+
+    def write_names(self, entries):
+        """Our block in /etc/hosts: [(ip, "waydroid-<name>")], so adb shows instances by name.
+        Rewritten in place: a new file would lose its owner, ACLs and SELinux label, and can't
+        replace a bind-mounted /etc/hosts."""
+        try:
+            with open("/etc/hosts", "r+") as f:
+                old = f.read()
+                new = etc_hosts_text(old, entries)
+                if new != old:
+                    f.seek(0)
+                    f.write(new)
+                    f.truncate()
+        except OSError as e:
+            log.warning("cannot update /etc/hosts with instance names: %s", e)
 
     def reload_hosts(self, hosts):
         with self.lock:

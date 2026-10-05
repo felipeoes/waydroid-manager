@@ -50,7 +50,11 @@ is single-instance in stock Waydroid, and runs **next to** stock Waydroid withou
 Instances are numbered: stock Waydroid is **#0** (`default`), and new instances take the lowest
 free number from 1 to 240 (`registry.allocate_index`). The number is the instance id
 everywhere: directory, container name, veth `wdmNv`, MAC `02:57:44:4d:HH:LL`, IP, binder node
-names, launcher `waydroid-multi.N.desktop` and window app_id `waydroid-multi.N`.
+names, launcher `waydroid-multi.N.desktop` and window app_id `waydroid-multi.N`. #0's launcher is
+named plain "Waydroid", and stock's `Waydroid.desktop` is hidden for the user by a per-user
+override (`NoDisplay=true`, marked `X-WaydroidMulti=true`), so there is a single Waydroid icon.
+Overriding stock's entry with #0's own doesn't work: GNOME Shell's app grid keeps launching the
+entry it first loaded.
 
 ### Components
 
@@ -133,6 +137,7 @@ names, launcher `waydroid-multi.N.desktop` and window app_id `waydroid-multi.N`.
 | `/var/lib/waydroid-multi/images/` | image store with a `current` symlink |
 | `/run/waydroid-multi/` | network env, dnsmasq hosts file, staged sockets |
 | `~/.local/share/applications/waydroid-multi.*` | per-user launchers |
+| `~/.local/share/applications/Waydroid.desktop` | hides stock's Waydroid icon (#0's is the Waydroid icon) |
 | `~/.cache/waydroid-multi/` | proxy logs (`wlproxy-N.log`) |
 
 ## D-Bus API
@@ -152,6 +157,7 @@ are strings (`"1"` … `"240"`). Callers only see and control their own instance
 | `Start` | `sa{ss}` | called by the user session with its sockets and pid |
 | `ReportClose` | `s` | window closed; the daemon applies `close_action` |
 | `InstallApk` | `shs` | fd of a regular file opened for reading |
+| `AuthorizeAdbKey` | `ss` | the caller's `adbkey.pub`, added to the running instance's `/data/misc/adb/adb_keys` |
 | `SendKey` | `su` | evdev code, written into Android's keyboard FIFO (Recents = 580) |
 | `Screenshot` | `sh → t` | fd of a regular file opened for writing; returns the size |
 | `GetGsfId` | `s → s` | Google Services Framework id (for Play registration) |
@@ -203,6 +209,15 @@ which Android reads last.
   `daemon/armtrans.py`, and unpacked once into a root-owned layer under
   `/var/lib/waydroid-multi/arm/` that all instances share read-only. Their init scripts register
   binfmt_misc handlers, which are host-wide (the containers are privileged) and stay until reboot.
+- **Instance names are visible to every local user:** the daemon keeps a marked block in the
+  world-readable `/etc/hosts` (`netconfig.etc_hosts_text`) with one `waydroid-<name>` per instance,
+  so adb can show instances by name. The names are reduced to `[a-z0-9-]`, so a display name can't
+  inject lines. The block is rewritten in place, and only lines inside it are touched. The session
+  runs `adb connect` once Android is ready (again after a rename) and `adb disconnect` at stop.
+  Before connecting, it has the daemon add the user's `adbkey.pub` to the instance's `adb_keys`
+  (`AuthorizeAdbKey`, owner only, key checked by `validate_adb_key`). The daemon writes the file
+  from the host with `open_in_container`, so a link planted inside isn't followed. That gives the
+  owner adb, never adb root (`ro.debuggable` stays protected).
 - **Everything below a user's home, and everything inside a container, is hostile.**
   - `storage.open_stock_data` opens `~/.local/share/waydroid/data` one step at a time with
     `O_NOFOLLOW`. Clone from stock copies through `/proc/<pid>/fd/N`, and #0 bind-mounts it onto

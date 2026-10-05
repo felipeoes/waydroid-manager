@@ -29,6 +29,7 @@ PROTECTED_PROP_RE = re.compile(
 CPUSET_RE = re.compile(r"^[0-9]+(-[0-9]+)?(,[0-9]+(-[0-9]+)?)*$")
 MEM_RE = re.compile(r"^[0-9]+[KMG]?$")
 MAX_INDEX = 240
+ADB_KEY_RE = re.compile(r"^[A-Za-z0-9+/]{100,4096}={0,2}( [A-Za-z0-9@._+-]{1,128})?$")   # adbkey.pub: base64 user@host
 ACTIONS = ("stop", "freeze", "none")
 ARM = ("houdini", "libndk", "none")
 
@@ -181,6 +182,14 @@ def validate_setting(key, value):
     if key not in SETTINGS:
         raise ValueError("unknown setting '{}' (known: {})".format(key, ", ".join(sorted(SETTINGS))))
     return SETTINGS[key][0](value)
+
+
+def validate_adb_key(key):
+    """An adb public key (~/.android/adbkey.pub): one line, nothing a shell or adbd could misread."""
+    key = str(key).strip()
+    if not ADB_KEY_RE.match(key):
+        raise ValueError("not an adb public key")
+    return key
 
 
 def validate_prop(key, value, trusted=False):

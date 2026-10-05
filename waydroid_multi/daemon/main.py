@@ -26,14 +26,16 @@ import dbus.service
 from gi.repository import GLib
 
 from .. import __version__, paths, stock, stockctl
-from ..instance import (Instance, REMOVED_SETTINGS, SETTINGS, legacy_ids, list_ids, validate_id, validate_prop,
-                        validate_setting)
+from ..instance import (Instance, REMOVED_SETTINGS, SETTINGS, legacy_ids, list_ids, validate_adb_key,
+                        validate_id, validate_prop, validate_setting)
+from ..netconfig import host_names
 from ..registry import allocate_index
 from . import container, images, storage
 from .network import Network
-from .util import active_ids, log, lxc_state, open_in_container
+from .util import active_ids, adb_disconnect, container_pid, log, lxc_state, open_in_container
 
 ERR = "io.github.waydroidmulti.Error"
+AID_SYSTEM, AID_SHELL = 1000, 2000   # adb_keys is system:shell 0640, as Android writes it on "Always allow"
 ACTIVE = ("RUNNING", "FROZEN")
 MAX_PER_USER = 64
 
@@ -83,6 +85,8 @@ class Manager(dbus.service.Object):
         self.helpers = {}        # id -> Popen
         self.last_close = {}
         self.disk = {}           # id -> (bytes used as a string, time measured)
+        self.names = {}          # id -> "waydroid-<name>", its /etc/hosts name for adb
+        self.names_lock = threading.Lock()   # computing and writing them, from several threads
         self.stopping_by_us = set()
         self.key_fds = {}        # id -> fd of the instance's keyboard FIFO (kept open while running)
         self.dbus_info = dbus.Interface(bus.get_object("org.freedesktop.DBus", "/org/freedesktop/DBus"),
@@ -122,7 +126,7 @@ class Manager(dbus.service.Object):
             log.exception("creating #0 failed")
             shutil.rmtree(paths.instance_dir("0"), ignore_errors=True)
             return
-        self.net.reload_hosts(self.hosts())
+        self.refresh_hosts()
 
     def check_owner(self, inst, uid):
         if uid != 0 and uid != inst.owner_uid:
@@ -142,6 +146,18 @@ class Manager(dbus.service.Object):
 
     def hosts(self):
         return [(i.mac, self.net.ip_for(i)) for i in self.all_instances()]
+
+    def refresh_hosts(self):
+        """DHCP leases and the /etc/hosts names (adb) for the current instances."""
+        self.net.reload_hosts(self.hosts())
+        self.refresh_names()
+
+    def refresh_names(self):
+        # Load the instances under the lock: a thread with an older list can't write after a newer one
+        with self.names_lock:
+            insts = self.all_instances()
+            self.names = host_names([(i.id, i.name) for i in insts])
+            self.net.write_names([(self.net.ip_for(i), self.names[i.id]) for i in insts])
 
     def images_in_use(self):
         """Image sets loop-mounted by running instances (stopped ones switch
@@ -210,6 +226,7 @@ class Manager(dbus.service.Object):
         d["session"] = "yes" if inst.id in self.sessions else "no"
         d["pending_id_reset"] = inst.cfg["instance"].get("pending_id_reset", "false")
         d["disk_used"] = self.disk_used(inst)
+        d["adb_host"] = self.names.get(inst.id, "")
         d["mem_used"] = ""
         d["pinned"] = ""  # CPUs in use: the cpuset setting, or the ones picked at start
         if d["state"] in ACTIVE:
@@ -371,13 +388,11 @@ class Manager(dbus.service.Object):
         for attempt in (0, 1):
             fd = self.key_fds.get(iid)
             if fd is None:
-                r = subprocess.run(["lxc-info", "-P", paths.LXC_PATH, "-n", paths.container_name(iid), "-pH"],
-                                   capture_output=True, text=True)
-                pid = r.stdout.strip()
-                if not pid.isdigit():
+                pid = container_pid(iid)
+                if not pid:
                     raise Error("instance #{} is not running".format(iid), "NotRunning")
                 # Android's /dev is writable from inside: don't follow its links to the host
-                fd = open_in_container(int(pid), "dev/input/wl_keyboard_events", os.O_WRONLY | os.O_NONBLOCK)
+                fd = open_in_container(pid, "dev/input/wl_keyboard_events", os.O_WRONLY | os.O_NONBLOCK)
                 if not stat.S_ISFIFO(os.fstat(fd).st_mode):
                     os.close(fd)
                     raise Error("instance #{}: keyboard input is not a FIFO".format(iid))
@@ -398,6 +413,8 @@ class Manager(dbus.service.Object):
         self._close_key_fd(iid)
         self.set_transient(iid, "STOPPING")
         self.stopping_by_us.add(iid)
+        if iid in self.names:
+            adb_disconnect(self.names[iid] + ":5555")
         try:
             self.stop_helper(iid)
             container.stop(inst)
@@ -523,7 +540,7 @@ class Manager(dbus.service.Object):
                 raise
             finally:
                 self.set_transient(iid, None)
-        self.net.reload_hosts(self.hosts())
+        self.refresh_hosts()
         GLib.idle_add(lambda: (self.InstanceAdded(iid), False)[1])
         return iid
 
@@ -595,7 +612,7 @@ class Manager(dbus.service.Object):
             storage.delete_instance_files(inst)
         finally:
             self.transient.pop(iid, None)
-        self.net.reload_hosts(self.hosts())
+        self.refresh_hosts()
         GLib.idle_add(lambda: (self.InstanceRemoved(iid), False)[1])
 
     # -- D-Bus API -------------------------------------------------------------
@@ -661,6 +678,8 @@ class Manager(dbus.service.Object):
             except ValueError as e:
                 raise Error(e, "InvalidArgs")
             inst.save()
+        if "name" in values:
+            self.refresh_names()
         self.ConfigChanged(inst.id)
 
     @dbus.service.method(paths.DBUS_IFACE, in_signature="sa{ss}", out_signature="",
@@ -693,6 +712,37 @@ class Manager(dbus.service.Object):
         except Error as e:
             return error(e)
         self.run_async(inst.id, lambda: self._stop(inst.id), reply, error)
+
+    @dbus.service.method(paths.DBUS_IFACE, in_signature="ss", out_signature="",
+                         sender_keyword="sender", async_callbacks=("reply", "error"))
+    def AuthorizeAdbKey(self, iid, key, sender, reply, error):
+        """Trust the caller's adb public key in their running instance, like the emulator does:
+        adb connects without Android's "Allow USB debugging?" prompt."""
+        try:
+            inst = self.load(iid)
+            self.check_owner(inst, self.caller(sender))
+            key = validate_adb_key(key)
+        except ValueError as e:
+            return error(Error(e, "InvalidArgs"))
+        except Error as e:
+            return error(e)
+
+        def work():
+            pid = container_pid(inst.id)
+            if not pid:
+                raise Error("instance #{} is not running".format(inst.id), "NotRunning")
+            # Android's /data is writable from inside: don't follow its links (or hard links) to other files
+            fd = open_in_container(pid, "data/misc/adb/adb_keys", os.O_RDWR | os.O_APPEND | os.O_CREAT, 0o640)
+            with os.fdopen(fd, "r+") as f:
+                st = os.fstat(fd)
+                if not stat.S_ISREG(st.st_mode) or st.st_nlink != 1:
+                    raise Error("instance #{}: adb_keys is not a plain file".format(inst.id))
+                old = f.read()
+                if key not in old.splitlines():
+                    f.write(("" if not old or old.endswith("\n") else "\n") + key + "\n")
+                os.fchown(fd, AID_SYSTEM, AID_SHELL)
+                os.fchmod(fd, 0o640)
+        self.run_async(inst.id, work, reply, error, lock=False)
 
     @dbus.service.method(paths.DBUS_IFACE, in_signature="s", out_signature="",
                          sender_keyword="sender", async_callbacks=("reply", "error"))
@@ -870,6 +920,7 @@ class Manager(dbus.service.Object):
                 log.error("network: %s", e)
         else:
             self.net.ensure_down()
+        self.refresh_names()
 
 
 def main():
