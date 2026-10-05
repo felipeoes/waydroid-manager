@@ -61,18 +61,17 @@ class Network:
             run(cmd)
 
     def write_names(self, entries):
-        """Our block in /etc/hosts: [(ip, "waydroid-<name>")], so adb shows instances by name."""
-        path = os.path.realpath("/etc/hosts")   # a symlinked /etc/hosts keeps its link
+        """Our block in /etc/hosts: [(ip, "waydroid-<name>")], so adb shows instances by name.
+        Rewritten in place: a new file would lose its owner, ACLs and SELinux label, and can't
+        replace a bind-mounted /etc/hosts."""
         try:
-            with open(path) as f:
+            with open("/etc/hosts", "r+") as f:
                 old = f.read()
-            new = etc_hosts_text(old, entries)
-            if new != old:
-                tmp = path + ".waydroid-multi.tmp"
-                with open(tmp, "w") as f:
+                new = etc_hosts_text(old, entries)
+                if new != old:
+                    f.seek(0)
                     f.write(new)
-                os.chmod(tmp, os.stat(path).st_mode & 0o7777)
-                os.replace(tmp, path)
+                    f.truncate()
         except OSError as e:
             log.warning("cannot update /etc/hosts with instance names: %s", e)
 

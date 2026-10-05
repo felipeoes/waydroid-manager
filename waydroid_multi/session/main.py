@@ -13,6 +13,7 @@ import shutil
 import signal
 import subprocess
 import sys
+import threading
 import time
 
 import dbus
@@ -73,7 +74,8 @@ class Session:
         self.services = []
         self.stopping = False
         self.started = False
-        self.adb_serial = None
+        self.adb_serial = None   # what adb is connected to (or trying): "waydroid-<name>:5555"
+        self.adb_key = None      # our adb public key, once the adb server is up; "" if unreadable
 
     # -- proxy -------------------------------------------------------------------
     def start_proxy(self, upstream):
@@ -297,7 +299,8 @@ class Session:
 
     def on_unlocked(self, uid):
         log.info("Android user %s is ready", uid)
-        GLib.idle_add(self.adb_connect)
+        if shutil.which("adb") and self.adb_key is None:
+            threading.Thread(target=self.adb_prepare, daemon=True, name="adb").start()
         if Instance.load(self.iid).getbool("desktop_apps"):
             GLib.idle_add(self.sync_app_entries)
 
@@ -355,6 +358,10 @@ class Session:
         self.session = self.session_dict(wl)
         self.bus.add_signal_receiver(self.on_state, signal_name="StateChanged", dbus_interface=paths.DBUS_IFACE,
                                      bus_name=paths.DBUS_NAME, path=paths.DBUS_PATH)
+        # A rename, or another instance taking or freeing our name, changes our adb name
+        for sig in ("ConfigChanged", "InstanceAdded", "InstanceRemoved"):
+            self.bus.add_signal_receiver(self.adb_sync, signal_name=sig, dbus_interface=paths.DBUS_IFACE,
+                                         bus_name=paths.DBUS_NAME, path=paths.DBUS_PATH)
         for sig in (signal.SIGTERM, signal.SIGINT, signal.SIGHUP):
             signal_add(sig, self.on_signal)
         log.info("starting instance %s", self.iid)
@@ -365,51 +372,77 @@ class Session:
         log.info("instance %s is running", self.iid)
         self.loop.run()
 
-    def adb_connect(self):
-        """Show the instance in `adb devices` as waydroid-<name>:5555 (its /etc/hosts name)."""
-        if not shutil.which("adb"):
-            return False
-        try:
-            host = self.daemon.get(self.iid).get("adb_host")
-        except DaemonError as e:
-            log.warning("adb: %s", e)
-            return False
-        if not host:
-            return False
-        self.adb_serial = host + ":5555"
-        # Trust our adb key in Android first, like the emulator, so there is no "Allow USB debugging?"
-        # prompt. The adb server creates the key the first time it starts.
+    def adb_prepare(self):
+        """In a thread: the adb server's first start creates our key, which takes seconds."""
         home = os.environ.get("ANDROID_USER_HOME") or os.path.expanduser("~/.android")
+        key = ""
         try:
-            subprocess.run(["adb", "start-server"], stdin=subprocess.DEVNULL, capture_output=True, timeout=15)
+            subprocess.run(["adb", "start-server"], stdin=subprocess.DEVNULL, capture_output=True, timeout=60)
             with open(os.path.join(home, "adbkey.pub")) as f:
                 key = f.read().strip()
         except (OSError, subprocess.TimeoutExpired) as e:
             log.warning("adb key: %s", e)
-            key = ""
+        GLib.idle_add(self.adb_ready, key)
+
+    def adb_ready(self, key):
+        self.adb_key = key
+        self.adb_sync()
+        return False
+
+    def adb_sync(self, *_):
+        """Show the instance in `adb devices` as waydroid-<name>:5555 (its /etc/hosts name)."""
+        if self.adb_key is not None:
+            self.daemon.iface.Get(self.iid, reply_handler=self.adb_on_info, timeout=60,
+                                  error_handler=lambda e: log.warning("adb: %s", e))
+
+    def adb_on_info(self, info):
+        serial = str(info.get("adb_host", "")) + ":5555" if info.get("adb_host") else None
+        if serial == self.adb_serial:
+            return
+        old, self.adb_serial = self.adb_serial, serial
+        if old:
+            threading.Thread(target=self.adb_run, args=(["disconnect", old],), daemon=True).start()
+        if not serial:
+            return
 
         def connect(*_):
-            subprocess.Popen(["adb", "connect", self.adb_serial], stdin=subprocess.DEVNULL,
-                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            threading.Thread(target=self.adb_connect, args=(serial,), daemon=True, name="adb").start()
 
         def failed(e):
             log.warning("adb key not authorized: %s", e)
             connect()
-        if key:
-            self.daemon.iface.AuthorizeAdbKey(self.iid, key, reply_handler=connect, error_handler=failed,
-                                              timeout=60)
+        # Trust our adb key in Android first, like the emulator, so there is no "Allow USB debugging?" prompt
+        if self.adb_key:
+            self.daemon.iface.AuthorizeAdbKey(self.iid, self.adb_key, reply_handler=connect,
+                                              error_handler=failed, timeout=60)
         else:
             connect()
-        return False
+
+    @staticmethod
+    def adb_run(args):
+        try:
+            r = subprocess.run(["adb"] + args, stdin=subprocess.DEVNULL, capture_output=True, text=True,
+                               timeout=30)
+            return (r.stdout + r.stderr).strip()
+        except (OSError, subprocess.TimeoutExpired) as e:
+            return str(e)
+
+    def adb_connect(self, serial):
+        """In a thread: adbd may come up on 5555 a little after Android's user unlocks."""
+        for _ in range(20):
+            if serial != self.adb_serial:   # renamed meanwhile
+                return
+            out = self.adb_run(["connect", serial])
+            if out.startswith(("connected to", "already connected to")):
+                log.info("adb: %s", out)
+                return
+            time.sleep(3)
+        log.warning("adb connect %s: %s", serial, out)
 
     def cleanup(self):
         if self.adb_serial:
             # only if we connected: a plain `adb disconnect` would start an adb server
-            try:
-                subprocess.run(["adb", "disconnect", self.adb_serial], stdin=subprocess.DEVNULL,
-                               capture_output=True, timeout=10, check=False)
-            except (OSError, subprocess.TimeoutExpired):
-                pass
+            self.adb_run(["disconnect", self.adb_serial])
         if getattr(self, "confirm", None) and self.confirm.poll() is None:
             self.confirm.terminate()
         for s in self.services:

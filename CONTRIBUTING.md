@@ -207,10 +207,12 @@ which Android reads last.
 - **Instance names are visible to every local user:** the daemon keeps a marked block in the
   world-readable `/etc/hosts` (`netconfig.etc_hosts_text`) with one `waydroid-<name>` per instance,
   so adb can show instances by name. The names are reduced to `[a-z0-9-]`, so a display name can't
-  inject lines. The session runs `adb connect` once Android is ready and `adb disconnect` at stop.
+  inject lines. The block is rewritten in place, and only lines inside it are touched. The session
+  runs `adb connect` once Android is ready (again after a rename) and `adb disconnect` at stop.
   Before connecting, it has the daemon add the user's `adbkey.pub` to the instance's `adb_keys`
-  (`AuthorizeAdbKey`, owner only, key checked by `validate_adb_key`, passed on stdin to a fixed
-  script). That gives the owner adb, never adb root (`ro.debuggable` stays protected).
+  (`AuthorizeAdbKey`, owner only, key checked by `validate_adb_key`). The daemon writes the file
+  from the host with `open_in_container`, so a link planted inside isn't followed. That gives the
+  owner adb, never adb root (`ro.debuggable` stays protected).
 - **Everything below a user's home, and everything inside a container, is hostile.**
   - `storage.open_stock_data` opens `~/.local/share/waydroid/data` one step at a time with
     `O_NOFOLLOW`. Clone from stock copies through `/proc/<pid>/fd/N`, and #0 bind-mounts it onto

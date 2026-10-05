@@ -5,8 +5,8 @@ STATE=/var/lib/waydroid-multi
 case "$1" in
 remove)
     rm -rf /run/waydroid-multi
-    # the instance names adb uses
-    sed -i --follow-symlinks '/^# BEGIN waydroid-multi /,/^# END waydroid-multi$/d' /etc/hosts 2>/dev/null || true
+    # the instance names adb uses (only our lines, even if END was deleted)
+    sed -i --follow-symlinks '/^# BEGIN waydroid-multi /,/^# END waydroid-multi$/{/^# BEGIN waydroid-multi \|^# END waydroid-multi$\|^[0-9a-fA-F.:]\+ waydroid-[a-z0-9-]\+$/d}' /etc/hosts 2>/dev/null || true
     if [ -d /run/systemd/system ]; then
         systemctl daemon-reload
         systemctl reload dbus >/dev/null 2>&1 || true

@@ -97,6 +97,7 @@ def dhcp_hosts_text(entries):
 
 HOSTS_BEGIN = "# BEGIN waydroid-multi (instance names for adb; managed, do not edit)"
 HOSTS_END = "# END waydroid-multi"
+HOSTS_ENTRY_RE = re.compile(r"^[0-9a-fA-F.:]+ waydroid-[a-z0-9-]+$")   # also what uninstall.sh's sed removes
 
 
 def host_names(instances):
@@ -105,7 +106,7 @@ def host_names(instances):
     for iid, name in sorted(instances, key=lambda i: int(i[0])):
         slug = re.sub(r"[^a-z0-9]+", "-", name.lower()).strip("-")[:40].strip("-")
         host = "waydroid-" + (slug or iid)
-        if host in used:
+        while host in used:
             host += "-" + iid
         used.add(host)
         names[iid] = host
@@ -113,13 +114,23 @@ def host_names(instances):
 
 
 def etc_hosts_text(text, entries):
-    """/etc/hosts with our block replaced by entries [(ip, host)] (removed when there are none)."""
+    """/etc/hosts with our block replaced by entries [(ip, host)] (removed when there are none).
+    Lines outside the block are kept as they are."""
     lines = text.splitlines()
-    if HOSTS_BEGIN in lines and HOSTS_END in lines[lines.index(HOSTS_BEGIN):]:
-        start = lines.index(HOSTS_BEGIN)
-        del lines[start:lines.index(HOSTS_END, start) + 1]
-    while lines and not lines[-1].strip():
-        lines.pop()
+    if HOSTS_BEGIN not in lines and not entries:
+        return text
+    while HOSTS_BEGIN in lines:
+        start = end = lines.index(HOSTS_BEGIN)
+        if HOSTS_END in lines[start:]:
+            end = lines.index(HOSTS_END, start)
+        else:   # END was deleted: take only our entries, never the user's lines after them
+            while end + 1 < len(lines) and HOSTS_ENTRY_RE.match(lines[end + 1]):
+                end += 1
+        if start and not lines[start - 1].strip():
+            start -= 1   # the blank line we put before the block
+        del lines[start:end + 1]
     if entries:
-        lines += ["", HOSTS_BEGIN] + ["{} {}".format(ip, host) for ip, host in sorted(entries)] + [HOSTS_END]
-    return "\n".join(lines) + "\n"
+        if lines and lines[-1].strip():
+            lines.append("")
+        lines += [HOSTS_BEGIN] + ["{} {}".format(ip, host) for ip, host in sorted(entries)] + [HOSTS_END]
+    return "\n".join(lines) + "\n" if lines else ""

@@ -6,7 +6,7 @@ import unittest
 from waydroid_multi import lxcconfig
 from waydroid_multi.instance import (Instance, mac_for_index, validate_id, validate_prop,
                                      validate_setting)
-from waydroid_multi.netconfig import HOSTS_BEGIN, NetConfig, dhcp_hosts_text, etc_hosts_text, host_names
+from waydroid_multi.netconfig import HOSTS_BEGIN, HOSTS_END, NetConfig, dhcp_hosts_text, etc_hosts_text, host_names
 from waydroid_multi.registry import allocate_index
 
 # Shapes of the stock snippets (config_base + config_3 + config_4)
@@ -255,6 +255,9 @@ class AdbNamesTest(unittest.TestCase):
         self.assertEqual(host_names([("2", "root dev"), ("0", "Stock Waydroid"), ("1", "Root-Dev!"), ("3", "日本")]),
                          {"0": "waydroid-stock-waydroid", "1": "waydroid-root-dev", "2": "waydroid-root-dev-2",
                           "3": "waydroid-3"})
+        # the "-<id>" fallback can itself be taken
+        names = host_names([("1", "a"), ("2", "a-3"), ("3", "a")])
+        self.assertEqual(len(set(names.values())), 3)
 
     def test_etc_hosts_block_replaced_then_removed(self):
         base = "127.0.0.1 localhost\n::1 ip6-localhost\n"
@@ -265,6 +268,19 @@ class AdbNamesTest(unittest.TestCase):
         self.assertNotIn("waydroid-a", two)
         self.assertIn("10.0.0.12 waydroid-b\n", two)
         self.assertEqual(etc_hosts_text(two, []), base)
+
+    def test_etc_hosts_untouched_without_block(self):
+        for text in ("", "127.0.0.1 localhost\n\n\n", "127.0.0.1 localhost"):
+            self.assertEqual(etc_hosts_text(text, []), text)
+
+    def test_etc_hosts_missing_end_keeps_user_lines(self):
+        base = "127.0.0.1 localhost\n"
+        broken = etc_hosts_text(base, [("10.0.0.11", "waydroid-a")]).replace(HOSTS_END + "\n", "") + "1.2.3.4 mine\n"
+        fixed = etc_hosts_text(broken, [("10.0.0.12", "waydroid-b")])
+        self.assertEqual(fixed.count(HOSTS_BEGIN), 1)
+        self.assertNotIn("waydroid-a", fixed)
+        self.assertIn("1.2.3.4 mine\n", fixed)
+        self.assertEqual(etc_hosts_text(fixed, []), base + "1.2.3.4 mine\n")
 
 
 class NetConfigTest(unittest.TestCase):

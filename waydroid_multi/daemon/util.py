@@ -205,7 +205,7 @@ def chown_tree_top(path, uid, gid, mode):
     os.chmod(path, mode)
 
 
-def open_in_container(pid, rel, flags):
+def open_in_container(pid, rel, flags, mode=0o600):
     """Open rel inside a running container's root without following symlinks:
     an absolute link planted inside would otherwise resolve against the host."""
     fd = os.open("/proc/{}/root".format(int(pid)), os.O_PATH | os.O_DIRECTORY)
@@ -215,7 +215,7 @@ def open_in_container(pid, rel, flags):
             nfd = os.open(part, os.O_PATH | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=fd)
             os.close(fd)
             fd = nfd
-        return os.open(parts[-1], flags | os.O_NOFOLLOW, dir_fd=fd)
+        return os.open(parts[-1], flags | os.O_NOFOLLOW, mode, dir_fd=fd)
     finally:
         os.close(fd)
 
@@ -227,6 +227,13 @@ def active_ids():
     r = run(["lxc-ls", "-P", paths.LXC_PATH, "--active", "-1"], check=False)
     return {n[len(paths.container_name("")):] for n in r.stdout.split()
             if n.startswith(paths.container_name(""))}
+
+
+def container_pid(iid):
+    """The container's init pid, or None when it isn't running."""
+    r = run(["lxc-info", "-P", paths.LXC_PATH, "-n", paths.container_name(iid), "-pH"], check=False)
+    pid = r.stdout.strip()
+    return int(pid) if pid.isdigit() else None
 
 
 def lxc_state(iid):
@@ -249,7 +256,7 @@ def android_attach_env(iid):
     return env
 
 
-def attach(iid, argv, check=True, timeout=300, env=None, input=None):
+def attach(iid, argv, check=True, timeout=300, env=None):
     """Run argv inside the container as root with the Android environment."""
     env = env or android_attach_env(iid)
     cmd = ["lxc-attach", "-P", paths.LXC_PATH, "-n", paths.container_name(iid), "--clear-env"]
@@ -257,4 +264,4 @@ def attach(iid, argv, check=True, timeout=300, env=None, input=None):
         cmd += ["--set-var", "{}={}".format(k, v)]
     cmd += ["--"] + list(argv)
     # Output goes through pipes: lxc-attach chmods its stdout otherwise
-    return run(cmd, check=check, timeout=timeout, input=input)
+    return run(cmd, check=check, timeout=timeout)
