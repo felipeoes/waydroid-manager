@@ -100,6 +100,8 @@ remove_files() {
           /usr/share/applications/io.github.waydroidmulti.desktop \
           "$PREFIX/bin/waydroid-multi" "$PREFIX/bin/waydroid-multi-gui" "$PREFIX/bin/waydroid-multi-daemon"
     rm -rf "$LIBDIR" "$RUNDIR"
+    # the instance names adb uses
+    sed -i --follow-symlinks '/^# BEGIN waydroid-multi /,/^# END waydroid-multi$/d' /etc/hosts 2>/dev/null || true
     systemctl daemon-reload
     systemctl reload dbus 2>/dev/null || true
 }

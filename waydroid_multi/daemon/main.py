@@ -28,6 +28,7 @@ from gi.repository import GLib
 from .. import __version__, paths, stock, stockctl
 from ..instance import (Instance, REMOVED_SETTINGS, SETTINGS, legacy_ids, list_ids, validate_id, validate_prop,
                         validate_setting)
+from ..netconfig import host_names
 from ..registry import allocate_index
 from . import container, images, storage
 from .network import Network
@@ -83,6 +84,7 @@ class Manager(dbus.service.Object):
         self.helpers = {}        # id -> Popen
         self.last_close = {}
         self.disk = {}           # id -> (bytes used as a string, time measured)
+        self.names = {}          # id -> "waydroid-<name>", its /etc/hosts name for adb
         self.stopping_by_us = set()
         self.key_fds = {}        # id -> fd of the instance's keyboard FIFO (kept open while running)
         self.dbus_info = dbus.Interface(bus.get_object("org.freedesktop.DBus", "/org/freedesktop/DBus"),
@@ -122,7 +124,7 @@ class Manager(dbus.service.Object):
             log.exception("creating #0 failed")
             shutil.rmtree(paths.instance_dir("0"), ignore_errors=True)
             return
-        self.net.reload_hosts(self.hosts())
+        self.refresh_hosts()
 
     def check_owner(self, inst, uid):
         if uid != 0 and uid != inst.owner_uid:
@@ -142,6 +144,13 @@ class Manager(dbus.service.Object):
 
     def hosts(self):
         return [(i.mac, self.net.ip_for(i)) for i in self.all_instances()]
+
+    def refresh_hosts(self):
+        """DHCP leases and the /etc/hosts names (adb) for the current instances."""
+        insts = self.all_instances()
+        self.net.reload_hosts([(i.mac, self.net.ip_for(i)) for i in insts])
+        self.names = host_names([(i.id, i.name) for i in insts])
+        self.net.write_names([(self.net.ip_for(i), self.names[i.id]) for i in insts])
 
     def images_in_use(self):
         """Image sets loop-mounted by running instances (stopped ones switch
@@ -210,6 +219,7 @@ class Manager(dbus.service.Object):
         d["session"] = "yes" if inst.id in self.sessions else "no"
         d["pending_id_reset"] = inst.cfg["instance"].get("pending_id_reset", "false")
         d["disk_used"] = self.disk_used(inst)
+        d["adb_host"] = self.names.get(inst.id, "")
         d["mem_used"] = ""
         d["pinned"] = ""  # CPUs in use: the cpuset setting, or the ones picked at start
         if d["state"] in ACTIVE:
@@ -523,7 +533,7 @@ class Manager(dbus.service.Object):
                 raise
             finally:
                 self.set_transient(iid, None)
-        self.net.reload_hosts(self.hosts())
+        self.refresh_hosts()
         GLib.idle_add(lambda: (self.InstanceAdded(iid), False)[1])
         return iid
 
@@ -595,7 +605,7 @@ class Manager(dbus.service.Object):
             storage.delete_instance_files(inst)
         finally:
             self.transient.pop(iid, None)
-        self.net.reload_hosts(self.hosts())
+        self.refresh_hosts()
         GLib.idle_add(lambda: (self.InstanceRemoved(iid), False)[1])
 
     # -- D-Bus API -------------------------------------------------------------
@@ -661,6 +671,8 @@ class Manager(dbus.service.Object):
             except ValueError as e:
                 raise Error(e, "InvalidArgs")
             inst.save()
+        if "name" in values:
+            self.refresh_hosts()
         self.ConfigChanged(inst.id)
 
     @dbus.service.method(paths.DBUS_IFACE, in_signature="sa{ss}", out_signature="",
@@ -870,6 +882,7 @@ class Manager(dbus.service.Object):
                 log.error("network: %s", e)
         else:
             self.net.ensure_down()
+        self.refresh_hosts()
 
 
 def main():

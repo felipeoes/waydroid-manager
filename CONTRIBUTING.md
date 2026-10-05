@@ -203,6 +203,10 @@ which Android reads last.
   `daemon/armtrans.py`, and unpacked once into a root-owned layer under
   `/var/lib/waydroid-multi/arm/` that all instances share read-only. Their init scripts register
   binfmt_misc handlers, which are host-wide (the containers are privileged) and stay until reboot.
+- **Instance names are visible to every local user:** the daemon keeps a marked block in the
+  world-readable `/etc/hosts` (`netconfig.etc_hosts_text`) with one `waydroid-<name>` per instance,
+  so adb can show instances by name. The names are reduced to `[a-z0-9-]`, so a display name can't
+  inject lines. The session runs `adb connect` once Android is ready and `adb disconnect` at stop.
 - **Everything below a user's home, and everything inside a container, is hostile.**
   - `storage.open_stock_data` opens `~/.local/share/waydroid/data` one step at a time with
     `O_NOFOLLOW`. Clone from stock copies through `/proc/<pid>/fd/N`, and #0 bind-mounts it onto

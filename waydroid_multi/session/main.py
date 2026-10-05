@@ -9,6 +9,7 @@ clipboard/notification/user-monitor services until the instance stops.
 import logging
 import os
 import pwd
+import shutil
 import signal
 import subprocess
 import sys
@@ -72,6 +73,7 @@ class Session:
         self.services = []
         self.stopping = False
         self.started = False
+        self.adb_serial = None
 
     # -- proxy -------------------------------------------------------------------
     def start_proxy(self, upstream):
@@ -295,6 +297,7 @@ class Session:
 
     def on_unlocked(self, uid):
         log.info("Android user %s is ready", uid)
+        GLib.idle_add(self.adb_connect)
         if Instance.load(self.iid).getbool("desktop_apps"):
             GLib.idle_add(self.sync_app_entries)
 
@@ -362,7 +365,29 @@ class Session:
         log.info("instance %s is running", self.iid)
         self.loop.run()
 
+    def adb_connect(self):
+        """Show the instance in `adb devices` as waydroid-<name>:5555 (its /etc/hosts name)."""
+        if not shutil.which("adb"):
+            return False
+        try:
+            host = self.daemon.get(self.iid).get("adb_host")
+        except DaemonError as e:
+            log.warning("adb: %s", e)
+            return False
+        if host:
+            self.adb_serial = host + ":5555"
+            subprocess.Popen(["adb", "connect", self.adb_serial], stdin=subprocess.DEVNULL,
+                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        return False
+
     def cleanup(self):
+        if self.adb_serial:
+            # only if we connected: a plain `adb disconnect` would start an adb server
+            try:
+                subprocess.run(["adb", "disconnect", self.adb_serial], stdin=subprocess.DEVNULL,
+                               capture_output=True, timeout=10, check=False)
+            except (OSError, subprocess.TimeoutExpired):
+                pass
         if getattr(self, "confirm", None) and self.confirm.poll() is None:
             self.confirm.terminate()
         for s in self.services:

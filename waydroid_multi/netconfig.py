@@ -3,6 +3,7 @@
 import configparser
 import ipaddress
 import json
+import re
 import subprocess
 
 from . import paths
@@ -92,3 +93,33 @@ class NetConfig:
 def dhcp_hosts_text(entries):
     """entries: iterable of (mac, ip) -> dnsmasq --dhcp-hostsfile content."""
     return "".join("{},{}\n".format(mac, ip) for mac, ip in sorted(entries))
+
+
+HOSTS_BEGIN = "# BEGIN waydroid-multi (instance names for adb; managed, do not edit)"
+HOSTS_END = "# END waydroid-multi"
+
+
+def host_names(instances):
+    """[(id, display name)] -> {id: "waydroid-<name>"}, unique (a clash gets "-<id>")."""
+    names, used = {}, set()
+    for iid, name in sorted(instances, key=lambda i: int(i[0])):
+        slug = re.sub(r"[^a-z0-9]+", "-", name.lower()).strip("-")[:40].strip("-")
+        host = "waydroid-" + (slug or iid)
+        if host in used:
+            host += "-" + iid
+        used.add(host)
+        names[iid] = host
+    return names
+
+
+def etc_hosts_text(text, entries):
+    """/etc/hosts with our block replaced by entries [(ip, host)] (removed when there are none)."""
+    lines = text.splitlines()
+    if HOSTS_BEGIN in lines and HOSTS_END in lines[lines.index(HOSTS_BEGIN):]:
+        start = lines.index(HOSTS_BEGIN)
+        del lines[start:lines.index(HOSTS_END, start) + 1]
+    while lines and not lines[-1].strip():
+        lines.pop()
+    if entries:
+        lines += ["", HOSTS_BEGIN] + ["{} {}".format(ip, host) for ip, host in sorted(entries)] + [HOSTS_END]
+    return "\n".join(lines) + "\n"

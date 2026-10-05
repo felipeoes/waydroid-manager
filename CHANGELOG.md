@@ -6,6 +6,10 @@ All notable changes to waydroid-multi are listed here. The format follows
 
 ## [Unreleased]
 
+### Added
+- Running instances, #0 included, show up in `adb devices` by themselves as
+  `waydroid-<name>:5555`. The names live in a marked block in `/etc/hosts`, removed on uninstall.
+
 ## [0.4.1] - 2026-10-04
 
 ### Changed

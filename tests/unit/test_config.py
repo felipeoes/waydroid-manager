@@ -6,7 +6,7 @@ import unittest
 from waydroid_multi import lxcconfig
 from waydroid_multi.instance import (Instance, mac_for_index, validate_id, validate_prop,
                                      validate_setting)
-from waydroid_multi.netconfig import NetConfig, dhcp_hosts_text
+from waydroid_multi.netconfig import HOSTS_BEGIN, NetConfig, dhcp_hosts_text, etc_hosts_text, host_names
 from waydroid_multi.registry import allocate_index
 
 # Shapes of the stock snippets (config_base + config_3 + config_4)
@@ -240,6 +240,23 @@ class InstanceTest(unittest.TestCase):
         macs = {mac_for_index(i) for i in range(0, 241)}
         self.assertEqual(len(macs), 241)
         self.assertNotIn("02:57:44:4d:00:00", macs)  # the bridge's own MAC
+
+
+class AdbNamesTest(unittest.TestCase):
+    def test_host_names(self):
+        self.assertEqual(host_names([("2", "root dev"), ("0", "Stock Waydroid"), ("1", "Root-Dev!"), ("3", "日本")]),
+                         {"0": "waydroid-stock-waydroid", "1": "waydroid-root-dev", "2": "waydroid-root-dev-2",
+                          "3": "waydroid-3"})
+
+    def test_etc_hosts_block_replaced_then_removed(self):
+        base = "127.0.0.1 localhost\n::1 ip6-localhost\n"
+        one = etc_hosts_text(base, [("10.0.0.11", "waydroid-a")])
+        self.assertTrue(one.startswith(base))
+        two = etc_hosts_text(one, [("10.0.0.12", "waydroid-b")])
+        self.assertEqual(two.count(HOSTS_BEGIN), 1)
+        self.assertNotIn("waydroid-a", two)
+        self.assertIn("10.0.0.12 waydroid-b\n", two)
+        self.assertEqual(etc_hosts_text(two, []), base)
 
 
 class NetConfigTest(unittest.TestCase):
