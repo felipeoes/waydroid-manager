@@ -233,7 +233,10 @@ class FrameTest(unittest.TestCase):
     def test_toolbar_back_sends_key(self):
         h = self.h
         toolbar = h.s.window.frame["toolbar"]
-        y = 4 + wp.fr.BUTTON_H / 2                               # first button: back
+        height = h.s.window.frame["sizes"]["toolbar"][1]
+        y0, y1 = [(a, b) for x, a, b in wp.fr.toolbar_layout(height) if x == "back"][0]
+        self.assertGreater(y0, height / 2)                       # with Home and Recents at the bottom
+        y = (y0 + y1) / 2
         out = h.ev(msg(PTR, P.WL_POINTER_EV_ENTER, "uoff", 9, toolbar, fixed(20.0), fixed(y)),
                    msg(PTR, P.WL_POINTER_EV_BUTTON, "uuuu", 10, 0, P.BTN_LEFT, 1),
                    msg(PTR, P.WL_POINTER_EV_BUTTON, "uuuu", 11, 0, P.BTN_LEFT, 0))

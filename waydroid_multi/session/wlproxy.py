@@ -1671,11 +1671,6 @@ class Session:
                     self.to_server(msg(w.toplevel, P.XDG_TOPLEVEL_MOVE, "ou", self.seat, serial))
                 self.last_title_click = now
             return
-        if kind == "toolbar" and action == "resize":
-            if pressed and self.seat:
-                self.to_server(msg(w.toplevel, P.XDG_TOPLEVEL_RESIZE, "oou", self.seat, serial,
-                                   P.RESIZE_EDGE["bottom_right"]))
-            return
         if pressed:
             self._tip(None)
             self.pressed = (kind, action)
