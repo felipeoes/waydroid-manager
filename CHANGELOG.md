@@ -12,6 +12,11 @@ All notable changes to waydroid-multi are listed here. The format follows
   is trusted in your own instances. The names live in a marked block in `/etc/hosts`, removed on
   uninstall.
 
+### Changed
+- Stock Waydroid has a single icon again. #0 no longer adds its own "Stock Waydroid (Waydroid)"
+  entry: the usual **Waydroid** icon opens #0, and Add to/Remove from app grid on #0 shows or hides
+  it. Uninstalling gives stock Waydroid its own entry back.
+
 ## [0.4.1] - 2026-10-04
 
 ### Changed

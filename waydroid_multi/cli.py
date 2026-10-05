@@ -194,7 +194,7 @@ def cmd_config(o):
         die(e)
     if "name" in values:
         from .session import desktop
-        if os.path.exists(desktop.launcher_path(o.id)):
+        if desktop.has_launcher(o.id):
             desktop.write_launcher(o.id, values["name"])
     state = d.get(o.id)["state"]
     if state in ACTIVE and (set(values) & RESTART_SETTINGS or any(k.startswith("prop:") for k in values)):

@@ -137,7 +137,7 @@ class InstanceRow(BaseRow):
         m.append("Settings…", "row.settings")
         m.append("Clone…", "row.clone")
         m.append("Install APK…", "row.install")
-        has = os.path.exists(desktop.launcher_path(self.info["id"]))
+        has = desktop.has_launcher(self.info["id"])
         m.append("Remove from app grid" if has else "Add to app grid", "row.launcher")
         if self.info["id"] == "0":
             return m
@@ -416,7 +416,7 @@ class MainWindow(Adw.ApplicationWindow):
 
         def ok(*_):
             info = next((i for i in self.instances if i["id"] == iid), {})
-            if "name" in values and os.path.exists(desktop.launcher_path(iid)):
+            if "name" in values and desktop.has_launcher(iid):
                 desktop.write_launcher(iid, values["name"])
             self.refresh()
             if restart and info.get("state") in ACTIVE:
@@ -540,7 +540,7 @@ class MainWindow(Adw.ApplicationWindow):
         apk_dialog("Install APK").open(self, None, picked)
 
     def toggle_launcher(self, info):
-        if os.path.exists(desktop.launcher_path(info["id"])):
+        if desktop.has_launcher(info["id"]):
             desktop.remove_launcher(info["id"])
             self.toast("Removed “{}” from the app grid".format(info["name"]))
         else:
