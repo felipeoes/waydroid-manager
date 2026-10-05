@@ -6,6 +6,8 @@ All notable changes to waydroid-multi are listed here. The format follows
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-10-05
+
 ### Added
 - Running instances, #0 included, show up in `adb devices` by themselves as
   `waydroid-<name>:5555`, with no "Allow USB debugging?" prompt: like the emulator, your adb key
@@ -110,7 +112,8 @@ First release.
 - Root daemon hardened against symlink and race attacks, root-enabling Android properties,
   and misuse of passed file descriptors. Each user sees and controls only their own instances.
 
-[Unreleased]: https://github.com/felipeoes/waydroid-multi-instances/compare/v0.4.1...HEAD
+[Unreleased]: https://github.com/felipeoes/waydroid-multi-instances/compare/v0.5.0...HEAD
+[0.5.0]: https://github.com/felipeoes/waydroid-multi-instances/compare/v0.4.1...v0.5.0
 [0.4.1]: https://github.com/felipeoes/waydroid-multi-instances/compare/v0.4.0...v0.4.1
 [0.4.0]: https://github.com/felipeoes/waydroid-multi-instances/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/felipeoes/waydroid-multi-instances/compare/v0.2.0...v0.3.0
