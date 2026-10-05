@@ -6,6 +6,8 @@ All notable changes to waydroid-multi are listed here. The format follows
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-10-04
+
 ### Added
 - ARM translation per instance ("ARM translation" in Settings, `arm_translation` in the CLI):
   Houdini (default), libndk or off, so ARM-only apps install and run. Each build is downloaded
@@ -91,7 +93,8 @@ First release.
 - Root daemon hardened against symlink and race attacks, root-enabling Android properties,
   and misuse of passed file descriptors. Each user sees and controls only their own instances.
 
-[Unreleased]: https://github.com/felipeoes/waydroid-multi-instances/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/felipeoes/waydroid-multi-instances/compare/v0.4.0...HEAD
+[0.4.0]: https://github.com/felipeoes/waydroid-multi-instances/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/felipeoes/waydroid-multi-instances/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/felipeoes/waydroid-multi-instances/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/felipeoes/waydroid-multi-instances/releases/tag/v0.1.0
