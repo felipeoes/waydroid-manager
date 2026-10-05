@@ -168,11 +168,25 @@ class Manager(dbus.service.Object):
             self.disk[inst.id] = (val, time.time())
 
             def measure():
-                # -x: not into the mounted rootfs (shared images); du exits 1 when Android
-                # deletes files mid-walk but still prints the total
-                r = subprocess.run(["du", "-sx", "--block-size=1", inst.dir], capture_output=True, text=True)
+                args, fds = [inst.dir], []
+                if inst.index == 0:
+                    # #0's data is stock's, in the user's home (bound at data/ only while running)
+                    try:
+                        fds.append(storage.open_stock_data(inst.owner_uid))
+                        args = ["/proc/self/fd/{}".format(fds[0])] + [
+                            os.path.join(inst.dir, n) for n in os.listdir(inst.dir) if n != "data"]
+                    except OSError:
+                        pass
+                # -x: not into the mounted rootfs (shared images); -D: through the fd link only;
+                # du exits 1 when Android deletes files mid-walk but still prints the total
+                try:
+                    r = subprocess.run(["du", "-sxcD", "--block-size=1"] + args, capture_output=True, text=True,
+                                       pass_fds=fds)
+                finally:
+                    for fd in fds:
+                        os.close(fd)
                 if r.stdout.split():
-                    self.disk[inst.id] = (r.stdout.split()[0], time.time())
+                    self.disk[inst.id] = (r.stdout.split()[-2], time.time())
             threading.Thread(target=measure, daemon=True, name="du-" + inst.id).start()
         return val
 

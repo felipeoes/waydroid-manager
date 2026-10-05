@@ -14,6 +14,10 @@ All notable changes to waydroid-multi are listed here. The format follows
   several APKs) also install from the toolbar's and the manager's Install APK and `app install`.
 - Saving settings of a running instance that need a restart asks to restart it now or later.
 
+### Fixed
+- The manager shows the disk space of your normal Waydroid (#0) also when it has not run
+  since the daemon started: its data, in your home, is measured too.
+
 ### Removed
 - The "Title bar and toolbar" switch: every instance window has them. The `window_frame` and
   `window_labels` settings and the `--no-frame` and `--no-window-labels` options of `create` are gone
