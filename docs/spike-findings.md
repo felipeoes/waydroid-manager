@@ -4,8 +4,7 @@ Host: Ubuntu, kernel 7.0, LXC 6.0.6, cgroup v2, stock Waydroid 1.6.2 (LineageOS 
 Android 13 GAPPS image), GNOME 50 Wayland, swiftshader rendering. The stock instance
 kept running (frozen) during the whole spike and was unaffected.
 
-Scripts: `scripts/spike/spike.py` (bring-up as root), `scripts/spike/spike_hw.py`
-(binder service test), `waydroid_multi/session/wlproxy.py` (window labelling proxy).
+The window labelling proxy from this spike became `waydroid_manager/session/wlproxy.py`.
 
 | # | Question | Result |
 |---|----------|--------|

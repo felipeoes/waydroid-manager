@@ -19,7 +19,7 @@ jobs:
       - name: Check tag, version and branch
         run: |
           tag="${GITHUB_REF_NAME}"
-          version="$(sed -n 's/^__version__ = "\(.*\)"/\1/p' waydroid_multi/__init__.py)"
+          version="$(sed -n 's/^__version__ = "\(.*\)"/\1/p' waydroid_manager/__init__.py)"
           [ "$tag" = "v$version" ] || { echo "::error::tag $tag does not match __version__ $version"; exit 1; }
           git merge-base --is-ancestor "$GITHUB_SHA" origin/main ||
             { echo "::error::$tag is not on main (release from main only)"; exit 1; }
@@ -37,7 +37,7 @@ jobs:
         run: |
           packaging/deb/build.sh
           dpkg-deb --info dist/*.deb
-          dpkg-deb --contents dist/*.deb | grep -q './usr/lib/waydroid-multi/waydroid_multi/daemon/main.py'
+          dpkg-deb --contents dist/*.deb | grep -q './usr/lib/waydroid-manager/waydroid_manager/daemon/main.py'
 
       - name: Release notes from CHANGELOG.md
         run: |
@@ -50,7 +50,7 @@ jobs:
           ### Install (Ubuntu 24.04+ / Debian 13+)
           Download the `.deb` below, then:
           ```sh
-          sudo apt install ./waydroid-multi_*_all.deb
+          sudo apt install ./waydroid-manager_*_all.deb
           ```
           Other distributions: install from source, see the README.
           NOTES
@@ -59,4 +59,4 @@ jobs:
       - name: Publish
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release create "$GITHUB_REF_NAME" dist/*.deb --title "waydroid-multi $VERSION" --notes-file notes.md --verify-tag
+        run: gh release create "$GITHUB_REF_NAME" dist/*.deb --title "waydroid-manager $VERSION" --notes-file notes.md --verify-tag

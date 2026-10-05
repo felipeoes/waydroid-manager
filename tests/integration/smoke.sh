@@ -5,10 +5,10 @@
 #   tests/integration/smoke.sh [path/to/test.apk]
 set -u
 cd "$(dirname "$0")/../.."
-if command -v waydroid-multi >/dev/null && [ -z "${WDM_FROM_REPO:-}" ]; then
-    W="waydroid-multi"
+if command -v waydroid-manager >/dev/null && [ -z "${WDM_FROM_REPO:-}" ]; then
+    W="waydroid-manager"
 else
-    W="env PYTHONPATH=$PWD python3 -m waydroid_multi"
+    W="env PYTHONPATH=$PWD python3 -m waydroid_manager"
 fi
 APK="${1:-}"
 FAIL=0
@@ -80,8 +80,8 @@ id3=$(sh_in "$n3" /system/bin/settings get secure android_id)
 [ "$(field "$n3" width)" = "800" ] && pass "clone kept the source's settings" || fail "clone settings"
 
 echo "== daemon restart keeps instances"
-if systemctl is-active -q waydroid-multi; then
-    sudo systemctl restart waydroid-multi
+if systemctl is-active -q waydroid-manager; then
+    sudo systemctl restart waydroid-manager
     sleep 4
     st=$(state "$n2")
     [ "$st" = "RUNNING" ] || [ "$st" = "FROZEN" ] && pass "#$n2 survived restart" || fail "#$n2 after restart ($st)"
@@ -92,15 +92,15 @@ fi
 echo "== stop, delete, number reuse"
 for n in $n1 $n2 $n3; do $W stop "$n" >/dev/null 2>&1; done
 [ "$(state "$n2")" = "STOPPED" ] && [ "$(state "$n3")" = "STOPPED" ] && pass "stopped" || fail "stop"
-findmnt -rn -o TARGET | grep -qE "waydroid-multi/instances/($n1|$n2|$n3)/" && fail "mounts left" || pass "no mounts left"
+findmnt -rn -o TARGET | grep -qE "waydroid-manager/instances/($n1|$n2|$n3)/" && fail "mounts left" || pass "no mounts left"
 $W delete -y "$n1" >/dev/null && pass "deleted #$n1" || fail "delete"
 n4=$($W create --name "Smoke Four" --no-launcher | num)
 CREATED="$n2 $n3 $n4"
 [ "$n4" = "$n1" ] && pass "freed number #$n1 reused" || fail "number reuse (got #$n4)"
-sudo test -d "/var/lib/waydroid-multi/instances/$n1/data/system" && fail "old data left in #$n1" || pass "reused number starts clean"
+sudo test -d "/var/lib/waydroid-manager/instances/$n1/data/system" && fail "old data left in #$n1" || pass "reused number starts clean"
 cleanup
 CREATED=""
-sudo test -d "/var/lib/waydroid-multi/instances/$n2" && fail "instance dir left" || pass "instance dirs removed"
+sudo test -d "/var/lib/waydroid-manager/instances/$n2" && fail "instance dir left" || pass "instance dirs removed"
 [ "$($W list | awk '$1=="0"{print $(NF-4)}')" = "$stock_before" ] && pass "stock Waydroid unchanged" || fail "stock state changed"
 
 echo

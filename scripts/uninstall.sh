@@ -1,9 +1,9 @@
 #!/bin/sh
 # SPDX-License-Identifier: GPL-3.0-or-later
-# Uninstall waydroid-multi.  Usage: sudo uninstall.sh [--purge] [PREFIX]
+# Uninstall waydroid-manager.  Usage: sudo uninstall.sh [--purge] [PREFIX]
 #   --purge      also delete every instance (all their Android data) and the image store
 #   --stop-only  only stop everything and remove per-user launchers (the .deb's prerm)
-# install.sh copies this script to PREFIX/lib/waydroid-multi/uninstall.sh (the GUI runs
+# install.sh copies this script to PREFIX/lib/waydroid-manager/uninstall.sh (the GUI runs
 # it from there through pkexec); PREFIX then defaults to the one it was installed to.
 # A .deb install is removed through apt, whose prerm calls back into --stop-only.
 set -u
@@ -19,13 +19,13 @@ while [ $# -gt 0 ]; do
 done
 SELF_DIR="$(cd "$(dirname "$0")" && pwd)"
 case "$SELF_DIR" in
-    */lib/waydroid-multi) DEFAULT_PREFIX="${SELF_DIR%/lib/waydroid-multi}" ;;
+    */lib/waydroid-manager) DEFAULT_PREFIX="${SELF_DIR%/lib/waydroid-manager}" ;;
     *) DEFAULT_PREFIX=/usr ;;
 esac
 PREFIX="${1:-$DEFAULT_PREFIX}"
-LIBDIR="$PREFIX/lib/waydroid-multi"
-STATE=/var/lib/waydroid-multi
-RUNDIR=/run/waydroid-multi
+LIBDIR="$PREFIX/lib/waydroid-manager"
+STATE=/var/lib/waydroid-manager
+RUNDIR=/run/waydroid-manager
 
 [ "$(id -u)" = 0 ] || { echo "run as root: sudo $0" >&2; exit 1; }
 
@@ -38,28 +38,28 @@ stop_all() {
     echo "Stopping instances"
     for c in $(lxc-ls -P "$STATE/lxc" --active 2>/dev/null); do
         # through the daemon first: it unmounts and cleans up after the container
-        if systemctl -q is-active waydroid-multi.service && [ -x "$PREFIX/bin/waydroid-multi" ]; then
-            timeout 60 "$PREFIX/bin/waydroid-multi" stop "${c#wdm-}" >/dev/null 2>&1
+        if systemctl -q is-active waydroid-manager.service && [ -x "$PREFIX/bin/waydroid-manager" ]; then
+            timeout 60 "$PREFIX/bin/waydroid-manager" stop "${c#wdm-}" >/dev/null 2>&1
         fi
         lxc-unfreeze -P "$STATE/lxc" -n "$c" 2>/dev/null
         lxc-stop -P "$STATE/lxc" -n "$c" -k 2>/dev/null
     done
-    systemctl disable --now waydroid-multi.service 2>/dev/null
-    systemctl stop waydroid-multi-dnsmasq.service 2>/dev/null
+    systemctl disable --now waydroid-manager.service 2>/dev/null
+    systemctl stop waydroid-manager-dnsmasq.service 2>/dev/null
     # the daemon's hardware helpers (KillMode=process leaves them to us) and the per-user
     # instance sessions, which normally exit on their own once their instance stops
-    pkill -f -- '-m waydroid_multi\.daemon\.hwhelper ' 2>/dev/null
+    pkill -f -- '-m waydroid_manager\.daemon\.hwhelper ' 2>/dev/null
     for uid in $(loginctl list-users --no-legend 2>/dev/null | awk '{print $1}'); do
         user="$(id -nu "$uid" 2>/dev/null)" || continue
-        systemctl --user -M "$user@" stop 'waydroid-multi-session-*.service' 2>/dev/null
+        systemctl --user -M "$user@" stop 'waydroid-manager-session-*.service' 2>/dev/null
     done
 
     echo "Removing the network"
-    if [ -x "$LIBDIR/data/waydroid-multi-net.sh" ]; then
+    if [ -x "$LIBDIR/data/waydroid-manager-net.sh" ]; then
         set -a
         [ -f "$RUNDIR/net.env" ] && . "$RUNDIR/net.env"
         set +a
-        sh "$LIBDIR/data/waydroid-multi-net.sh" teardown force
+        sh "$LIBDIR/data/waydroid-manager-net.sh" teardown force
     fi
 
     # Unmount anything left behind
@@ -82,9 +82,9 @@ stop_all() {
 remove_user_files() {
     getent passwd | while IFS=: read -r user _ uid _ _ home _; do
         [ "$uid" -ge 1000 ] 2>/dev/null && [ "$uid" -lt 60000 ] && [ -d "$home" ] || continue
-        if [ "$1" = 1 ]; then extra="$home/.cache/waydroid-multi"; else extra=""; fi
-        runuser -u "$user" -- sh -c '[ ! -d "$1" ] || rm -f "$1"/waydroid-multi.*.desktop
-                                      ! grep -qx X-WaydroidMulti=true "$1"/Waydroid.desktop || rm -f "$1"/Waydroid.desktop
+        if [ "$1" = 1 ]; then extra="$home/.cache/waydroid-manager"; else extra=""; fi
+        runuser -u "$user" -- sh -c '[ ! -d "$1" ] || rm -f "$1"/waydroid-manager.*.desktop
+                                      ! grep -qx X-WaydroidManager=true "$1"/Waydroid.desktop || rm -f "$1"/Waydroid.desktop
                                       [ -z "$2" ] || rm -rf "$2"' \
             sh "$home/.local/share/applications" "$extra" 2>/dev/null
     done
@@ -92,17 +92,14 @@ remove_user_files() {
 
 remove_files() {
     echo "Removing program files"
-    rm -f /etc/systemd/system/waydroid-multi.service \
-          "$PREFIX/lib/systemd/system/waydroid-multi.service" \
-          /usr/share/dbus-1/system.d/io.github.waydroidmulti.Manager.conf \
-          /etc/dbus-1/system.d/io.github.waydroidmulti.Manager.conf \
-          /usr/share/dbus-1/system-services/io.github.waydroidmulti.Manager.service \
-          /usr/share/polkit-1/actions/io.github.waydroidmulti.policy \
-          /usr/share/applications/io.github.waydroidmulti.desktop \
-          "$PREFIX/bin/waydroid-multi" "$PREFIX/bin/waydroid-multi-gui" "$PREFIX/bin/waydroid-multi-daemon"
+    rm -f "$PREFIX/lib/systemd/system/waydroid-manager.service" \
+          /usr/share/dbus-1/system.d/io.github.waydroidmanager.Manager.conf \
+          /usr/share/dbus-1/system-services/io.github.waydroidmanager.Manager.service \
+          /usr/share/applications/io.github.waydroidmanager.desktop \
+          "$PREFIX/bin/waydroid-manager" "$PREFIX/bin/waydroid-manager-gui" "$PREFIX/bin/waydroid-manager-daemon"
     rm -rf "$LIBDIR" "$RUNDIR"
     # the instance names adb uses (only our lines, even if END was deleted)
-    sed -i --follow-symlinks '/^# BEGIN waydroid-multi /,/^# END waydroid-multi$/{/^# BEGIN waydroid-multi \|^# END waydroid-multi$\|^[0-9a-fA-F.:]\+ waydroid-[a-z0-9-]\+$/d}' /etc/hosts 2>/dev/null || true
+    sed -i --follow-symlinks '/^# BEGIN waydroid-manager /,/^# END waydroid-manager$/{/^# BEGIN waydroid-manager \|^# END waydroid-manager$\|^[0-9a-fA-F.:]\+ waydroid-[a-z0-9-]\+$/d}' /etc/hosts 2>/dev/null || true
     systemctl daemon-reload
     systemctl reload dbus 2>/dev/null || true
 }
@@ -119,8 +116,8 @@ check_unmounted() {
 }
 
 purge_state() {
-    rm -rf --one-file-system "$STATE" /etc/waydroid-multi
-    rm -f "/var/lib/misc/dnsmasq.${WDM_BRIDGE:-wdmulti0}.leases"
+    rm -rf --one-file-system "$STATE" /etc/waydroid-manager
+    rm -f "/var/lib/misc/dnsmasq.${WDM_BRIDGE:-wdm0}.leases"
     echo "Removed all instances and the image store."
 }
 
@@ -134,13 +131,13 @@ if [ "$(cat "$LIBDIR/install-method" 2>/dev/null)" = deb ]; then
     # Installed as a package: the package manager removes it (prerm stops everything,
     # postrm purges the data)
     if [ "$PURGE" = 1 ]; then action=purge; else action=remove; fi
-    echo "Removing the waydroid-multi package ($action)"
+    echo "Removing the waydroid-manager package ($action)"
     if command -v apt-get >/dev/null; then
-        DEBIAN_FRONTEND=noninteractive apt-get "$action" -y waydroid-multi
+        DEBIAN_FRONTEND=noninteractive apt-get "$action" -y waydroid-manager
     elif [ "$PURGE" = 1 ]; then
-        dpkg -P waydroid-multi
+        dpkg -P waydroid-manager
     else
-        dpkg -r waydroid-multi
+        dpkg -r waydroid-manager
     fi
     exit $?
 fi

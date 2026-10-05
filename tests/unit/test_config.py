@@ -3,11 +3,11 @@ import os
 import tempfile
 import unittest
 
-from waydroid_multi import lxcconfig
-from waydroid_multi.instance import (Instance, mac_for_index, validate_id, validate_prop,
+from waydroid_manager import lxcconfig
+from waydroid_manager.instance import (Instance, mac_for_index, validate_id, validate_prop,
                                      validate_setting)
-from waydroid_multi.netconfig import HOSTS_BEGIN, HOSTS_END, NetConfig, dhcp_hosts_text, etc_hosts_text, host_names
-from waydroid_multi.registry import allocate_index
+from waydroid_manager.netconfig import HOSTS_BEGIN, HOSTS_END, NetConfig, dhcp_hosts_text, etc_hosts_text, host_names
+from waydroid_manager.registry import allocate_index
 
 # Shapes of the stock snippets (config_base + config_3 + config_4)
 BASE_162 = """# Waydroid LXC Config
@@ -38,8 +38,8 @@ CONFIG_4 = "lxc.pty.max = 10\nlxc.seccomp.allow_nesting = 1\n"
 
 
 def build(base, **kw):
-    args = dict(rootfs="/var/lib/waydroid-multi/instances/t1/rootfs",
-                lxc_dir="/var/lib/waydroid-multi/lxc/wdm-t1", bridge="wdmulti0",
+    args = dict(rootfs="/var/lib/waydroid-manager/instances/t1/rootfs",
+                lxc_dir="/var/lib/waydroid-manager/lxc/wdm-t1", bridge="wdm0",
                 mac="02:57:44:4d:00:01", veth="wdm1v", uts_name="waydroid-t1", arch="x86_64",
                 apparmor_profile="lxc-waydroid", poststop_hook="/x/poststop.sh",
                 netup_hook="/x/netup.sh", limits=["lxc.cgroup2.memory.high = 4G"])
@@ -53,11 +53,11 @@ def values(text, key):
 
 class LxcConfigTest(unittest.TestCase):
     def check_common(self, text):
-        self.assertEqual(values(text, "lxc.rootfs.path"), ["/var/lib/waydroid-multi/instances/t1/rootfs"])
-        self.assertEqual(values(text, "lxc.include"), ["/var/lib/waydroid-multi/lxc/wdm-t1/config_nodes",
-                                                       "/var/lib/waydroid-multi/lxc/wdm-t1/config_session"])
-        self.assertEqual(values(text, "lxc.seccomp.profile"), ["/var/lib/waydroid-multi/lxc/wdm-t1/waydroid.seccomp"])
-        self.assertEqual(values(text, "lxc.net.0.link"), ["wdmulti0"])
+        self.assertEqual(values(text, "lxc.rootfs.path"), ["/var/lib/waydroid-manager/instances/t1/rootfs"])
+        self.assertEqual(values(text, "lxc.include"), ["/var/lib/waydroid-manager/lxc/wdm-t1/config_nodes",
+                                                       "/var/lib/waydroid-manager/lxc/wdm-t1/config_session"])
+        self.assertEqual(values(text, "lxc.seccomp.profile"), ["/var/lib/waydroid-manager/lxc/wdm-t1/waydroid.seccomp"])
+        self.assertEqual(values(text, "lxc.net.0.link"), ["wdm0"])
         self.assertEqual(values(text, "lxc.net.0.hwaddr"), ["02:57:44:4d:00:01"])
         self.assertEqual(values(text, "lxc.net.0.veth.pair"), ["wdm1v"])
         self.assertEqual(values(text, "lxc.net.0.script.up"), ["/x/netup.sh"])
@@ -124,10 +124,10 @@ class LxcConfigTest(unittest.TestCase):
         self.assertEqual(lxcconfig.config_cpuset(lxcconfig.cgroup_limits("2")), [])
 
     def test_session_entries(self):
-        text = lxcconfig.session_entries("/run/waydroid-multi/instances/t1/wayland-0", "",
-                                         "/var/lib/waydroid-multi/instances/t1/data")
-        self.assertIn("lxc.mount.entry = /run/waydroid-multi/instances/t1/wayland-0 run/xdg/wayland-0 none rbind,create=file 0 0", text)
-        self.assertIn("lxc.mount.entry = /var/lib/waydroid-multi/instances/t1/data data none rbind 0 0", text)
+        text = lxcconfig.session_entries("/run/waydroid-manager/instances/t1/wayland-0", "",
+                                         "/var/lib/waydroid-manager/instances/t1/data")
+        self.assertIn("lxc.mount.entry = /run/waydroid-manager/instances/t1/wayland-0 run/xdg/wayland-0 none rbind,create=file 0 0", text)
+        self.assertIn("lxc.mount.entry = /var/lib/waydroid-manager/instances/t1/data data none rbind 0 0", text)
         self.assertNotIn("pulse", text)
         with self.assertRaises(lxcconfig.ConfigError):
             lxcconfig.session_entries("/run/a b", "", "/data")
@@ -138,13 +138,9 @@ class InstanceTest(unittest.TestCase):
         for ok in ("0", "1", "2", "99", "240"):
             self.assertEqual(validate_id(ok), ok)
         self.assertEqual(validate_id(0), "0")
-        for bad in ("", "00", "default", "241", "01", "t1", "-1", "1a", "../x"):
+        for bad in ("", "00", "default", "241", "01", "t1", "-1", "1a", "../x", "game_2"):
             with self.assertRaises(ValueError):
                 validate_id(bad)
-        # 0.1 name-based ids are only accepted for migration
-        self.assertEqual(validate_id("game_2", legacy=True), "game_2")
-        with self.assertRaises(ValueError):
-            validate_id("default", legacy=True)
 
     def test_settings_validation(self):
         self.assertEqual(validate_setting("memory", "4gb"), "4G")
@@ -163,7 +159,7 @@ class InstanceTest(unittest.TestCase):
 
     def test_resource_defaults_follow_host_memory(self):
         from unittest import mock
-        from waydroid_multi import instance
+        from waydroid_manager import instance
         with mock.patch.object(instance, "host_memory_bytes", return_value=30 * 1024 ** 3):
             self.assertEqual(instance.default_memory(), "4G")
         with mock.patch.object(instance, "host_memory_bytes", return_value=4 * 1024 ** 3):
@@ -171,11 +167,9 @@ class InstanceTest(unittest.TestCase):
         with mock.patch.object(instance.os, "cpu_count", return_value=1):
             self.assertEqual(instance.default_cpus(), "1")
 
-    def test_empty_legacy_values_read_as_defaults(self):
+    def test_unset_settings_read_as_defaults(self):
         inst = Instance.new("5", 5, 1000, "1-1", {}, {})
-        inst.cfg["instance"]["memory"] = ""
-        inst.cfg["instance"]["cpus"] = ""
-        from waydroid_multi.instance import default_cpus, default_memory
+        from waydroid_manager.instance import default_cpus, default_memory
         self.assertEqual(inst.get("memory"), default_memory())
         self.assertEqual(inst.get("cpus"), default_cpus())
         self.assertEqual(inst.get("name"), "Instance 5")
@@ -205,7 +199,7 @@ class InstanceTest(unittest.TestCase):
             self.assertEqual(Instance.load("4", path=p).name, "100%(x)s")
 
     def test_open_in_container_refuses_symlinks(self):
-        from waydroid_multi.daemon.util import open_in_container
+        from waydroid_manager.daemon.util import open_in_container
         with tempfile.TemporaryDirectory() as d:
             os.makedirs(os.path.join(d, "real", "input"))
             open(os.path.join(d, "real", "input", "f"), "w").close()
@@ -244,7 +238,7 @@ class InstanceTest(unittest.TestCase):
 
 class AdbNamesTest(unittest.TestCase):
     def test_adb_key(self):
-        from waydroid_multi.instance import validate_adb_key
+        from waydroid_manager.instance import validate_adb_key
         key = "QAAAA" + "b3BlbnNzaC1yc2E" * 30 + "= felipe@host"
         self.assertEqual(validate_adb_key(key + "\n"), key)
         for bad in ("short= x@y", key + "\nsecond line", key.replace("@", "@$(reboot)"), key + "; rm"):
@@ -285,14 +279,14 @@ class AdbNamesTest(unittest.TestCase):
 
 class NetConfigTest(unittest.TestCase):
     def test_addresses(self):
-        n = NetConfig("wdmulti0", "192.168.241.0/24")
+        n = NetConfig("wdm0", "192.168.241.0/24")
         self.assertEqual(str(n.gateway), "192.168.241.1")
         self.assertEqual(str(n.ip_for_index(0)), "192.168.241.10")
         self.assertEqual(str(n.ip_for_index(1)), "192.168.241.11")
         self.assertEqual(str(n.ip_for_index(240)), "192.168.241.250")
         env = n.env()
-        self.assertEqual(env["WDM_BRIDGE"], "wdmulti0")
-        self.assertEqual(env["WDM_NFT_TABLE"], "waydroid_multi")
+        self.assertEqual(env["WDM_BRIDGE"], "wdm0")
+        self.assertEqual(env["WDM_NFT_TABLE"], "waydroid_manager")
         self.assertEqual(env["WDM_DHCP_START"], "192.168.241.0")
 
     def test_rejects_bad_config(self):
@@ -302,9 +296,9 @@ class NetConfigTest(unittest.TestCase):
                 NetConfig(*args)
 
     def test_overlap_detection(self):
-        n = NetConfig("wdmulti0", "192.168.241.0/24")
+        n = NetConfig("wdm0", "192.168.241.0/24")
         routes = [{"dst": "default", "dev": "eth0"}, {"dst": "192.168.240.0/24", "dev": "waydroid0"},
-                  {"dst": "192.168.241.0/24", "dev": "wdmulti0"}, {"dst": "192.168.0.0/16", "dev": "tun0"}]
+                  {"dst": "192.168.241.0/24", "dev": "wdm0"}, {"dst": "192.168.0.0/16", "dev": "tun0"}]
         self.assertEqual(n.overlapping_routes(routes), ["192.168.0.0/16 dev tun0"])
 
     def test_hosts_file(self):
@@ -326,7 +320,7 @@ class RegistryTest(unittest.TestCase):
 
 class DevicesTest(unittest.TestCase):
     def test_preset_props(self):
-        from waydroid_multi import devices
+        from waydroid_manager import devices
         p = devices.props_for("galaxy_s24_ultra")
         self.assertEqual(p["ro.product.waydroid.model"], "SM-S928B")
         self.assertEqual(set(p), {"ro.product.waydroid." + f for f in devices.FIELDS})

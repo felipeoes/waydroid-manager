@@ -6,6 +6,16 @@ All notable changes to waydroid-multi are listed here. The format follows
 
 ## [Unreleased]
 
+### Changed
+- **waydroid-multi is now Waydroid Manager.** The command is `waydroid-manager`, the package
+  `waydroid-manager`, the app "Waydroid Manager", and the bridge `wdm0`. Installing it over
+  waydroid-multi 0.5 stops the running instances once and moves them, with their images and network
+  settings, to `/var/lib/waydroid-manager`. The `waydroid-multi` command is gone.
+
+### Removed
+- Support for upgrading from 0.4 and older: name-based instance ids from 0.1, the settings removed in
+  0.4, and the stock-UI unit from 0.2 are no longer handled.
+
 ### Fixed
 - An app opened in its own window (`app launch`, app launchers) no longer stalls for a moment each
   time its window gains or loses focus: the desktop's focus change made Waydroid reconnect Android's

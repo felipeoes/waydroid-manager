@@ -4,8 +4,8 @@ import tempfile
 import unittest
 from unittest import mock
 
-from waydroid_multi import stockctl
-from waydroid_multi.daemon import images
+from waydroid_manager import stockctl
+from waydroid_manager.daemon import images
 
 
 class EnsureSyncedTest(unittest.TestCase):

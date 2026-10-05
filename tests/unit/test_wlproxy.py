@@ -8,9 +8,9 @@ import threading
 import time
 import unittest
 
-from waydroid_multi.session import wlproto as P
-from waydroid_multi.session import wlproxy as wp
-from waydroid_multi.session.wlproto import Reader, msg, parse
+from waydroid_manager.session import wlproto as P
+from waydroid_manager.session import wlproxy as wp
+from waydroid_manager.session.wlproto import Reader, msg, parse
 
 # HWC-side object ids used in the scenarios
 REG, COMP, SUBC, VPR, WM, SEAT, PTR, KBD, OUT, FRAC_MGR = 2, 3, 4, 5, 6, 7, 8, 9, 20, 21
@@ -89,7 +89,7 @@ class LabelTest(unittest.TestCase):
         out = h.create_window(app_id="waydroid.com.example.game")
         titles = {op: args(p, "s")[0] for o, op, p in out if o == TL}
         self.assertEqual(titles[P.XDG_TOPLEVEL_SET_TITLE], "Waydroid · Game")
-        self.assertEqual(titles[P.XDG_TOPLEVEL_SET_APP_ID], "waydroid-multi.3.com.example.game")
+        self.assertEqual(titles[P.XDG_TOPLEVEL_SET_APP_ID], "waydroid-manager.3.com.example.game")
         self.assertIsNone(h.s.window)       # not the full-UI window
 
     def test_full_ui_labels(self):
@@ -97,7 +97,7 @@ class LabelTest(unittest.TestCase):
         h.setup_globals()
         out = h.create_window()
         app = [args(p, "s")[0] for o, op, p in out if o == TL and op == P.XDG_TOPLEVEL_SET_APP_ID]
-        self.assertEqual(app, ["waydroid-multi.3"])
+        self.assertEqual(app, ["waydroid-manager.3"])
         self.assertIsNotNone(h.s.window)
 
 
@@ -375,7 +375,7 @@ class WindowStateTest(unittest.TestCase):
         self.assertEqual(len(out), 1)
 
     def test_nav_glyphs_render(self):
-        from waydroid_multi.session import frame
+        from waydroid_manager.session import frame
         data, w, h_, stride = frame.render_toolbar(400, 1, "dark")
         self.assertEqual(len(data), stride * h_)
 
@@ -545,7 +545,7 @@ class FileDropTest(unittest.TestCase):
 
 class TranslatorTest(unittest.TestCase):
     def setUp(self):
-        from waydroid_multi.session import wlschema
+        from waydroid_manager.session import wlschema
         self.tr = wp.Translator(wlschema.load())
 
     def req(self, data):

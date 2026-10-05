@@ -3,13 +3,16 @@
 set -e
 # byte-compile now (prerm removes the caches again), so nothing unowned appears later
 if [ "$1" = configure ]; then
-    python3 -m compileall -q /usr/lib/waydroid-multi/waydroid_multi >/dev/null 2>&1 || true
+    python3 -m compileall -q /usr/lib/waydroid-manager/waydroid_manager >/dev/null 2>&1 || true
+fi
+if [ "$1" = configure ]; then
+    /usr/lib/waydroid-manager/migrate-from-waydroid-multi.sh || true
 fi
 if [ "$1" = configure ] && [ -d /run/systemd/system ]; then
     systemctl daemon-reload
     systemctl reload dbus >/dev/null 2>&1 || true
-    systemctl enable waydroid-multi.service >/dev/null 2>&1 || true
+    systemctl enable waydroid-manager.service >/dev/null 2>&1 || true
     # also on upgrades: a restarted daemon adopts the running instances
-    systemctl restart waydroid-multi.service || true
+    systemctl restart waydroid-manager.service || true
 fi
 exit 0

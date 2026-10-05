@@ -1,4 +1,4 @@
-Package: waydroid-multi
+Package: waydroid-manager
 Version: @VERSION@
 Architecture: all
 Section: utils
@@ -8,13 +8,15 @@ Installed-Size: @SIZE@
 Depends: waydroid, lxc, dnsmasq-base | dnsmasq, iproute2, iptables | nftables, dbus, systemd,
  python3, python3-dbus, python3-gi, python3-gi-cairo, python3-cairo, python3-gbinder,
  gir1.2-gtk-4.0, gir1.2-adw-1 (>= 1.5), gir1.2-rsvg-2.0, gir1.2-pango-1.0
+Conflicts: waydroid-multi
+Replaces: waydroid-multi
 Recommends: wl-clipboard, pkexec | policykit-1
 Homepage: https://github.com/felipeoes/waydroid-multi-instances
 Description: run several Waydroid (Android) instances side by side
- waydroid-multi runs multiple Android instances at the same time with Waydroid,
+ waydroid-manager runs multiple Android instances at the same time with Waydroid,
  like BlueStacks or LDPlayer multi-instance. Each instance has its own apps,
  accounts, settings, window, network address and resource limits. Instances
  can be created fresh or cloned (with a new device identity). Stock Waydroid
  keeps working unchanged.
  .
- Includes a root daemon, the waydroid-multi command and a GTK manager app.
+ Includes a root daemon, the waydroid-manager command and a GTK manager app.

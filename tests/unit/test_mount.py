@@ -4,10 +4,10 @@ import tempfile
 import types
 import unittest
 
-from waydroid_multi.daemon import armtrans, magisk
+from waydroid_manager.daemon import armtrans, magisk
 
-from waydroid_multi.daemon.util import overlay_opts
-from waydroid_multi.instance import RESTART_SETTINGS, setting_default, validate_setting
+from waydroid_manager.daemon.util import overlay_opts
+from waydroid_manager.instance import RESTART_SETTINGS, setting_default, validate_setting
 
 
 class OverlayOptsTest(unittest.TestCase):

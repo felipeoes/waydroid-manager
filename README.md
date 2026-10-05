@@ -1,4 +1,4 @@
-# waydroid-multi
+# Waydroid Manager
 
 Run **several Android instances at the same time** with [Waydroid](https://waydro.id),
 like BlueStacks or LDPlayer multi-instance, but on Linux.
@@ -38,11 +38,11 @@ Tested on Ubuntu 26.04 with Waydroid 1.6 and GNOME.
 
 ### Ubuntu 24.04+ and Debian 13+
 
-Download `waydroid-multi_<version>_all.deb` from the
+Download `waydroid-manager_<version>_all.deb` from the
 [latest release](https://github.com/felipeoes/waydroid-multi-instances/releases/latest), then:
 
 ```sh
-sudo apt install ./waydroid-multi_*_all.deb
+sudo apt install ./waydroid-manager_*_all.deb
 ```
 
 Updates work the same way: install the newer `.deb`. Running instances keep running.
@@ -55,7 +55,7 @@ cd waydroid-multi-instances
 sudo scripts/install.sh
 ```
 
-Then open **Waydroid Multi-Instance Manager** from your app grid. If you installed from source
+Then open **Waydroid Manager** from your app grid. If you installed from source
 before, you can switch to the `.deb` at any time; your instances are kept.
 
 ## Using the manager app
@@ -93,18 +93,18 @@ Everything in the app can also be done from a terminal. Instances are referred t
 number or their name:
 
 ```sh
-waydroid-multi create --name "Account 1"           # new instance (prints its number, e.g. #1)
-waydroid-multi clone default --name "Account 2"    # copy your normal Waydroid
-waydroid-multi start 1                             # start and open its window
-waydroid-multi list                                # see all instances
-waydroid-multi app install 1 my-app.apk            # install an app
-waydroid-multi config 1 set device_model pixel_7   # what apps see (see: waydroid-multi devices)
-waydroid-multi config "Account 1" set cpus 4 memory 6G
-waydroid-multi stop 1
-waydroid-multi delete 2
+waydroid-manager create --name "Account 1"           # new instance (prints its number, e.g. #1)
+waydroid-manager clone default --name "Account 2"    # copy your normal Waydroid
+waydroid-manager start 1                             # start and open its window
+waydroid-manager list                                # see all instances
+waydroid-manager app install 1 my-app.apk            # install an app
+waydroid-manager config 1 set device_model pixel_7   # what apps see (see: waydroid-manager devices)
+waydroid-manager config "Account 1" set cpus 4 memory 6G
+waydroid-manager stop 1
+waydroid-manager delete 2
 ```
 
-Run `waydroid-multi --help` to see all commands.
+Run `waydroid-manager --help` to see all commands.
 
 ## Good to know
 
@@ -116,7 +116,7 @@ Run `waydroid-multi --help` to see all commands.
 - **Root:** the per-instance "Root" switch (`config set N root true`, then restart) installs
   Magisk Delta, the build `waydroid_script` uses, so apps can get root. The first start downloads
   it, so it needs internet. Then install the Magisk app:
-  `waydroid-multi app install N /var/lib/waydroid-multi/magisk-delta.apk`. Official Magisk does
+  `waydroid-manager app install N /var/lib/waydroid-manager/magisk-delta.apk`. Official Magisk does
   not work on Waydroid (no boot image). The switch is open to the instance owner, and root in
   Android is close to root on the host, so only enable it on machines you trust.
 - **ARM translation:** instances run ARM-only apps through Houdini by default. In Settings, or with
@@ -130,34 +130,34 @@ Run `waydroid-multi --help` to see all commands.
 - **Updating Waydroid:** run `waydroid upgrade` as usual. Instances pick up the new Android
   version the next time they start.
 - **Google Play on a clone:** a clone counts as a new device, so register it once. Run
-  `waydroid-multi gsf-id <instance>` and enter the number at
+  `waydroid-manager gsf-id <instance>` and enter the number at
   <https://www.google.com/android/uncertified>.
 - **Memory:** each running instance uses about 1.5–3 GB of RAM.
 - **Your normal Waydroid (#0):** #0 and plain `waydroid` use the same Android data, so only one
   of them runs at a time: starting #0 stops `waydroid` first, and while #0 runs, `waydroid` can't
-  start. Stopping #0 (or uninstalling waydroid-multi) gives it back. #0's settings live in
-  waydroid-multi only; plain `waydroid` keeps its own. Two things carry over, because they're stored
+  start. Stopping #0 (or uninstalling waydroid-manager) gives it back. #0's settings live in
+  waydroid-manager only; plain `waydroid` keeps its own. Two things carry over, because they're stored
   in Android's data: with Root on, Magisk leaves `/data/adb` behind (harmless without it), and a
   different device model makes Google services see a different device when you switch between them.
 - **Several users on one computer:** each user sees and controls only their own instances.
-  Only the first user who opens waydroid-multi gets their normal Waydroid as #0.
+  Only the first user who opens waydroid-manager gets their normal Waydroid as #0.
 - Running several accounts may be against some apps' or games' terms of service.
 
 ## Uninstall
 
-In the manager app, open the menu and choose **Uninstall Waydroid Multi…**. You can keep your
+In the manager app, open the menu and choose **Uninstall Waydroid Manager…**. You can keep your
 instances or delete them with it. From a terminal:
 
 ```sh
-sudo apt remove waydroid-multi       # keeps your instances
-sudo apt purge waydroid-multi        # also deletes all instances and their data
+sudo apt remove waydroid-manager       # keeps your instances
+sudo apt purge waydroid-manager        # also deletes all instances and their data
 ```
 
 If you installed from source:
 
 ```sh
-sudo /usr/lib/waydroid-multi/uninstall.sh            # keeps your instances
-sudo /usr/lib/waydroid-multi/uninstall.sh --purge    # also deletes all instances and their data
+sudo /usr/lib/waydroid-manager/uninstall.sh            # keeps your instances
+sudo /usr/lib/waydroid-manager/uninstall.sh --purge    # also deletes all instances and their data
 ```
 
 Your normal Waydroid is never modified.

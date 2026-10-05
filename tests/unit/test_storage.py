@@ -5,7 +5,7 @@ import unittest
 import zipfile
 from unittest import mock
 
-from waydroid_multi.daemon import storage
+from waydroid_manager.daemon import storage
 
 
 def xapk(**members):

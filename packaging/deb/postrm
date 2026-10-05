@@ -1,17 +1,17 @@
 #!/bin/sh
 # SPDX-License-Identifier: GPL-3.0-or-later
 set -e
-STATE=/var/lib/waydroid-multi
+STATE=/var/lib/waydroid-manager
 case "$1" in
 remove)
-    rm -rf /run/waydroid-multi
+    rm -rf /run/waydroid-manager
     # the instance names adb uses (only our lines, even if END was deleted)
-    sed -i --follow-symlinks '/^# BEGIN waydroid-multi /,/^# END waydroid-multi$/{/^# BEGIN waydroid-multi \|^# END waydroid-multi$\|^[0-9a-fA-F.:]\+ waydroid-[a-z0-9-]\+$/d}' /etc/hosts 2>/dev/null || true
+    sed -i --follow-symlinks '/^# BEGIN waydroid-manager /,/^# END waydroid-manager$/{/^# BEGIN waydroid-manager \|^# END waydroid-manager$\|^[0-9a-fA-F.:]\+ waydroid-[a-z0-9-]\+$/d}' /etc/hosts 2>/dev/null || true
     # our override hiding stock's Waydroid icon, removed as each user: stock's icon shows again
     getent passwd | while IFS=: read -r user _ uid _ _ home _; do
         f="$home/.local/share/applications/Waydroid.desktop"
         [ "$uid" -ge 1000 ] 2>/dev/null && [ "$uid" -lt 60000 ] && [ -f "$f" ] || continue
-        runuser -u "$user" -- sh -c '! grep -qx X-WaydroidMulti=true "$1" || rm -f "$1"' sh "$f" 2>/dev/null || true
+        runuser -u "$user" -- sh -c '! grep -qx X-WaydroidManager=true "$1" || rm -f "$1"' sh "$f" 2>/dev/null || true
     done
     if [ -d /run/systemd/system ]; then
         systemctl daemon-reload
@@ -22,17 +22,17 @@ purge)
     # rm --one-file-system does not stop at bind mounts of the same filesystem (stock
     # Waydroid's data is usually on it): never delete while anything is mounted below
     if awk -v d="$STATE" '$2 == d || index($2, d "/") == 1 {f=1} END {exit !f}' /proc/self/mounts; then
-        echo "waydroid-multi: not deleting $STATE, something is still mounted there." >&2
+        echo "waydroid-manager: not deleting $STATE, something is still mounted there." >&2
         echo "Reboot and delete it by hand: sudo rm -rf --one-file-system $STATE" >&2
     else
         rm -rf --one-file-system "$STATE"
     fi
-    rm -rf /etc/waydroid-multi
-    rm -f /var/lib/misc/dnsmasq.wdmulti0.leases
+    rm -rf /etc/waydroid-manager
+    rm -f /var/lib/misc/dnsmasq.wdm0.leases
     # per-user caches, removed as each user
     getent passwd | while IFS=: read -r user _ uid _ _ home _; do
-        [ "$uid" -ge 1000 ] 2>/dev/null && [ "$uid" -lt 60000 ] && [ -d "$home/.cache/waydroid-multi" ] || continue
-        runuser -u "$user" -- rm -rf "$home/.cache/waydroid-multi" 2>/dev/null || true
+        [ "$uid" -ge 1000 ] 2>/dev/null && [ "$uid" -lt 60000 ] && [ -d "$home/.cache/waydroid-manager" ] || continue
+        runuser -u "$user" -- rm -rf "$home/.cache/waydroid-manager" 2>/dev/null || true
     done
     ;;
 esac
