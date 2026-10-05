@@ -12,11 +12,13 @@ Conflicts: waydroid-multi
 Replaces: waydroid-multi
 Recommends: wl-clipboard, pkexec | policykit-1
 Homepage: https://github.com/felipeoes/waydroid-multi-instances
-Description: run several Waydroid (Android) instances side by side
- waydroid-manager runs multiple Android instances at the same time with Waydroid,
- like BlueStacks or LDPlayer multi-instance. Each instance has its own apps,
- accounts, settings, window, network address and resource limits. Instances
- can be created fresh or cloned (with a new device identity). Stock Waydroid
- keeps working unchanged.
+Description: create and run Android devices with Waydroid
+ Waydroid Manager creates and runs Android devices on Linux with Waydroid.
+ Each device picks its Android version (11 to 17, with Google Play), runs
+ with full GPU acceleration (NVIDIA's proprietary driver included) and has
+ its own apps, accounts, settings, window, network address and resource
+ limits. Run as many side by side as the machine allows, create them fresh
+ or clone one (with a new device identity); your normal Waydroid keeps
+ working and appears as device #0.
  .
- Includes a root daemon, the waydroid-manager command and a GTK manager app.
+ Includes a root daemon, the waydroid-manager command and a GTK app.

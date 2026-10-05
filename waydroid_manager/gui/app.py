@@ -37,7 +37,7 @@ class Application(Adw.Application):
     def about(self):
         dlg = Adw.AboutDialog(application_name="Waydroid Manager", application_icon="waydroid",
                               version=__version__, license_type=Gtk.License.GPL_3_0,
-                              comments="Run several Waydroid instances side by side.")
+                              comments="Create and run Android devices with Waydroid: Android 11 to 17 with Google Play, full GPU speed (NVIDIA too), side by side.")
         if HOMEPAGE:
             dlg.set_website(HOMEPAGE)
         dlg.present(self.win)

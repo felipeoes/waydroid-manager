@@ -1,30 +1,35 @@
 # Waydroid Manager
 
-Run **several Android instances at the same time** with [Waydroid](https://waydro.id),
-like BlueStacks or LDPlayer multi-instance, but on Linux.
+Create and run **Android devices on Linux** with [Waydroid](https://waydro.id), the way
+BlueStacks or LDPlayer do on Windows. Each device is a real Android system running natively
+in a container, not an emulator.
 
-Each instance is a separate Android device with its own apps, accounts, settings and
-window. Your normal Waydroid keeps working exactly as before.
+- **Any Android version from 11 to 17**, chosen per device, all with Google Play
+- **Full GPU speed, NVIDIA included**: 3D games run on your graphics card, even with NVIDIA's
+  proprietary driver
+- **As many devices as your PC can handle**, side by side, each with its own apps, accounts,
+  settings, window and network address
+- Your normal Waydroid keeps working, and shows up as device **#0**
 
-![Three instances side by side, each one a different device: a Galaxy S24 Ultra, a Pixel 8 Pro and a Xiaomi 14](docs/screenshots/multi-instance.png)
+![Three devices side by side, each a different phone: a Galaxy S24 Ultra, a Pixel 8 Pro and a Xiaomi 14](docs/screenshots/multi-instance.png)
 
 ## What you can do
 
-- Run as many Android instances as your computer can handle, side by side
-- Create a fresh instance, or **clone** an existing one (including your normal Waydroid)
-  to copy its apps and logins. Clones get their own device identity
-- Pick a **phone or tablet resolution**, the **CPU and memory** each instance may use, and a
+- Create a fresh device on the Android version you need, or **clone** one (including your
+  normal Waydroid) to copy its apps and logins. Clones get their own device identity
+- Choose how each device draws: on your **NVIDIA** card, your system's GPU, or in software
+- Pick a **phone or tablet resolution**, the **CPU and memory** each device may use, and a
   **device model** (Samsung, Pixel, Xiaomi, … or your own) that apps will see
-- Every instance window has a **title bar and side toolbar**, LDPlayer style:
+- Every device window has a **title bar and side toolbar**, LDPlayer style:
   - drag the title bar to move it, drag an edge to **resize** (the picture scales, and the size
     is remembered)
   - double-click the title bar to maximize
   - **◁ ○ □** Back / Home / Recents, volume buttons, screenshots, Install APK and fullscreen
   - drop `.apk` files on the window to install them
-- Find each instance in the dock and app grid under its own name
-- Install APKs, launch apps, and use `adb`, per instance: running instances show up in
+- Find each device in the dock and app grid under its own name
+- Install APKs, launch apps, and use `adb`, per device: running devices show up in
   `adb devices` by name, e.g. `waydroid-account-1:5555`
-- Run **ARM-only apps**: each instance picks its ARM translation (Houdini, libndk or off)
+- Run **ARM-only apps**: each device has ARM translation (Houdini or libndk), or none
 
 ## Requirements
 

@@ -1,6 +1,6 @@
 # Contributing to Waydroid Manager
 
-Thanks for helping! This guide explains how waydroid-manager works inside, how to run it from a
+Thanks for helping! This guide explains how Waydroid Manager works inside, how to run it from a
 checkout, and the hard-won lessons that are easy to break. For using the program, see the
 [README](README.md).
 
