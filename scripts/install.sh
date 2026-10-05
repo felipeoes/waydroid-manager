@@ -52,6 +52,11 @@ chmod -R u=rwX,go=rX "$D$LIBDIR"
 chmod 755 "$D$LIBDIR"/data/*.sh
 install -m755 "$SRC/scripts/uninstall.sh" "$D$LIBDIR/uninstall.sh"
 install -m755 "$SRC/scripts/migrate-from-waydroid-multi.sh" "$D$LIBDIR/migrate-from-waydroid-multi.sh"
+# libgbinder with the protocols Android 15+ need (packaging/build-libgbinder.sh); without
+# it, the system's is used and those versions can't install apps or share the clipboard
+if [ -f "$SRC/build/lib/libgbinder.so.1" ]; then
+    install -Dm644 "$SRC/build/lib/libgbinder.so.1" "$D$LIBDIR/lib/libgbinder.so.1"
+fi
 echo "$METHOD" > "$D$LIBDIR/install-method"
 
 mkdir -p "$D$BINDIR"

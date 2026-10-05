@@ -5,6 +5,8 @@ import os
 PKG_DIR = os.path.dirname(os.path.realpath(__file__))
 # Repo checkout and installed layout both keep data/ next to the package.
 DATA_DIR = os.environ.get("WAYDROID_MANAGER_DATA", os.path.join(os.path.dirname(PKG_DIR), "data"))
+# The libgbinder we ship (installed layout only; a checkout uses the system one)
+GBINDER_LIB = os.path.join(os.path.dirname(PKG_DIR), "lib", "libgbinder.so.1")
 
 STATE_DIR = "/var/lib/waydroid-manager"
 INSTANCES_DIR = STATE_DIR + "/instances"

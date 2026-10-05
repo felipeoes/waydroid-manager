@@ -35,9 +35,11 @@ jobs:
 
       - name: Build the .deb
         run: |
+          sudo apt-get install -y -qq git make gcc pkg-config libglib2.0-dev
           packaging/deb/build.sh
           dpkg-deb --info dist/*.deb
           dpkg-deb --contents dist/*.deb | grep -q './usr/lib/waydroid-manager/waydroid_manager/daemon/main.py'
+          dpkg-deb --contents dist/*.deb | grep -q './usr/lib/waydroid-manager/lib/libgbinder.so.1'
 
       - name: Release notes from CHANGELOG.md
         run: |
@@ -50,7 +52,7 @@ jobs:
           ### Install (Ubuntu 24.04+ / Debian 13+)
           Download the `.deb` below, then:
           ```sh
-          sudo apt install ./waydroid-manager_*_all.deb
+          sudo apt install ./waydroid-manager_*_amd64.deb
           ```
           Other distributions: install from source, see the README.
           NOTES

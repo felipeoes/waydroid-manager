@@ -42,7 +42,8 @@ def main(argv=None):
         return 2
     w = cfg["waydroid"]
 
-    import gbinder
+    from waydroid_manager.stock import load_gbinder
+    gbinder = load_gbinder()
     from gi.repository import GLib
 
     sm = gbinder.ServiceManager("/dev/" + w["binder"], w["service_manager_protocol"], w["binder_protocol"])

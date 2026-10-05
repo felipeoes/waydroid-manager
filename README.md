@@ -38,11 +38,11 @@ Tested on Ubuntu 26.04 with Waydroid 1.6 and GNOME.
 
 ### Ubuntu 24.04+ and Debian 13+
 
-Download `waydroid-manager_<version>_all.deb` from the
+Download `waydroid-manager_<version>_amd64.deb` from the
 [latest release](https://github.com/felipeoes/waydroid-multi-instances/releases/latest), then:
 
 ```sh
-sudo apt install ./waydroid-manager_*_all.deb
+sudo apt install ./waydroid-manager_*_amd64.deb
 ```
 
 Updates work the same way: install the newer `.deb`. Running instances keep running.

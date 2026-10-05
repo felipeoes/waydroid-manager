@@ -286,7 +286,8 @@ class Session:
                 self.quit()
 
     def register_services(self):
-        import gbinder
+        from ..stock import load_gbinder
+        gbinder = load_gbinder()
         inst = Instance.load(self.iid)   # protocols are known after the start
         w = inst.cfg["waydroid"]
         sm = gbinder.ServiceManager("/dev/" + w["binder"], w["service_manager_protocol"], w["binder_protocol"])

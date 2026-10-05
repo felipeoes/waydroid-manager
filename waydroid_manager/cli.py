@@ -463,6 +463,11 @@ def cmd_doctor(o):
     except RuntimeError as e:
         check(False, "", str(e))
     check(os.path.exists("/dev/binderfs/binder-control"), "binderfs mounted", "binderfs not mounted (daemon mounts it on start)")
+    shipped = os.path.isfile(paths.GBINDER_LIB)
+    check("aidl6" in stock.known_sm_protocols(),
+          "libgbinder ({}) speaks Android 15-17's protocols".format("shipped" if shipped else "system"),
+          "libgbinder lacks Android 15-17's protocols: apps can't be installed there "
+          "(run packaging/build-libgbinder.sh, then scripts/install.sh)")
     check(shutil.which("lxc-start"), "LXC installed", "LXC not installed")
     check(shutil.which("dnsmasq"), "dnsmasq installed", "dnsmasq not installed")
     check(shutil.which("wl-copy"), "wl-clipboard installed", "wl-clipboard missing: no clipboard sharing")

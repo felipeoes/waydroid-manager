@@ -292,11 +292,13 @@ that staged tree is what the package is built from. A new installed file therefo
 `install.sh` only.
 
 ```sh
-packaging/deb/build.sh                     # → dist/waydroid-manager_<version>_all.deb (no root needed)
-sudo apt install ./dist/waydroid-manager_*_all.deb
+packaging/deb/build.sh                     # → dist/waydroid-manager_<version>_amd64.deb (no root needed)
+sudo apt install ./dist/waydroid-manager_*_amd64.deb
 ```
 
 - **Version:** taken from `__version__` in `waydroid_manager/__init__.py`.
+- **libgbinder:** `packaging/build-libgbinder.sh` builds the pinned tag (and commit) into
+  `build/lib/`; `build.sh` runs it when needed and `install.sh` ships the result. Bump both pins together.
 - **Dependencies:** listed in `packaging/deb/control.in`. Keep them in sync with the code's
   imports. libadwaita ≥ 1.5 means Ubuntu 24.04+ and Debian 13+.
 - **Maintainer scripts** (`packaging/deb/`):

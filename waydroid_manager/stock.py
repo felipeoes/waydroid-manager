@@ -10,6 +10,7 @@ Everything that is version-dependent lives in this module.
 """
 import argparse
 import configparser
+import ctypes
 import logging
 import os
 import shutil
@@ -29,11 +30,21 @@ def stock_dir():
     return "/usr/lib/waydroid"
 
 
+def load_gbinder():
+    """Import gbinder bound to the libgbinder we ship, if installed (Android 15+ need its
+    servicemanager protocols). Loaded first, the system library's same soname is never opened."""
+    if os.path.isfile(paths.GBINDER_LIB):
+        ctypes.CDLL(paths.GBINDER_LIB, mode=ctypes.RTLD_GLOBAL)
+    import gbinder
+    return gbinder
+
+
 def tools():
     """Import and return the stock ``tools`` package."""
     global _tools
     if _tools is not None:
         return _tools
+    load_gbinder()  # stock's helpers import gbinder
     sdir = stock_dir()
     if not os.path.isfile(os.path.join(sdir, "tools", "__init__.py")):
         raise RuntimeError("stock Waydroid not found (looked in {})".format(sdir))
@@ -159,7 +170,7 @@ def protocols_for_sdk(sdk, known=("aidl", "aidl2", "aidl3", "aidl4")):
 def known_sm_protocols():
     """Servicemanager protocols supported by the installed libgbinder."""
     known = ["aidl", "aidl2", "aidl3", "aidl4"]
-    for lib in ("/usr/lib/x86_64-linux-gnu/libgbinder.so.1", "/usr/lib/libgbinder.so.1",
+    for lib in (paths.GBINDER_LIB, "/usr/lib/x86_64-linux-gnu/libgbinder.so.1", "/usr/lib/libgbinder.so.1",
                 "/usr/lib64/libgbinder.so.1", "/usr/lib/aarch64-linux-gnu/libgbinder.so.1"):
         if os.path.exists(lib):
             try:
