@@ -440,9 +440,6 @@ class Session:
         log.warning("adb connect %s: %s", serial, out)
 
     def cleanup(self):
-        if self.adb_serial:
-            # only if we connected: a plain `adb disconnect` would start an adb server
-            self.adb_run(["disconnect", self.adb_serial])
         if getattr(self, "confirm", None) and self.confirm.poll() is None:
             self.confirm.terminate()
         for s in self.services:

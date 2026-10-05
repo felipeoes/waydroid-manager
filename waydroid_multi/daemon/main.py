@@ -32,7 +32,7 @@ from ..netconfig import host_names
 from ..registry import allocate_index
 from . import container, images, storage
 from .network import Network
-from .util import active_ids, container_pid, log, lxc_state, open_in_container
+from .util import active_ids, adb_disconnect, container_pid, log, lxc_state, open_in_container
 
 ERR = "io.github.waydroidmulti.Error"
 AID_SYSTEM, AID_SHELL = 1000, 2000   # adb_keys is system:shell 0640, as Android writes it on "Always allow"
@@ -413,6 +413,8 @@ class Manager(dbus.service.Object):
         self._close_key_fd(iid)
         self.set_transient(iid, "STOPPING")
         self.stopping_by_us.add(iid)
+        if iid in self.names:
+            adb_disconnect(self.names[iid] + ":5555")
         try:
             self.stop_helper(iid)
             container.stop(inst)

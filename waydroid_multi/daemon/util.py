@@ -6,6 +6,7 @@ import hashlib
 import logging
 import os
 import shutil
+import socket
 import stat
 import subprocess
 import urllib.request
@@ -227,6 +228,19 @@ def active_ids():
     r = run(["lxc-ls", "-P", paths.LXC_PATH, "--active", "-1"], check=False)
     return {n[len(paths.container_name("")):] for n in r.stdout.split()
             if n.startswith(paths.container_name(""))}
+
+
+def adb_disconnect(serial):
+    """Drop an `adb connect` device from the local adb server while adbd still answers. Once the
+    container is gone, adb keeps it in its reconnect loop as offline and ignores `adb disconnect`."""
+    cmd = "host:disconnect:" + serial
+    try:
+        # ponytail: the default server port; a user's ANDROID_ADB_SERVER_PORT isn't seen here
+        with socket.create_connection(("127.0.0.1", 5037), timeout=2) as s:
+            s.sendall(b"%04x%s" % (len(cmd), cmd.encode()))
+            s.recv(4)   # OKAY once the device is dropped
+    except OSError:
+        pass        # no adb server running
 
 
 def container_pid(iid):
