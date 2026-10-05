@@ -927,7 +927,7 @@ class Session:
     def app_id_for(self, app_id):
         base = "waydroid-multi.{}".format(self.cfg.id)
         if not app_id or app_id == FULL_UI_APP_ID:
-            return FULL_UI_APP_ID if self.cfg.id == "0" else base   # #0 is stock's "Waydroid" icon
+            return base
         if app_id.startswith("waydroid."):
             return base + "." + app_id[len("waydroid."):]
         return base + "." + app_id

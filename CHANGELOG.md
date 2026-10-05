@@ -14,8 +14,8 @@ All notable changes to waydroid-multi are listed here. The format follows
 
 ### Changed
 - Stock Waydroid has a single icon again. #0 no longer adds its own "Stock Waydroid (Waydroid)"
-  entry: the usual **Waydroid** icon opens #0, and Add to/Remove from app grid on #0 shows or hides
-  it. Uninstalling gives stock Waydroid its own entry back.
+  entry: #0's icon is named **Waydroid**, and stock's own is hidden, so the one Waydroid icon opens
+  #0. Uninstalling gives stock Waydroid its icon back.
 
 ## [0.4.1] - 2026-10-04
 

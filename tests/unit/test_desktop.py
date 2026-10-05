@@ -8,23 +8,20 @@ from waydroid_multi.session import desktop
 
 
 class StockLauncherTest(unittest.TestCase):
-    def test_instance0_overrides_stock_waydroid_icon(self):
+    def test_one_waydroid_icon(self):
         with tempfile.TemporaryDirectory() as d, mock.patch.object(desktop.paths, "user_applications_dir",
                                                                    return_value=d):
-            open(os.path.join(d, "waydroid-multi.0.desktop"), "w").close()   # 0.4's own #0 icon
+            with open(desktop.launcher_path("0"), "w") as f:   # 0.4's #0 launcher
+                f.write("[Desktop Entry]\nName=Stock Waydroid (Waydroid)\n")
             desktop.cleanup_launchers(["0", "1"])
-            self.assertEqual(sorted(os.listdir(d)), ["Waydroid.desktop"])
-            self.assertTrue(desktop.has_launcher("0"))
-            desktop.remove_launcher("0")   # hidden, so stock's entry stays hidden too
-            self.assertFalse(desktop.has_launcher("0"))
-            self.assertTrue(os.path.exists(desktop.launcher_path("0")))
-            desktop.cleanup_launchers(["0"])   # a hidden one is the user's choice: kept hidden
-            self.assertFalse(desktop.has_launcher("0"))
-            desktop.write_launcher("0", "Stock Waydroid")
-            text = open(desktop.launcher_path("0")).read()
-            self.assertIn("Name=Waydroid\n", text)
-            self.assertIn("StartupWMClass=Waydroid\n", text)
-            self.assertIn(desktop.MARK, text)
+            self.assertIn("Name=Waydroid\n", open(desktop.launcher_path("0")).read())
+            stock = open(os.path.join(d, desktop.STOCK_LAUNCHER)).read()
+            self.assertIn("NoDisplay=true\n", stock)
+            self.assertIn(desktop.MARK, stock)
+            desktop.remove_launcher("0")        # removed from the grid: no Waydroid icon at all
+            desktop.cleanup_launchers(["0"])
+            self.assertFalse(os.path.exists(desktop.launcher_path("0")))
+            self.assertTrue(os.path.exists(os.path.join(d, desktop.STOCK_LAUNCHER)))
 
 
 if __name__ == "__main__":

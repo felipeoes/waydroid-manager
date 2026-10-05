@@ -7,7 +7,7 @@ remove)
     rm -rf /run/waydroid-multi
     # the instance names adb uses (only our lines, even if END was deleted)
     sed -i --follow-symlinks '/^# BEGIN waydroid-multi /,/^# END waydroid-multi$/{/^# BEGIN waydroid-multi \|^# END waydroid-multi$\|^[0-9a-fA-F.:]\+ waydroid-[a-z0-9-]\+$/d}' /etc/hosts 2>/dev/null || true
-    # #0's override of stock's Waydroid icon, removed as each user: stock's own entry shows again
+    # our override hiding stock's Waydroid icon, removed as each user: stock's icon shows again
     getent passwd | while IFS=: read -r user _ uid _ _ home _; do
         f="$home/.local/share/applications/Waydroid.desktop"
         [ "$uid" -ge 1000 ] 2>/dev/null && [ "$uid" -lt 60000 ] && [ -f "$f" ] || continue
