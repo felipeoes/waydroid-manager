@@ -8,7 +8,7 @@ from a copy, synced whenever stock's images change and have settled (the `curren
 
 Every other device runs the Android version it was created with: the newest installed set of
 that version. ``install`` downloads a version, ``update`` fetches newer builds; a device
-switches at its next start, and sets no device uses are removed. Set ids are
+switches at its next start, and sets no device runs or switches to are removed (gc). Set ids are
 <system datetime>-<vendor datetime> for OTA builds (like stock's sets, so stock's copy is
 reused when it is that very build) and the zip's hash for zip builds.
 """
@@ -157,8 +157,8 @@ def stock_busy():
     return False
 
 
-def ensure_synced(keep=()):
-    """Sync if the stock images changed and are stable. Returns the current id.
+def ensure_synced(in_use):
+    """Sync if the stock images changed and are stable (in_use: see gc). Returns the current id.
 
     Never raises for a busy stock install: the previous set stays current.
     """
@@ -169,14 +169,17 @@ def ensure_synced(keep=()):
             log.info("stock images are changing; keeping image set %s for now", current_id())
             return current_id()
         iid = sync()
-        gc(keep)
+        gc(in_use)
         return iid
 
 
-def gc(keep):
-    """Remove the sets no device uses (keep: every device's set), never the current one."""
+def gc(in_use):
+    """Remove the sets no device needs, never the current one. in_use(): (set id, Android
+    version, "" for #0) of every device, read under the lock so no pick is missed. A device
+    needs its set and the newest of its version, which it switches to at its next start."""
     with lock:
-        keep = set(keep) | {current_id()}
+        devices = in_use()
+        keep = {sid for sid, _ in devices} | {latest(k) for _, k in devices if k} | {current_id()}
         for d in available():
             if d not in keep:
                 log.info("removing unused image set %s", d)
@@ -267,21 +270,21 @@ def _fetch(tmp, sources, v, key):
         os.chmod(os.path.join(tmp, f), 0o644)
 
 
-def update(keep):
-    """Fetch newer builds of every installed version; returns the versions updated."""
-    keys = sorted({read_cfg(d).get("android") for d in available()} - {"", None})
+def update(in_use):
+    """Fetch newer builds of the versions the devices run (in_use: see gc) and sync stock's;
+    returns the versions updated."""
+    keys = sorted({k for _, k in in_use() if k})
     done = [k for k in keys if latest(k) != install(k)]
     with lock:
         if stock_is_newer() and not stock_busy():
             sync()
-    gc(keep)
+        gc(in_use)
     return done
 
 
 def gapps_layer(image_id):
     """The Google Play layer a set runs with, or None (in the image itself, or stock's)."""
-    key = read_cfg(image_id).get("android")
-    kind = catalog.get(key, "gapps", "image") if key in catalog.VERSIONS else "image"
+    kind = catalog.get(read_cfg(image_id).get("android"), "gapps", "image")
     if kind == "mtg14":
         return gapps.mtg_layer()
     if kind == "gms_apex":

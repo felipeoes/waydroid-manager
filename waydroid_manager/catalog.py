@@ -61,7 +61,9 @@ DEFAULT = "13"
 
 
 def get(key, field, default=None):
-    return VERSIONS[key].get(field, default)
+    """A version's field; default also for a version we don't offer (stock's Android 10, or
+    None: not known yet)."""
+    return VERSIONS.get(key, {}).get(field, default)
 
 
 def key_for_sdk(sdk):

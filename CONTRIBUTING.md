@@ -192,7 +192,7 @@ are strings (`"1"` … `"240"`). Callers only see and control their own instance
 | `Screenshot` | `sh → t` | fd of a regular file opened for writing; returns the size |
 | `GetGsfId` | `s → s` | Google Services Framework id (for Play registration) |
 | `PrepareGpu` | `s → a{ss}` | called by the session before `Start`: the mode, NVIDIA's renderer directory, how the proxy shows buffers (`cpu_buffers`) |
-| `UpdateImages` | `→ s` | fetch newer builds of the installed versions; returns those updated |
+| `UpdateImages` | `→ s` | fetch newer builds of the devices' versions; returns those updated |
 | `Images` | `→ aa{ss}` | the image sets, with the devices using them |
 
 Signals: `StateChanged(ss)`, `InstanceAdded(s)`, `InstanceRemoved(s)`, `ConfigChanged(s)`.

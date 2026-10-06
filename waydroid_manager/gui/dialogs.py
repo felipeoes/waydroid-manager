@@ -296,7 +296,7 @@ class InstanceDialog(_Dialog):
 
     def _android_changed(self):
         key = self.android()
-        ok = key in ROOT_VERSIONS
+        ok = key in ROOT_VERSIONS or key not in catalog.VERSIONS   # #0's unknown version: checked at start
         self.root_row.set_sensitive(ok)
         if not ok:
             self.root_row.set_active(False)

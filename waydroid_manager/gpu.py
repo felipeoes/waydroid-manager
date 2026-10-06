@@ -9,6 +9,7 @@ import collections
 import glob
 import os
 import re
+import subprocess
 
 from . import catalog
 
@@ -40,6 +41,13 @@ NVIDIA_PROPS = {
     "ro.surface_flinger.max_frame_buffer_acquired_buffers": "3",
     "ro.surface_flinger.has_wide_color_display": "false", "ro.surface_flinger.use_color_management": "false",
 }
+
+
+def vkms_supported():
+    """Does the kernel's vkms make devices through configfs (Linux 6.19+)? Rendering in software
+    on 14 and 17, and on NVIDIA, draws into such a hidden device."""
+    r = subprocess.run(["modinfo", "-p", "vkms"], capture_output=True, text=True)
+    return "create_default_dev" in r.stdout
 
 
 def _driver(card):

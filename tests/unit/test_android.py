@@ -1,4 +1,5 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
+import hashlib
 import io
 import json
 import os
@@ -10,7 +11,7 @@ import zipfile
 from unittest import mock
 
 from waydroid_manager import catalog, gpu
-from waydroid_manager.daemon import container, gapps, images, layers, nvidia, storage, util
+from waydroid_manager.daemon import container, gapps, images, layers, main, nvidia, storage, util
 from waydroid_manager.instance import CREATE_ONLY, Instance, validate_setting
 
 
@@ -31,6 +32,18 @@ class CatalogTest(unittest.TestCase):
             validate_setting("android", "12")
         self.assertIn("android", CREATE_ONLY)
         self.assertEqual(Instance.new("5", 5, 1000, "", {}, {}).get("android"), catalog.DEFAULT)
+
+    def test_a_version_we_dont_offer(self):
+        # #0's before its first sync (None, '' over D-Bus) or stock on Android 10: defaults, no KeyError
+        self.assertTrue(catalog.get(None, "software", True))
+        self.assertIsNone(catalog.get("", "gb"))
+        check = main.Manager.check_android
+        with mock.patch.object(main.gpu, "gpus", return_value=[]):
+            check(None, None, {"root": "true", "gpu": "software"})     # checked at start instead
+            with self.assertRaisesRegex(main.Error, "root"):
+                check(None, "14", {"root": "true"})
+            with self.assertRaisesRegex(main.Error, "software"):
+                check(None, "15", {"gpu": "software"})
 
 
 class ImageStoreTest(unittest.TestCase):
@@ -54,13 +67,32 @@ class ImageStoreTest(unittest.TestCase):
     def test_latest_and_gc(self):
         self.make_set("100-101", android="16", built="100")
         self.make_set("200-201", android="16", built="200")
+        self.make_set("250-251", android="17", built="250")     # no device runs 17
         self.make_set("300-301", stock="true", built="300")     # stock's, for #0
         os.makedirs(os.path.join(self.tmp.name, "400-401.tmp"))  # an install in progress
         os.symlink("300-301", images.CURRENT)
         self.assertEqual(images.latest("16"), "200-201")
-        self.assertEqual(images.latest("17"), "")
-        images.gc(["100-101"])        # a stopped device still on the older build keeps it
-        self.assertEqual(images.available(), ["100-101", "300-301"])
+        self.assertEqual(images.latest("15"), "")
+        # a stopped device still on the older build keeps it, and the newer one it switches to
+        images.gc(lambda: [("100-101", "16"), ("", "")])
+        self.assertEqual(images.available(), ["100-101", "200-201", "300-301"])
+        images.gc(lambda: [("200-201", "16")])                  # it switched
+        self.assertEqual(images.available(), ["200-201", "300-301"])
+
+    def test_update_keeps_the_new_builds(self):
+        self.make_set("100-101", android="16", built="100")
+        self.make_set("300-301", stock="true", built="300")
+        os.symlink("300-301", images.CURRENT)
+
+        def install(key):
+            self.make_set("200-201", android=key, built="200")
+            return "200-201"
+        devices = lambda: [("100-101", "16"), ("300-301", "")]     # noqa: E731
+        with mock.patch.object(images, "install", side_effect=install) as inst, \
+                mock.patch.object(images, "stock_is_newer", return_value=False):
+            self.assertEqual(images.update(devices), ["16"])
+        inst.assert_called_once_with("16")      # only the versions devices run
+        self.assertEqual(images.available(), ["100-101", "200-201", "300-301"])
 
     def test_install_describes_a_set_before_it_appears(self):
         def fetch(tmp, sources, v, key):
@@ -133,6 +165,33 @@ class LayerTest(unittest.TestCase):
             self.assertFalse(os.path.exists(os.path.join(app, "lib/arm64-v8a")))
             self.assertFalse(os.path.exists(os.path.join(out, "system/system_ext/priv-app/SetupWizard")))
             self.assertFalse(os.path.exists(os.path.join(out, "META-INF")))
+
+    def test_download_resumes_after_an_early_close(self):
+        body = b"0123456789"
+        sha = hashlib.sha256(body).hexdigest()
+
+        class Response(io.BytesIO):
+            def __init__(self, data, status, headers):
+                super().__init__(data)
+                self.status, self.headers = status, headers
+
+        replies = [Response(body[:4], 200, {"Content-Length": "10"}),       # closed early, no error
+                   Response(body[4:], 206, {"Content-Range": "bytes 4-9/10"})]
+        ranges = []
+
+        def urlopen(req, timeout):
+            ranges.append(req.get_header("Range"))
+            return replies.pop(0)
+        with tempfile.TemporaryDirectory() as d:
+            dest = os.path.join(d, "a.zip")
+            with open(dest + ".0123456789abcdef.part", "wb") as f:
+                f.write(b"another build's")       # never extended
+            with mock.patch.object(util.urllib.request, "urlopen", urlopen):
+                self.assertEqual(util.download("https://x/a.zip", sha, dest, "a"), dest)
+            with open(dest, "rb") as f:
+                self.assertEqual(f.read(), body)
+            self.assertEqual(ranges, [None, "bytes=4-"])
+            self.assertEqual(os.listdir(d), ["a.zip"])
 
     def test_sourceforge_master_mirror(self):
         self.assertEqual(util.mirror("https://sourceforge.net/projects/waydroid/files/images/a/b.zip/download"),
@@ -245,6 +304,32 @@ class AppArmorTest(unittest.TestCase):
             container.apparmor_profile("profile other {\n}\n", "lxc-waydroid")
 
 
+class StockPropsTest(unittest.TestCase):
+    STOCK = {"ro.dalvik.vm.native.bridge": "libndk_translation.so", "ro.ndk_translation.version": "0.2.3",
+             "ro.hardware.gralloc": "minigbm_gbm_mesa", "persist.waydroid.multi_windows": "true"}
+
+    def props(self, index, android, stock_android="13", arm=None, mode="gpu", **settings):
+        inst = Instance.new(str(index), index, 1000, "", {}, {})
+        inst.cfg["instance"].update(settings, android=android)
+        cfg = {"properties": dict(self.STOCK)}
+        with mock.patch.object(container.stock, "load_stock_cfg", return_value=cfg), \
+                mock.patch.object(container, "stock_android", return_value=stock_android):
+            return container.stock_props(inst, arm, mode)
+
+    def test_stock_arm_translation_only_on_stock_android(self):
+        self.assertIn("ro.dalvik.vm.native.bridge", self.props(3, "13"))       # its overlay has it
+        self.assertNotIn("ro.dalvik.vm.native.bridge", self.props(3, "14"))    # the image's own runs
+        self.assertNotIn("ro.ndk_translation.version", self.props(3, "13", arm="/houdini"))  # ours replaces it
+        self.assertNotIn("ro.dalvik.vm.native.bridge", self.props(3, "13", arm_translation="none"))
+        self.assertEqual(self.props(3, "14")["persist.waydroid.multi_windows"], "true")
+
+    def test_stock_graphics_choice_only_for_0_as_stock_renders(self):
+        self.assertIn("ro.hardware.gralloc", self.props(0, "13"))
+        self.assertNotIn("ro.hardware.gralloc", self.props(0, "13", mode="nvidia"))
+        self.assertNotIn("ro.hardware.gralloc", self.props(0, "13", gpu="0000:0a:00.0"))
+        self.assertNotIn("ro.hardware.gralloc", self.props(3, "13"))    # its own Graphics setting decides
+
+
 class GsfIdTest(unittest.TestCase):
     def test_read_from_the_database_without_following_links(self):
         with tempfile.TemporaryDirectory() as d:
@@ -261,6 +346,26 @@ class GsfIdTest(unittest.TestCase):
                 # an Android or owner-planted link is never followed out of the data directory
                 os.rename(os.path.join(d, "data"), os.path.join(d, "real"))
                 os.symlink(os.path.join(d, "real"), os.path.join(d, "data"))
+                self.assertEqual(storage.gsf_id(inst), "")
+
+    def test_rows_still_in_the_write_ahead_log(self):
+        with tempfile.TemporaryDirectory() as d:
+            inst = Instance.new("4", 4, 1000, "", {}, {})
+            db_dir = os.path.join(d, "data", "com.google.android.gsf", "databases")
+            os.makedirs(db_dir)
+            db = sqlite3.connect(os.path.join(db_dir, "gservices.db"))
+            db.execute("PRAGMA journal_mode=WAL")
+            db.execute("PRAGMA wal_autocheckpoint=0")       # GMS keeps it open: no checkpoint yet
+            db.execute("CREATE TABLE main (name TEXT, value TEXT)")
+            db.execute("INSERT INTO main VALUES ('android_id', '4154426684555490429')")
+            db.commit()
+            with mock.patch.object(Instance, "data_dir", d):
+                self.assertEqual(storage.gsf_id(inst), "4154426684555490429")
+                db.close()
+                # a FIFO planted there is refused, not waited on
+                for f in os.listdir(db_dir):
+                    os.unlink(os.path.join(db_dir, f))
+                os.mkfifo(os.path.join(db_dir, "gservices.db"))
                 self.assertEqual(storage.gsf_id(inst), "")
 
 

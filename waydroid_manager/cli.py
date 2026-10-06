@@ -434,7 +434,7 @@ def cmd_log(o):
 def cmd_images(o):
     d = daemon()
     if o.subaction == "update":
-        print("Looking for newer builds of the installed Android versions (downloads can take a while)...")
+        print("Looking for newer builds of your devices' Android versions (downloads can take a while)...")
         done = d.update_images()
         print("Updated: Android " + ", ".join(done.split(",")) if done else "Everything is up to date.")
         return
@@ -494,8 +494,10 @@ def cmd_doctor(o):
               "no usable GPU: devices render in software", "")
     for g in gpu.gpus():
         check(True, "{} ({}): config <id> set gpu {}".format(g.label, g.driver, g.pci), "")
-    for mod, needs in (("vkms", "Android 14 and 17 in software"), ("videodev", "Android 17"),
-                       ("squashfs", "Android 15's image"), ("erofs", "Android 16 and 17's images")):
+    check(gpu.vkms_supported(), "vkms module with configfs (rendering on NVIDIA, Android 14 and 17 in software)",
+          "no vkms module with configfs (Linux 6.19+): no rendering on NVIDIA, nor Android 14 and 17 in software")
+    for mod, needs in (("videodev", "Android 17"), ("squashfs", "Android 15's image"),
+                       ("erofs", "Android 16 and 17's images")):
         check(subprocess.run(["modinfo", mod], capture_output=True).returncode == 0,
               "{} module ({})".format(mod, needs), "no {} module: {} can't run".format(mod, needs))
     try:

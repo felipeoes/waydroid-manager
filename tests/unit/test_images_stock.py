@@ -18,8 +18,8 @@ class EnsureSyncedTest(unittest.TestCase):
                 mock.patch.object(images, "stock_busy", return_value=busy), \
                 mock.patch.object(images, "_sync", side_effect=lambda: (calls.append("sync"),
                                                                       current.__setitem__(0, stock_id))[1] or stock_id), \
-                mock.patch.object(images, "gc", side_effect=lambda in_use: calls.append(("gc", tuple(in_use)))):
-            result = images.ensure_synced(["old"])
+                mock.patch.object(images, "gc", side_effect=lambda in_use: calls.append(("gc", tuple(in_use())))):
+            result = images.ensure_synced(lambda: ["old"])
         return result, calls
 
     def test_up_to_date_does_nothing(self):

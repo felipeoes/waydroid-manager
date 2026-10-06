@@ -160,16 +160,19 @@ class Manager(dbus.service.Object):
             self.net.write_names([(self.net.ip_for(i), self.names[i.id]) for i in insts])
 
     def images_in_use(self):
-        """Every instance's image set: the store keeps them (a stopped instance switches to
-        a newer set of its Android version at its next start)."""
-        return [i.image_id for i in self.all_instances() if i.image_id]
+        """(image set, Android version) of every instance, for the store's gc: #0 runs stock's
+        images (the current set), any other switches to the newest of its version at its next start."""
+        return [(i.image_id, i.get("android") if i.index else "") for i in self.all_instances()]
 
     def check_android(self, android, settings):
-        """Refuse settings an instance's Android version can't run."""
+        """Refuse settings an instance's Android version can't run. A version we don't offer
+        (#0's, stock on Android 10 or not synced yet) is checked at start."""
+        if android not in catalog.VERSIONS:
+            return
         if settings.get("root") == "true" and catalog.get(android, "sdk") not in container.ROOT_SDKS:
             raise Error("root is only available on Android 11 and 13", "InvalidArgs")
         picked = next((g for g in gpu.gpus() if g.pci == settings.get("gpu")), None)
-        if picked and picked.driver == "nvidia" and android in catalog.VERSIONS and not catalog.get(android, "nvidia"):
+        if picked and picked.driver == "nvidia" and not catalog.get(android, "nvidia"):
             raise Error("Android {} has no NVIDIA build".format(android), "InvalidArgs")
         if settings.get("gpu") == "software" and catalog.get(android, "software", True) is False:
             raise Error("Android {} can't render in software".format(android), "InvalidArgs")
@@ -331,7 +334,7 @@ class Manager(dbus.service.Object):
             return
         self.set_transient(iid, "STARTING")
         try:
-            container.start(inst, self.net, self.hosts(), session, uid, self.images_in_use(),
+            container.start(inst, self.net, self.hosts(), session, uid, self.images_in_use,
                             lambda: self.cpus_busy(iid))
             inst = Instance.load(iid)
             self.start_helper(inst)
@@ -471,7 +474,7 @@ class Manager(dbus.service.Object):
         session = dict(s["session"])
         session["background_start"] = "false"
         try:
-            container.start(inst, self.net, self.hosts(), session, s["uid"], self.images_in_use(),
+            container.start(inst, self.net, self.hosts(), session, s["uid"], self.images_in_use,
                             lambda: self.cpus_busy(iid))
         except Exception:
             container.cleanup(inst)  # #0 didn't come back: give stock Waydroid back
@@ -513,6 +516,7 @@ class Manager(dbus.service.Object):
     def _create_from(self, uid, opts, clone_from, src_data, reset_ids):
         settings = {}
         props = {}
+        android = None
         if clone_from:
             if clone_from != "default":
                 # A clone starts with the source's settings; options override them
@@ -521,6 +525,12 @@ class Manager(dbus.service.Object):
                     if k != "name" and k in src.cfg["instance"]:
                         settings[k] = src.cfg["instance"][k]
                 props.update(src.cfg["properties"])
+                android = src.get("android")
+            else:
+                android = container.stock_android()
+                if not android:
+                    raise Error("stock Waydroid's Android version can't be cloned: it isn't one of "
+                                + ", ".join(catalog.VERSIONS), "InvalidArgs")
         for k, v in opts.items():
             if k.startswith("prop:"):
                 if v:
@@ -535,12 +545,9 @@ class Manager(dbus.service.Object):
         if os.path.exists(paths.instance_dir(iid)):
             raise Error("instance #{} already exists on disk".format(iid), "Exists")
         settings.setdefault("name", "Instance {}".format(iid))
-        if clone_from == "default":   # the copy of stock's data must run stock's Android
-            android = container.stock_android()
-            if not android:
-                raise Error("stock Waydroid's Android version can't be cloned: it isn't one of "
-                            + ", ".join(catalog.VERSIONS), "InvalidArgs")
-            settings["android"] = android
+        # the copy of the source's data must run the source's Android
+        if android and settings.setdefault("android", android) != android:
+            raise Error("a copy runs its source's Android ({})".format(android), "InvalidArgs")
         android = settings.setdefault("android", catalog.DEFAULT)
         self.check_android(android, settings)
         image_id = images.latest(android) or images.install(android)
@@ -552,7 +559,10 @@ class Manager(dbus.service.Object):
         with self.locks[iid]:
             if src_data:
                 self.set_transient(iid, "CLONING")
-            inst.save()
+            # from here the store's gc sees the instance (should one have removed its set since
+            # the pick, its first start fetches the set again)
+            with images.lock:
+                inst.save()
             try:
                 container.ensure_dirs(inst)
                 if src_data:
@@ -868,9 +878,9 @@ class Manager(dbus.service.Object):
     @dbus.service.method(paths.DBUS_IFACE, in_signature="", out_signature="s",
                          sender_keyword="sender", async_callbacks=("reply", "error"))
     def UpdateImages(self, sender, reply, error):
-        """Fetch newer builds of the installed Android versions (and sync stock's); returns
+        """Fetch newer builds of the devices' Android versions (and sync stock's); returns
         the versions updated, comma-separated."""
-        self.run_async("__images__", lambda: ",".join(images.update(self.images_in_use())), reply, error)
+        self.run_async("__images__", lambda: ",".join(images.update(self.images_in_use)), reply, error)
 
     @dbus.service.method(paths.DBUS_IFACE, in_signature="", out_signature="aa{ss}")
     def Images(self):
@@ -914,7 +924,7 @@ class Manager(dbus.service.Object):
                     try:
                         if images.stock_is_newer() and not images.stock_busy():
                             log.info("stock Waydroid images changed, syncing the image store")
-                            images.ensure_synced(self.images_in_use())
+                            images.ensure_synced(self.images_in_use)
                             log.info("image store now at %s", images.current_id())
                     except Exception as e:  # noqa: BLE001
                         log.warning("automatic image sync failed: %s", e)

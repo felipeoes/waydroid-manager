@@ -61,9 +61,12 @@ A version is downloaded the first time a device uses it, and all devices on it s
 
 - An x86_64 PC running Linux with a Wayland desktop (GNOME, KDE Plasma, …)
 - **Waydroid installed and set up**: you can already run `waydroid show-full-ui`
-- Kernel modules for the newer images: `squashfs` (Android 15), `erofs` (16, 17), `videodev` (17),
-  and `vkms` to render 14 or 17 in software. Ubuntu's and Debian's kernels have them all, and
-  `waydroid-manager doctor` checks.
+- Kernel modules for the newer images: `squashfs` (Android 15), `erofs` (16, 17) and `videodev`
+  (17). Ubuntu's and Debian's kernels have them all.
+- **Linux 6.19 or newer to render on NVIDIA, or to render 14 or 17 in software**: Android draws into
+  a hidden `vkms` device, which older kernels can't make (Ubuntu 26.04's kernel can, Ubuntu
+  24.04's and Debian 13's can't). Devices on another GPU work on any of them.
+  `waydroid-manager doctor` checks all of this.
 - For NVIDIA cards: NVIDIA's proprietary driver, see [Graphics](#graphics)
 - Optional: `wl-clipboard` for clipboard sharing
 
@@ -156,7 +159,7 @@ start) decides where Android draws:
 `waydroid-manager doctor` lists your GPUs and what Automatic picks.
 
 **On NVIDIA** devices need NVIDIA's proprietary driver (`nvidia` or `nvidia-open`) with its
-Vulkan driver. RAID: Shadow Legends runs at 60 fps there, against 9 in software.
+Vulkan driver, and Linux 6.19 or newer. RAID: Shadow Legends runs at 60 fps there, against 9 in software.
 - The first start on NVIDIA downloads [waydroid-nvidia](https://github.com/quinovax/waydroid-nvidia)'s
   renderer and Android drivers (about 25 MB).
 - Each running device has its own renderer process, which runs as you. Its log is

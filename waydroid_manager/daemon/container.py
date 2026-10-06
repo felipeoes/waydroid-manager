@@ -121,6 +121,12 @@ def android_of(inst):
     return stock_android() if inst.index == 0 else inst.get("android")
 
 
+def runs_stock_android(inst):
+    """Stock Waydroid's overlay, and what waydroid_script put there and in its properties (ARM
+    translation), were made for stock's own Android version."""
+    return android_of(inst) == stock_android()
+
+
 def finish_setup(inst):
     """Images without a setup wizard of their own (MindTheGapps' is left out: it crashes):
     mark the device set up, or Google Play's check-in never happens."""
@@ -128,14 +134,14 @@ def finish_setup(inst):
         attach(inst.id, ["/system/bin/cmd", "settings", "put"] + list(args), check=False)
 
 
-def select_image(inst, keep=()):
+def select_image(inst, in_use):
     """Pick the image set the instance runs: #0 stock's, any other the newest of its Android
-    version (downloaded first if there is none yet). Returns its directory."""
+    version (downloaded first if there is none yet). in_use: see images.gc. Returns its directory."""
     key = inst.get("android")
     if inst.index != 0 and not images.latest(key):
         images.install(key)
     with images.lock:   # the set is recorded before a gc can see it unused
-        cur = images.ensure_synced(keep) if inst.index == 0 else images.latest(key)
+        cur = images.ensure_synced(in_use) if inst.index == 0 else images.latest(key)
         if inst.image_id != cur:
             if inst.image_id:
                 log.info("%s: switching image set %s -> %s", inst.id, inst.image_id, cur)
@@ -300,6 +306,7 @@ def loop_entries():
 
 
 VKMS_DEVICE = "/sys/kernel/config/vkms/waydroid-manager"
+_vkms_lock = threading.Lock()   # starts run in parallel
 
 
 def render_for(inst):
@@ -326,19 +333,32 @@ def vkms_card():
     which minigbm can map for any use. Its one output is disconnected, so no desktop shows it,
     and our udev rule (loaded before it appears) tags it for GNOME to leave alone."""
     d = VKMS_DEVICE
-    if not os.path.isdir(d):
-        run(["udevadm", "control", "--reload"])
-        run(["modprobe", "vkms", "create_default_dev=0"])
-        for group in ("planes/plane", "crtcs/crtc", "encoders/encoder", "connectors/connector"):
-            os.makedirs(os.path.join(d, group))
-        for attr, value in (("planes/plane/type", "1"), ("connectors/connector/status", "2")):  # primary; disconnected
-            with open(os.path.join(d, attr), "w") as f:
-                f.write(value)
-        os.symlink(d + "/crtcs/crtc", d + "/planes/plane/possible_crtcs/crtc")
-        os.symlink(d + "/crtcs/crtc", d + "/encoders/encoder/possible_crtcs/crtc")
-        os.symlink(d + "/encoders/encoder", d + "/connectors/connector/possible_encoders/encoder")
-        with open(d + "/enabled", "w") as f:
-            f.write("1")
+    with _vkms_lock:
+        try:
+            enabled = _read(d + "/enabled").strip() == "1"
+        except OSError:
+            enabled = False
+        if not enabled:
+            # an older vkms ignores create_default_dev and makes its default device, whose
+            # connected output the desktop would show
+            if not gpu.vkms_supported():
+                raise RuntimeError("rendering on NVIDIA or in software (Android 14, 17) needs Linux 6.19 or "
+                                   "newer: older kernels' vkms can't make the hidden device Android draws into")
+            run(["udevadm", "control", "--reload"])
+            run(["modprobe", "vkms", "create_default_dev=0"])
+            # each step is skipped when done: this also completes a setup that failed partway
+            for group in ("planes/plane", "crtcs/crtc", "encoders/encoder", "connectors/connector"):
+                os.makedirs(os.path.join(d, group), exist_ok=True)
+            for attr, value in (("planes/plane/type", "1"), ("connectors/connector/status", "2")):  # primary; disconnected
+                with open(os.path.join(d, attr), "w") as f:
+                    f.write(value)
+            for target, link in (("crtcs/crtc", "planes/plane/possible_crtcs/crtc"),
+                                 ("crtcs/crtc", "encoders/encoder/possible_crtcs/crtc"),
+                                 ("encoders/encoder", "connectors/connector/possible_encoders/encoder")):
+                if not os.path.lexists(os.path.join(d, link)):
+                    os.symlink(os.path.join(d, target), os.path.join(d, link))
+            with open(d + "/enabled", "w") as f:
+                f.write("1")
     cards = glob.glob("/sys/devices/faux/waydroid-manager/drm/card*")
     if not cards:
         raise RuntimeError("software rendering needs the kernel's vkms module")
@@ -385,8 +405,7 @@ def mount_rootfs(inst, images_dir, gpu_layers=()):
     sdk = stock.read_prop_file(rootfs + "/system/build.prop", "ro.build.version.sdk")
     arm = armtrans.layer(inst.get("arm_translation"), sdk)
     shared = list(gpu_layers) + [d for d in (arm, images.gapps_layer(inst.image_id)) if d]
-    if os.path.isdir(paths.STOCK_OVERLAY) and \
-            (inst.index == 0 or sdk == images.read_cfg(images.current_id()).get("sdk")):
+    if os.path.isdir(paths.STOCK_OVERLAY) and runs_stock_android(inst):
         shared.append(paths.STOCK_OVERLAY)
     lowers = [os.path.join(inst.dir, "overlay")] + [d for d in shared if d == paths.STOCK_OVERLAY or
                                                     os.path.isdir(os.path.join(d, "system"))]
@@ -440,29 +459,40 @@ def host_timezone():
         return ""
 
 
+def stock_props(inst, arm, mode):
+    """Stock Waydroid's [properties] a start keeps (arm, mode: see write_props)."""
+    kind = inst.get("arm_translation")
+    stock_way = runs_stock_android(inst)
+    out = {}
+    for k, v in stock.load_stock_cfg()["properties"].items():
+        # stock's graphics choice holds while #0 renders as stock does; elsewhere ours follow
+        # the Graphics setting
+        if k in GRAPHICS_PROPS and not (inst.index == 0 and graphics_key(inst, mode) == "gpu auto"):
+            continue
+        # its ARM translation (waydroid_script's) is in its overlay, made for stock's Android
+        if k in armtrans.ALL_PROPS and (arm or kind == "none" or not stock_way):
+            continue
+        out[k] = v
+    return out
+
+
 def write_props(inst, session, arm, render=("gpu", None)):
     """Generate waydroid_base.prop and waydroid.prop for this start. arm: the mounted ARM
-    translation layer (None: off, or its download failed and stock's props stay). render: see
-    render_for."""
+    translation layer (None: off, or none of ours: then stock's own stays on stock's Android,
+    the image's own elsewhere). render: see render_for."""
     # Effective config: stock [properties], then ours (the image's needs), then the instance's own
     eff = configparser.ConfigParser(interpolation=None)
     eff.read_dict(inst.cfg)
-    stock_props = stock.load_stock_cfg()["properties"]
-    eff["properties"] = {}
-    for k, v in stock_props.items():
-        if k not in GRAPHICS_PROPS:     # stock's own choice; ours follow the Graphics setting
-            eff["properties"][k] = v
+    mode, node = render
     kind = inst.get("arm_translation")
+    eff["properties"] = stock_props(inst, arm, mode)
     if arm:
         eff["properties"].update(armtrans.PROPS[kind])
-    elif kind == "none":  # also switches off a translation waydroid_script gave stock Waydroid
-        for k in armtrans.ALL_PROPS:
-            eff["properties"].pop(k, None)
-        eff["properties"]["ro.dalvik.vm.native.bridge"] = "0"   # and the image's own
+    elif kind == "none":
+        eff["properties"]["ro.dalvik.vm.native.bridge"] = "0"   # also switches off the image's own
     key = android_of(inst)
     if key:
         eff["properties"].update(catalog.get(key, "props", {}))
-    mode, node = render
     if mode == "gpu" and node:
         eff["waydroid"]["drm_device"] = node        # stock's props follow the picked GPU
     if mode == "vkms":
@@ -526,14 +556,14 @@ def graphics_key(inst, mode):
     return "gpu " + inst.get("gpu") if mode == "gpu" else mode
 
 
-def start(inst, net, hosts, session_in, uid, keep_images=(), cpus_busy=list):
+def start(inst, net, hosts, session_in, uid, in_use, cpus_busy=list):
     """Bring the container up. session_in: validated dict from the session process.
-    keep_images: every instance's image set (the store's gc keeps them).
-    cpus_busy(): the other running or starting instances' (cpus limit, pinned CPUs)."""
+    in_use: see images.gc. cpus_busy(): the other running or starting instances' (cpus limit,
+    pinned CPUs)."""
     pw = pwd.getpwuid(uid)
     if inst.index == 0:
         _stock_stopped()
-    images_dir = select_image(inst, keep_images)
+    images_dir = select_image(inst, in_use)
     if inst.index != 0 and catalog.get(inst.get("android"), "videodev"):
         ensure_videodev()
     if inst.index == 0 and inst.image_id != images.stock_image_id():

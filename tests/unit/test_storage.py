@@ -52,10 +52,6 @@ class XapkInstallTest(unittest.TestCase):
             storage._install_xapk(types.SimpleNamespace(id="1"), io.BytesIO(b"nope"))
 
 
-if __name__ == "__main__":
-    unittest.main()
-
-
 class ShaderCacheTest(unittest.TestCase):
     def test_apps_shader_caches_go_and_nothing_through_a_symlink(self):
         with tempfile.TemporaryDirectory() as d:
@@ -73,3 +69,7 @@ class ShaderCacheTest(unittest.TestCase):
             storage.clear_shader_caches(os.path.join(d, "data"))
             left = sorted(os.path.relpath(os.path.join(r, f), d) for r, _, fs in os.walk(d) for f in fs)
             self.assertEqual(left, ["data/data/app/code_cache/kept", "outside/com.android.skia.shaders_cache"])
+
+
+if __name__ == "__main__":
+    unittest.main()

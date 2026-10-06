@@ -6,6 +6,7 @@ import secrets
 import shutil
 import sqlite3
 import stat
+import tempfile
 
 from .. import paths
 from .util import attach, log, open_beneath, run, umount_tree
@@ -117,24 +118,37 @@ def reset_ids_online(iid):
     return out
 
 
+GSF_DB = "data/com.google.android.gsf/databases/gservices.db"
+GSF_DB_MAX = 64 * 1024 ** 2
+
+
 def gsf_id(inst):
     """The Google Services Framework ID (decimal) used for device registration, or ''.
-    Read from GSF's database: Android's own provider query answers nothing on 14 and newer."""
-    try:
-        fd = open_beneath(inst.data_dir, "data/com.google.android.gsf/databases/gservices.db", os.O_RDONLY)
-    except OSError:
-        return ""
-    try:
-        # immutable: no lock or journal files are looked up next to the /proc path
-        db = sqlite3.connect("file:/proc/self/fd/{}?mode=ro&immutable=1".format(fd), uri=True)
+    Read from GSF's database: Android's own provider query answers nothing on 14 and newer.
+    The database and its write-ahead log (GMS keeps recent rows there) are read from a private
+    copy: Android's files are only ever read, and a FIFO or a huge file planted there is refused."""
+    with tempfile.TemporaryDirectory() as tmp:
+        for suffix in ("", "-wal"):
+            try:
+                fd = open_beneath(inst.data_dir, GSF_DB + suffix, os.O_RDONLY | os.O_NONBLOCK)
+            except OSError:
+                if suffix:
+                    continue        # no log: everything is in the database
+                return ""
+            with os.fdopen(fd, "rb") as src:
+                st = os.fstat(fd)
+                if not stat.S_ISREG(st.st_mode) or st.st_size > GSF_DB_MAX:
+                    return ""
+                with open(os.path.join(tmp, "gservices.db" + suffix), "wb") as out:
+                    shutil.copyfileobj(src, out)
         try:
-            row = db.execute("SELECT value FROM main WHERE name = 'android_id'").fetchone()
-        finally:
-            db.close()
-    except sqlite3.Error:
-        return ""
-    finally:
-        os.close(fd)
+            db = sqlite3.connect(os.path.join(tmp, "gservices.db"))
+            try:
+                row = db.execute("SELECT value FROM main WHERE name = 'android_id'").fetchone()
+            finally:
+                db.close()
+        except sqlite3.Error:
+            return ""
     return row[0] if row and str(row[0]).isdigit() else ""
 
 

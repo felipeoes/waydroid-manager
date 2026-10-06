@@ -22,8 +22,13 @@ mv "$OLD" "$NEW"
 for f in "$NEW"/instances/*/instance.cfg; do
     [ -f "$f" ] && sed -i "s|$OLD/|$NEW/|g" "$f"
 done
+# The Android version of an API level stock Waydroid's images can have (10 isn't offered)
+android_of() {
+    case "$1" in 30) echo 11 ;; 33) echo 13 ;; esac
+}
 # Its image sets are copies of stock Waydroid's images: describe them as the daemon's sync does
-# (image.cfg), so #0 knows its Android and devices of that version reuse the set
+# (image.cfg), so #0 knows its Android. A set of the official GAPPS builds is also one of its
+# version, as the daemon's install adopts it: the devices on it keep it, offline too.
 ota="$(sed -n 's/^system_ota *= *//p' /var/lib/waydroid/waydroid.cfg 2>/dev/null)"
 mnt="$(mktemp -d)"
 for d in "$NEW"/images/*; do
@@ -35,8 +40,26 @@ for d in "$NEW"/images/*; do
     fi
     id="${d##*/}"
     printf '[image]\nsdk = %s\nbuilt = %s\nstock = true\nchannel = %s\n' "${sdk:-0}" "${id%%-*}" "$ota" > "$d/image.cfg"
+    a="$(android_of "$sdk")"
+    if [ -n "$a" ] && [ "$ota" = https://ota.waydro.id/system/lineage/waydroid_x86_64/GAPPS.json ]; then
+        echo "android = $a" >> "$d/image.cfg"
+    fi
 done
 rmdir "$mnt"
+# Each device keeps the Android its data is (a device without one would get 13, for good)
+for f in "$NEW"/instances/*/instance.cfg; do
+    [ -f "$f" ] && ! grep -q '^android *=' "$f" || continue
+    index="$(sed -n 's/^index *= *//p' "$f")"
+    [ "$index" != 0 ] || continue
+    sdk="$(sed -n 's/^sdk *= *//p' "$NEW/images/$(sed -n 's/^image_id *= *//p' "$f")/image.cfg" 2>/dev/null)"
+    a="$(android_of "$sdk")"
+    if [ -n "$a" ]; then
+        sed -i "/^\[instance\]\$/a android = $a" "$f"
+    else
+        echo "waydroid-manager: #$index runs an Android Waydroid Manager doesn't offer (API level ${sdk:-unknown}):" \
+             "its first start moves its data to Android 13" >&2
+    fi
+done
 if [ -f /etc/waydroid-multi/daemon.conf ]; then
     mkdir -p /etc/waydroid-manager
     sed 's/wdmulti0/wdm0/' /etc/waydroid-multi/daemon.conf > /etc/waydroid-manager/daemon.conf

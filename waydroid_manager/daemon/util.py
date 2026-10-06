@@ -2,7 +2,9 @@
 """Small root-side helpers: running commands, mounts, attaching to containers."""
 import ctypes
 import ctypes.util
+import glob
 import hashlib
+import http.client
 import logging
 import os
 import shutil
@@ -48,12 +50,16 @@ def run(cmd, check=True, env=None, input=None, timeout=300):
 
 def download(url, sha256, dest, what, attempts=5):
     """Fetch url to dest unless dest already has the expected sha256; returns dest. An
-    interrupted download resumes (from dest.part, also on the next call).
-    Callers serialize calls for the same dest (they share its temp file)."""
+    interrupted download resumes (also on the next call) from a part file named by the hash:
+    one of another build is dropped, never extended.
+    Callers serialize calls for the same dest (they share its part files)."""
     if os.path.isfile(dest) and sha256_file(dest) == sha256:
         return dest
     log.info("downloading %s", what)
-    part = dest + ".part"
+    part = "{}.{}.part".format(dest, sha256[:16])
+    for old in glob.glob(glob.escape(dest) + ".*.part"):
+        if old != part:
+            os.unlink(old)
     if os.path.isfile(part) and sha256_file(part) == sha256:
         attempts = 0          # finished before (a range past the end would fail)
     for attempt in range(attempts):
@@ -62,8 +68,13 @@ def download(url, sha256, dest, what, attempts=5):
         try:
             with urllib.request.urlopen(req, timeout=60) as r, open(part, "ab" if r.status == 206 else "wb") as f:
                 shutil.copyfileobj(r, f, 1 << 20)
+                # a server closing the connection early ends the copy as if it were complete
+                size = r.headers.get("Content-Range", "").rpartition("/")[2] if r.status == 206 \
+                    else r.headers.get("Content-Length") or ""
+                if size.isdigit() and f.tell() < int(size):
+                    raise OSError("the connection closed at {} of {} bytes".format(f.tell(), size))
             break
-        except OSError as e:
+        except (OSError, http.client.HTTPException) as e:   # IncompleteRead: a chunked transfer cut short
             if attempt == attempts - 1:
                 raise CommandError("cannot download {}: {}".format(what, e))
             log.info("download of %s interrupted (%s); resuming", what, e)

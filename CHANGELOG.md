@@ -30,7 +30,8 @@ follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions f
   Ti", "GPU 1: AMD Radeon Graphics"… (`doctor` lists them with the value to set). A GPU other than
   the one showing a desktop on NVIDIA works too: that GPU copies each frame into memory the desktop
   can show. Android 14 and 17 render in software into a hidden virtual display device (the
-  kernel's vkms module) that no desktop shows. Android 15 needs a GPU: its image can't show
+  kernel's vkms module) that no desktop shows; it needs Linux 6.19 or newer, as rendering on NVIDIA
+  does. Android 15 needs a GPU: its image can't show
   frames rendered on the CPU. `doctor` reports which applies. When a device
   starts on another renderer than last time, its apps' shader caches are cleared: Android 13's
   launcher crashed in a loop on caches another renderer had left.
