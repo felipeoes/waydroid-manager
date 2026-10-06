@@ -292,8 +292,11 @@ class Session:
         if os.path.lexists(sock):
             os.unlink(sock)
         host = self.renderer_host
+        # CPU-readable buffers (screen captures: the task snapshot of every activity switch) come
+        # from system memory: SurfaceFlinger rendering into NVIDIA's own LINEAR memory ends in
+        # Xid 69 and Android's display restarts (docs/spike-findings.md)
         env = dict(os.environ, RENDER_SERVER_EXEC_PATH=host + "/bin/virgl_render_server",
-                   LD_LIBRARY_PATH=host + "/lib")
+                   LD_LIBRARY_PATH=host + "/lib", WAYDROID_NVIDIA_CPU_LINEAR="0")
         os.makedirs(paths.user_cache_dir(), exist_ok=True)
         log_path = os.path.join(paths.user_cache_dir(), "renderer-{}.log".format(self.iid))
         with open(log_path, "ab") as out:

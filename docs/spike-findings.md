@@ -226,19 +226,39 @@ They render on the CPU into buffers of a hidden vkms device instead:
 - The daemon clears the apps' shader caches when a device's renderer changes. #0 shares its data with
   stock Waydroid (software here): when #0 renders otherwise, they are cleared at its start and stop.
 
-## Android 15 on NVIDIA: Xid 69 on screen transitions (open)
-- Opening a new activity (any Settings sub-page) on 15 ends in `NVRM: Xid 69 … Class 0000ce97,
-  Offset 000019d0, Data 0000003c` from SurfaceFlinger's context; the renderer reports
-  VK_ERROR_DEVICE_LOST and restarts, SurfaceFlinger aborts in `vn_relax`, and Android's display
-  restarts. Method 0x19D0 of the 3D class is `CLEAR_SURFACE` (NVIDIA open-gpu-doc), data 0x3C =
-  clear R, G, B and A of colour target 0: the GPU rejects a colour clear.
-- 15's Shell builds a "Right Edge Extension" layer for activity transitions (a 1 px wide capture
-  of the window's edge through SurfaceFlinger, stretched); 17 makes the same transition without one
-  and doesn't fault. Not the cause: the RenderEngine backend (skiavkthreaded faults too), the
-  animation scale (0 still builds the extension), Settings' activity embedding.
-- waydroid-nvidia's own telemetry names this fingerprint (Class 0xC197 Offset 0x19D0 Data 0x3C) as
-  a recurring, unattributed fault. Candidates for a fix: a framework overlay dropping `<extend>`
-  from 15's activity animations, or Venus skipping degenerate clears.
+## NVIDIA: Xid 69 on screen captures
+- **Symptom:** opening or leaving a screen (Settings' sub-pages, toggling Wi-Fi there) restarted
+  Android's display: `NVRM: Xid 69 … Class 0000ce97, Offset 000019d0, Data 0000003c` from
+  SurfaceFlinger's context, VK_ERROR_DEVICE_LOST, SurfaceFlinger aborting in `vn_relax`, and
+  system_server restarting with it.
+  - It hit 15 at 1280x720, 13 in portrait (720x1280 at 320 dpi, not at 1280x720) and `screencap`.
+  - Method 0x19D0 of the 3D class is `CLEAR_SURFACE` (NVIDIA open-gpu-doc), data 0x3C clears R, G,
+    B and A of colour target 0.
+- **Cause:** SurfaceFlinger rendering into a CPU-readable buffer, which waydroid-nvidia's renderer
+  allocates as NVIDIA's own LINEAR memory (`path=nvidia-linear-hostvis`).
+  - Those buffers are screen captures: the task snapshot taken on every activity switch,
+    `screencap`, 15's edge-extension capture.
+  - An instrumented Venus showed SurfaceFlinger importing one LINEAR colour target (720x1280,
+    usage 0x97) right before the fault.
+  - waydroid-nvidia's telemetry names this fingerprint (Class 0xC197 Offset 0x19D0 Data 0x3C)
+    without a cause. Its `WAYDROID_NVIDIA_CPU_LINEAR=0` switch exists to test this hypothesis.
+- **Fix:** the session starts each renderer with `WAYDROID_NVIDIA_CPU_LINEAR=0`, so CPU-readable
+  buffers come from system memory (udmabuf).
+  - No Xid over repeated runs on 13 (portrait) and 15, and screenshots come out correct.
+  - For 720x1280 that allocation fails without a log line, and Android falls back to a block-linear
+    buffer, which also renders cleanly.
+- **Not the cause:**
+  - the RenderEngine backend (skiavkthreaded faults too);
+  - the animation scale;
+  - Settings' activity embedding;
+  - the navigation bar;
+  - ANGLE's framebuffer fetch, advanced blend emulation and imageless framebuffers.
+- **The validation layer's `VUID-VkRenderPassBeginInfo-framebuffer-04627` is a separate mismatch.**
+  It's the INPUT_ATTACHMENT usage Venus strips from LINEAR AHB imports while ANGLE's imageless
+  framebuffer keeps it. Its errors preceded each fault, but with imageless framebuffers off they
+  went away and the Xid stayed.
+- Android caps a property value at 91 characters, and Android drops a longer
+  `debug.angle.feature_overrides_disabled` silently.
 
 ## Measuring
 - `dumpsys SurfaceFlinger --latency` is empty on 16 and newer. `dumpsys SurfaceFlinger --timestats
