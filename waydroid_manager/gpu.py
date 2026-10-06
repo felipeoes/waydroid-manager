@@ -59,7 +59,7 @@ def nvidia_display():
 def mode(android, setting):
     """The rendering of a device of this Android version (None: stock Waydroid's own, on Android
     10) with this gpu setting, on this host. The daemon refuses what can't run (nvidia without
-    a build or driver, software where it can't render)."""
+    a build or driver)."""
     known = android in catalog.VERSIONS
     if setting == "nvidia" or setting == "auto" and known and catalog.get(android, "nvidia") \
             and os.path.exists("/dev/nvidiactl") and nvidia_display():

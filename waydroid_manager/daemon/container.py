@@ -44,6 +44,10 @@ def stock_args(inst, config=None):
 
 STOCK_UNIT = "waydroid-container.service"
 STOCK_WAS_ACTIVE = os.path.join(paths.RUN_DIR, "stock-was-active")  # release_stock starts it again
+# No device-mapper: Android 14 and 15's apexd maps its APEXes there when it can, and those
+# mappings belong to the host: they outlive the container and collide between devices. Without
+# it apexd mounts its loop devices directly, as 16 and 17 do.
+DEVICE_DENY = "lxc.cgroup2.devices.allow = a\nlxc.cgroup2.devices.deny = c 10:236 rwm\n"   # alone, a deny allows nothing
 APPARMOR_PROFILE = "lxc-waydroid-manager"   # lxc-start may only switch to lxc-* profiles
 APPARMOR_FILE = os.path.join(paths.RUN_DIR, "apparmor-profile")
 
@@ -219,7 +223,7 @@ def write_lxc_config(inst, net, cpus_busy=(), render=("gpu", None)):
         apparmor_profile=load_apparmor_profile(),
         poststop_hook=paths.POSTSTOP_SCRIPT,
         netup_hook=paths.NET_UP_SCRIPT if net.cfg.isolate else None, limits=limits)
-    _write(os.path.join(inst.lxc_dir, "config"), text)
+    _write(os.path.join(inst.lxc_dir, "config"), text + DEVICE_DENY)
     shutil.copy(stock.seccomp_profile(), os.path.join(inst.lxc_dir, "waydroid.seccomp"))
     nodes = stock.tools().helpers.lxc.generate_nodes_lxc_config(a)
     if catalog.get(inst.get("android"), "loop") and inst.index != 0:
@@ -280,7 +284,7 @@ LOOP_DEVICES = 256
 
 
 def loop_entries():
-    """Android 16 and 17's apexd mounts its APEXes through loop devices: the container gets
+    """Android 14 to 17's apexd mounts its APEXes through loop devices: the container gets
     loop-control and the host's loop nodes, at /dev/block/loopN where apexd looks for them.
     The kernel makes a node only once its device is used, so missing ones are made here."""
     # ponytail: shares every host loop device with the (already privileged) container;
@@ -307,8 +311,6 @@ def render_for(inst):
             raise RuntimeError("Android {} has no NVIDIA build; set Graphics to Automatic or Software".format(key))
         if not nvidia.available():
             raise RuntimeError("NVIDIA rendering needs NVIDIA's proprietary driver")
-    if mode == "software" and key and catalog.get(key, "software", True) is False:
-        raise RuntimeError("Android {} can't render in software: it needs a GPU".format(key))
     return mode, (vkms_card() if mode in ("vkms", "nvidia") else None)
 
 
@@ -455,6 +457,7 @@ def write_props(inst, session, arm, render=("gpu", None)):
     mode, card = render
     if mode == "vkms":
         eff["properties"].update(gpu.VKMS_PROPS)
+        eff["properties"].update(catalog.get(key, "software_props", {}))
     elif mode == "software":
         eff["properties"].update(gpu.SOFTWARE_PROPS)
     elif mode == "nvidia":

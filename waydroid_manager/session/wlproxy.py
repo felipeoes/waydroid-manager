@@ -807,6 +807,17 @@ class Session:
             return self._viewport_request(obj, op, r)
         if iface == "wl_subsurface":
             return self._subsurface_request(obj, op, r)
+        if iface == "wl_shm" and op == P.WL_SHM_CREATE_POOL:
+            self.objs[r.n()] = "wl_shm_pool"
+            return None
+        if iface == "wl_shm_pool" and op == P.WL_SHM_POOL_CREATE_BUFFER:
+            buf, offset, width, height, stride, fmt = r.n(), r.i(), r.i(), r.i(), r.i(), r.u()
+            if fmt >= 0x80000000:
+                # Android 14 and 15's hwcomposer names an -errno format when it lacks a buffer's
+                # metadata (fixed upstream in android_hardware_waydroid 1761e9a7af). Its pixels come
+                # from glReadPixels then: RGBA in memory, which wl_shm calls ABGR8888
+                return [msg(obj, op, "niiiiu", buf, offset, width, height, stride, P.DRM_FORMAT_ABGR8888)]
+            return None
         if self.cfg.cpu_buffers and iface in ("zwp_linux_dmabuf_v1", "zwp_linux_buffer_params_v1"):
             return self._dmabuf_request(obj, iface, op, r)
         return None

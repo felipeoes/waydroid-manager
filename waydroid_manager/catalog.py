@@ -26,23 +26,25 @@ MTG14 = ("https://github.com/s1204IT/MindTheGappsBuilder/releases/download/20250
 #   gb           approximate download size, for display
 #   gapps        "image" (built in) | "mtg14" (MindTheGapps layer) | "gms_apex" (unpack the image's GMS APEX)
 #   provision    the image has no setup wizard of its own: mark the device set up after first boot
-#   software     how it renders on the CPU: stock Waydroid's way (gralloc.default, the default), "vkms"
-#                (17 has no gralloc.default mapper: see gpu.VKMS_PROPS), or False: it can't (14 and
-#                15's hwcomposer can't show gralloc.default buffers)
-#   nvidia       guest build for the NVIDIA path (see daemon/gpu.py), or None
-#   props        Android properties the image always needs; nvidia_props on the NVIDIA path
+#   software     how it renders on the CPU: stock Waydroid's way (gralloc.default, the default) or
+#                "vkms" (see gpu.VKMS_PROPS): 17 has no gralloc.default mapper, and 14 and 15's
+#                hwcomposer can't show gralloc.default buffers
+#   nvidia       guest build for the NVIDIA path (see daemon/nvidia.py), or None
+#   props        Android properties the image always needs; nvidia_props on the NVIDIA path,
+#                software_props on the vkms path
 #   loop         apexd needs loop devices in the container
 #   videodev     ueventd needs /sys/class/video4linux on the host
 #   experimental shown as such: a single maintainer's build or a pre-release
 VERSIONS = {
     "11": dict(sdk=30, ota=_OFFICIAL + ("18.1",), gb=1.1),
     "13": dict(sdk=33, ota=_OFFICIAL + ("20.0",), gb=1.4, nvidia="full13"),
-    "14": dict(sdk=34, gb=1.1, gapps="mtg14", provision=True, software=False, nvidia="venus",
+    "14": dict(sdk=34, gb=1.1, gapps="mtg14", provision=True, software="vkms", nvidia="venus", loop=True,
                zip=("https://github.com/WayDroid-ATV/waydroid-builds/releases/download/20260125/"
                     "lineage-21.0-20260125-UNOFFICIAL-waydroid_x86_64.zip",
                     "68019da4e0629d9cb1ba5abb0ec385091a2172e441aec78768f7e473d6f581eb", "20260125"),
-               props={"gralloc.override": "0", "ro.hardware.gralloc": "minigbm_gbm_mesa"}),
-    "15": dict(sdk=35, gb=1.2, gapps="mtg14", software=False, nvidia="venus", experimental=True,
+               props={"gralloc.override": "0", "ro.hardware.gralloc": "minigbm_gbm_mesa"},
+               software_props={"ro.hardware.gralloc": "minigbm_generic"}),
+    "15": dict(sdk=35, gb=1.2, gapps="mtg14", software="vkms", nvidia="venus", experimental=True, loop=True,
                zip=("https://huggingface.co/datasets/Minhmc2077/My_Binary_Build/resolve/main/"
                     "LineageOS-22.2-WayDroidx86_64-Vanilla.zip",
                     "3febfdb12f7a930315272df102b9907ffc65fc21570e5b6d005bbd4de7f6685c", "20261005"),

@@ -23,7 +23,7 @@ class CatalogTest(unittest.TestCase):
         for key, v in catalog.VERSIONS.items():
             self.assertTrue(("ota" in v) != ("zip" in v), key)    # exactly one source
             self.assertIn(v.get("gapps", "image"), ("image", "mtg14", "gms_apex"), key)
-            self.assertIn(v.get("software", True), (True, False, "vkms"), key)
+            self.assertIn(v.get("software", True), (True, "vkms"), key)
 
     def test_android_is_chosen_at_creation(self):
         self.assertEqual(validate_setting("android", "16"), "16")

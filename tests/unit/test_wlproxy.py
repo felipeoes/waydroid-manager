@@ -537,6 +537,18 @@ class CpuBufferTest(unittest.TestCase):
         self.assertEqual(len(fds), 1)
 
 
+class ShmFormatTest(unittest.TestCase):
+    def test_errno_format_becomes_abgr8888(self):
+        h = Harness()
+        h.setup_globals()
+        h.req(msg(REG, P.WL_REGISTRY_BIND, "usun", 7, "wl_shm", 1, 30))
+        h.req(msg(30, P.WL_SHM_CREATE_POOL, "ni", 31, 4096), fds=[os.memfd_create("pool")])
+        (o, op, p), = h.req(msg(31, P.WL_SHM_POOL_CREATE_BUFFER, "niiiiu", 32, 0, 16, 16, 64, 0xffffffea))
+        self.assertEqual(args(p, "niiiiu")[-1], P.DRM_FORMAT_ABGR8888)
+        (o, op, p), = h.req(msg(31, P.WL_SHM_POOL_CREATE_BUFFER, "niiiiu", 33, 0, 16, 16, 64, 1))
+        self.assertEqual(args(p, "niiiiu")[-1], 1)          # a real format is left alone
+
+
 class FileDropTest(unittest.TestCase):
     """Files dropped on the window are the proxy's: the APKs among them are reported for installing."""
 
