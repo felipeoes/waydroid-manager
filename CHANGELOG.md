@@ -45,6 +45,8 @@ follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions f
   Properties), each on its own short page, instead of one long page to scroll.
 - In the manager, the instance list scrolls under its header row (Select all, Start, Stop,
   Delete), which stays in view.
+- The manager's state dot sits before the state in each row ("● Running"), so the rows' checkboxes
+  line up with Select all at the left edge.
 - **waydroid-multi is now Waydroid Manager.** The command is `waydroid-manager`, the package
   `waydroid-manager`, the app "Waydroid Manager", and the bridge `wdm0`. Installing it over
   waydroid-multi 0.5 stops the running instances once and moves them, with their images and network

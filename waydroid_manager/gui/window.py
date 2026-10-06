@@ -16,7 +16,8 @@ from .pickapk import apk_dialog  # noqa: E402
 
 ACTIVE = ("RUNNING", "FROZEN")
 BUSY = ("STARTING", "STOPPING", "CLONING", "DELETING")
-STATE_STYLE = {"RUNNING": "success", "FROZEN": "warning", "STOPPED": "dim-label"}
+# The state dot's colour, as a style class (other states: accent; None: the text's own colour)
+STATE_STYLE = {"RUNNING": "success", "FROZEN": "warning", "STOPPED": None}
 STATE_LABEL = {"RUNNING": "Running", "FROZEN": "Paused", "STOPPED": "Stopped", "STARTING": "Starting…",
                "STOPPING": "Stopping…", "CLONING": "Cloning…", "DELETING": "Deleting…"}
 # install.sh puts the uninstaller next to the package (PREFIX/lib/waydroid-manager/)
@@ -32,20 +33,22 @@ def gigabytes(n):
         return ""
 
 
-def describe(info):
+def describe(info, dot="●"):
+    """A row's subtitle as markup, "#1 · Android 13 · ● Running · 2 CPU, 4 GB"; dot: the dot's markup."""
+    esc = GLib.markup_escape_text
     parts = []
     if info.get("index"):
-        parts.append("#" + info["index"])
+        parts.append(esc("#" + info["index"]))
     if info.get("android"):
-        parts.append("Android " + info["android"])
-    parts.append(STATE_LABEL.get(info["state"], info["state"].title()))
+        parts.append(esc("Android " + info["android"]))
+    parts.append(dot + " " + esc(STATE_LABEL.get(info["state"], info["state"].title())))
     lim = []
     if info.get("cpus"):
         lim.append("{} CPU".format(info["cpus"]))
     if info.get("memory"):
         lim.append(info["memory"].replace("G", " GB"))
     if lim:
-        parts.append(", ".join(lim))
+        parts.append(esc(", ".join(lim)))
     return " · ".join(parts)
 
 
@@ -57,7 +60,7 @@ def _flat_button(icon, tooltip, cb):
 
 
 class BaseRow(Adw.ActionRow):
-    """Status dot, spinner, start/show and stop buttons, and a ⋮ menu built on demand."""
+    """Spinner, start/show and stop buttons, and a ⋮ menu built on demand; the state dot is in the subtitle."""
 
     def __init__(self, win, info, check=False):
         super().__init__()
@@ -69,8 +72,6 @@ class BaseRow(Adw.ActionRow):
             self.check.connect("toggled", lambda *_: win.selection_changed())
             self.add_prefix(self.check)
             self.set_activatable_widget(self.check)
-        self.dot = Gtk.Label(label="●", valign=Gtk.Align.CENTER)
-        self.add_prefix(self.dot)
         # Adw.Spinner needs libadwaita 1.6; Ubuntu 24.04 has 1.5
         self.spinner = Adw.Spinner() if hasattr(Adw, "Spinner") else Gtk.Spinner(spinning=True)
         self.spinner.set_valign(Gtk.Align.CENTER)
@@ -106,10 +107,7 @@ class BaseRow(Adw.ActionRow):
     def update(self, info):
         self.info = info
         st = info["state"]
-        self.set_subtitle(GLib.markup_escape_text(self.subtitle()))
-        for c in ("success", "warning", "dim-label", "accent"):
-            self.dot.remove_css_class(c)
-        self.dot.add_css_class(STATE_STYLE.get(st, "accent"))
+        self.set_subtitle(self.subtitle())
         self.disk_label.set_label(gigabytes(info.get("disk_used")))
         self.disk.set_visible(bool(self.disk_label.get_label()))
         busy = st in BUSY or info["id"] in self.win.busy
@@ -124,7 +122,7 @@ class BaseRow(Adw.ActionRow):
             self.play.set_tooltip_text("Start")
 
     def subtitle(self):
-        return describe(self.info)
+        return describe(self.info, self.win.dot(self.info["state"]))
 
 
 class InstanceRow(BaseRow):
@@ -197,13 +195,11 @@ class MainWindow(Adw.ApplicationWindow):
         new_btn.connect("clicked", lambda *_: self.new_instance())
         self.group.set_header_suffix(new_btn)
         page.append(self.group)
-        # Batch actions on the checked instances: the list's header row, its checkbox in line with
-        # the rows' (an invisible dot stands in for the status dot)
+        # Batch actions on the checked instances: the list's header row, its checkbox in line with the rows'
         self.batch_row = Adw.ActionRow(title="Select all")
         self.select_all = Gtk.CheckButton(valign=Gtk.Align.CENTER)
         self.select_all.connect("toggled", self._toggle_all)
         self.batch_row.add_prefix(self.select_all)
-        self.batch_row.add_prefix(Gtk.Label(label="●", valign=Gtk.Align.CENTER, opacity=0))
         self.batch_row.set_activatable_widget(self.select_all)
         for attr, label, style, cb in (("batch_start", "Start", "suggested-action", self.start_selected),
                                        ("batch_stop", "Stop", None, self.stop_selected),
@@ -233,6 +229,11 @@ class MainWindow(Adw.ApplicationWindow):
                                         vexpand=True, child=self.list))
         self.group.add(table)
         self.stack.add_named(Adw.Clamp(maximum_size=1200, child=page), "list")
+        # The state dots are text in the rows' subtitles, so markup needs their colours: read from hidden
+        # labels with the style classes, which follow the theme
+        self.dot_colors = {c: Gtk.Label(css_classes=[c], visible=False) for c in ("success", "warning", "accent")}
+        for probe in self.dot_colors.values():
+            page.append(probe)
 
         self.error_page = Adw.StatusPage(icon_name="dialog-error-symbolic", title="Daemon not available",
                                          description="Start it with: sudo systemctl start waydroid-manager")
@@ -288,6 +289,16 @@ class MainWindow(Adw.ApplicationWindow):
             width = self.get_width() or 720
             height = self.get_content().measure(Gtk.Orientation.VERTICAL, width)[1]
             self.set_default_size(width, min(height, 800))
+
+    def dot(self, state):
+        """The state dot's markup."""
+        cls = STATE_STYLE.get(state, "accent")
+        if not cls:
+            return "●"
+        c = self.dot_colors[cls].get_color()
+        # libadwaita's colours can fall outside sRGB (light theme's success has red < 0): clamp them
+        rgb = (min(255, max(0, round(v * 255))) for v in (c.red, c.green, c.blue))
+        return '<span foreground="#{:02x}{:02x}{:02x}">●</span>'.format(*rgb)
 
     def toast(self, msg, timeout=4):
         t = Adw.Toast(title=GLib.markup_escape_text(msg))
