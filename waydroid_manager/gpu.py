@@ -24,7 +24,9 @@ NVIDIA_PROPS = {
     "ro.hardware.egl": "angle", "ro.hardware.vulkan": "virtio",
     "mesa.vn.debug": "vtest", "mesa.vtest.socket.name": "/dev/venus/venus.sock",
     "debug.hwui.renderer": "skiagl", "debug.renderengine.backend": "skiaglthreaded",
-    "debug.angle.feature_overrides_disabled": "supportsYUVSamplerConversion",
+    # no mutable-format swapchains: Mesa asks gralloc for such buffers with CPU_WRITE_RARELY
+    # (to force LINEAR), and NVIDIA can't render into LINEAR ones, so games' windows stay black
+    "debug.angle.feature_overrides_disabled": "supportsYUVSamplerConversion:supportsSwapchainMutableFormat",
     "persist.waydroid.use_subsurface": "false",
     "ro.surface_flinger.vsync_event_phase_offset_ns": "0", "ro.surface_flinger.vsync_sf_event_phase_offset_ns": "0",
     "ro.surface_flinger.max_frame_buffer_acquired_buffers": "3",
