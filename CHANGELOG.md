@@ -11,6 +11,7 @@ follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions f
   devices.
 - `adb reboot` (and any other reboot from inside Android) restarts the instance in its window
   instead of stopping it. Powering Android off still stops it.
+- Android 11's picture follows the window's size instead of running past the toolbar.
 
 ## [1.0.0] - 2026-10-06
 

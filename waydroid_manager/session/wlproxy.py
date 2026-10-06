@@ -496,6 +496,7 @@ class Window:
         self.pending_apply = False
         self.frame = None        # dict of our objects once created
         self.saved_zoom = None
+        self.own_vp = None       # our wp_viewport on the surface, when the HWC has none (Android 11)
 
 
 TRACE = os.environ.get("WDM_PROXY_TRACE") == "1"
@@ -641,7 +642,9 @@ class Session:
 
     def content_offset(self):
         a = self.area()
-        if a and self.res:
+        # ponytail: Android 11 draws on the toplevel itself, which can't move: its picture stays
+        # top-left when maximized or fullscreen; centring it needs a subsurface of our own
+        if a and self.res and not self.window.own_vp:
             dw, dh = self.content_size()
             return max(0, (a[0] - dw) // 2), max(0, (a[1] - dh) // 2)
         return 0, 0
@@ -764,6 +767,10 @@ class Session:
             self.viewports[new] = sid
             if sid in self.surfaces:
                 self.surfaces[sid].viewport = new
+            w = self.window
+            if w and w.own_vp and sid == w.surface:     # a surface has one viewport: ours goes
+                own, w.own_vp = w.own_vp, None
+                return [msg(own, P.WP_VIEWPORT_DESTROY), msg(obj, op, "no", new, sid)]
             return None
         if iface == "xdg_wm_base" and op == 3:          # pong
             t0 = self.pings.pop(r.u(), None)
@@ -1402,6 +1409,8 @@ class Session:
             return []
         if S.viewport and S.req_dest:
             out.append(msg(S.viewport, P.WP_VIEWPORT_SET_DESTINATION, "ii", *self.scaled_dest(S.id, *S.req_dest)))
+        elif not S.viewport and (w.own_vp or self._own_viewport()):
+            out.append(msg(w.own_vp, P.WP_VIEWPORT_SET_DESTINATION, "ii", *self.content_size()))
         for cid in S.children:
             c = self.surfaces.get(cid)
             if not c or c.parent != S.id:
@@ -1418,6 +1427,15 @@ class Session:
         if commit and not S.dirty:
             out.append(msg(S.id, P.WL_SURFACE_COMMIT))
         return out
+
+    def _own_viewport(self):
+        """Android 11's HWC draws on its toplevel's surface and scales nothing: the zoom needs a
+        viewport of ours there."""
+        vpr = self._bind("wp_viewporter", 1)
+        if vpr:
+            self.window.own_vp = self.new_id("viewport")
+            self.to_server(msg(vpr, P.WP_VIEWPORTER_GET_VIEWPORT, "no", self.window.own_vp, self.window.surface))
+        return self.window.own_vp
 
     def apply_now(self):
         # Computed now, so the dirty flags reflect everything the HWC has sent
@@ -1460,6 +1478,8 @@ class Session:
         w = self.window
         if not w:
             return
+        if w.own_vp:
+            self.to_server(msg(w.own_vp, P.WP_VIEWPORT_DESTROY))
         if w.frame:
             for key in ("tip_sub", "title_sub", "toolbar_sub", "border_sub", "border_vp"):
                 oid = w.frame.get(key)

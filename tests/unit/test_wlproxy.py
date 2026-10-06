@@ -185,6 +185,28 @@ class ZoomTest(unittest.TestCase):
         self.assertEqual(dests[V0], [960, 540])
         self.assertIn((S, P.WL_SURFACE_COMMIT), [(o, op) for o, op, _ in out])
 
+    def test_toplevel_without_viewport_gets_ours(self):
+        """Android 11's HWC draws on the toplevel's surface and gives it no viewport."""
+        h = Harness(zoom="50")
+        h.setup_globals()
+        h.req(msg(COMP, P.WL_COMPOSITOR_CREATE_SURFACE, "n", S),
+              msg(WM, P.XDG_WM_BASE_GET_XDG_SURFACE, "no", XS, S),
+              msg(XS, P.XDG_SURFACE_GET_TOPLEVEL, "n", TL),
+              msg(TL, P.XDG_TOPLEVEL_SET_APP_ID, "s", "Waydroid"),
+              msg(XS, P.XDG_SURFACE_SET_WINDOW_GEOMETRY, "iiii", 0, 0, 1280, 720))
+        out = h.req(msg(S, P.WL_SURFACE_COMMIT))
+        vp = h.s.window.own_vp
+        self.assertIn((h.s.my_globals["wp_viewporter"], P.WP_VIEWPORTER_GET_VIEWPORT), [(o, op) for o, op, _ in out])
+        self.assertEqual([args(p, "ii") for o, op, p in out if o == vp], [[640, 360]])
+        h.ev(msg(TL, P.XDG_TOPLEVEL_EV_CONFIGURE, "iia", 960, 540, struct.pack("=I", P.XDG_TOPLEVEL_STATE_RESIZING)),
+             msg(XS, P.XDG_SURFACE_EV_CONFIGURE, "u", 77))
+        out = h.req(msg(XS, P.XDG_SURFACE_ACK_CONFIGURE, "u", 77))
+        self.assertEqual([args(p, "ii") for o, op, p in out if o == vp], [[960, 540]])
+        # the HWC asking for one after all: ours goes first
+        out = h.req(msg(VPR, P.WP_VIEWPORTER_GET_VIEWPORT, "no", V0, S))
+        self.assertEqual([(o, op) for o, op, _ in out], [(vp, P.WP_VIEWPORT_DESTROY), (VPR, P.WP_VIEWPORTER_GET_VIEWPORT)])
+        self.assertIsNone(h.s.window.own_vp)
+
     def test_output_scale_normalised(self):
         h = self.h
         out = h.ev(msg(OUT, P.WL_OUTPUT_EV_SCALE, "i", 2))
