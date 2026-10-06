@@ -74,8 +74,12 @@ Tested on Ubuntu 26.04 with Waydroid 1.6 and GNOME 50, on an NVIDIA GeForce RTX 
 
 ### Ubuntu 24.04+ and Debian 13+
 
-Download `waydroid-manager_<version>_amd64.deb` from the
-[latest release](https://github.com/felipeoes/waydroid-manager/releases/latest), then:
+First set up Waydroid as [its install guide](https://docs.waydro.id/usage/install-on-desktops)
+says. That adds Waydroid's package repository, which this package needs: `waydroid`,
+`python3-gbinder` and `libglibutil` come only from there, not from Ubuntu's or Debian's own.
+Then download `waydroid-manager_<version>_amd64.deb` from the
+[latest release](https://github.com/felipeoes/waydroid-manager/releases/latest) and install it;
+apt installs everything else it needs (LXC, dnsmasq, the GTK libraries):
 
 ```sh
 sudo apt install ./waydroid-manager_*_amd64.deb

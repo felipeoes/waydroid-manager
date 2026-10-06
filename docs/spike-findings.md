@@ -114,7 +114,7 @@ Notes:
   iGPU).
 - **14/15 software mode:** the hwcomposer can't read gralloc-default buffer metadata (format 0) and
   sends `wl_shm` format −EINVAL. It's fixed in source (android_hardware_waydroid `1761e9a7af`) but not
-  in any published build. Solved later with vkms, below.
+  in any published build. Solved later for 14 with vkms, below; 15 still can't render in software.
 - **ATV 15:** a `c2.ffmpeg.dts.decoder` entry with two `<Type>`s trips
   `AudioCapabilities::getDefaultFormat` (ubsan). Fixed upstream (stagefright-plugins `a44e827c55`); the
   minhmc build includes it.
@@ -166,9 +166,9 @@ Same host. Every item below is in the code now.
   complain mode. lxc-start only switches to profiles named `lxc-*`, hence `lxc-waydroid-manager`.
 - A seccomp filter on the mount calls was tried first: it broke Android 16's apexd.
 
-## Software rendering on 14, 15 and 17: vkms
+## Software rendering on 14 and 17: vkms (not 15)
 17 has no gralloc.default mapper, and 14 and 15's hwcomposer can't show gralloc.default buffers.
-They render on the CPU into buffers of a hidden vkms device instead:
+14 and 17 render on the CPU into buffers of a hidden vkms device instead; 15 can't (below):
 - The device is made through configfs (`/sys/kernel/config/vkms/waydroid-manager`: one plane, crtc,
   encoder and connector). The connector is disconnected, so no desktop shows it, and a udev rule
   loaded first tags it `mutter-device-ignore` for GNOME.
