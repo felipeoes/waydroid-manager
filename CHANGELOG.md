@@ -6,6 +6,8 @@ follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions f
 
 ## [Unreleased]
 
+## [1.0.1] - 2026-10-06
+
 ### Fixed
 - Android 14 to 17 no longer fill the dock and Files with a drive for each of their APEX loop
   devices.
@@ -196,7 +198,8 @@ First release.
 - Root daemon hardened against symlink and race attacks, root-enabling Android properties,
   and misuse of passed file descriptors. Each user sees and controls only their own instances.
 
-[Unreleased]: https://github.com/felipeoes/waydroid-manager/compare/v1.0.0...HEAD
+[Unreleased]: https://github.com/felipeoes/waydroid-manager/compare/v1.0.1...HEAD
+[1.0.1]: https://github.com/felipeoes/waydroid-manager/compare/v1.0.0...v1.0.1
 [1.0.0]: https://github.com/felipeoes/waydroid-manager/compare/v0.5.0...v1.0.0
 [0.5.0]: https://github.com/felipeoes/waydroid-manager/compare/v0.4.1...v0.5.0
 [0.4.1]: https://github.com/felipeoes/waydroid-manager/compare/v0.4.0...v0.4.1
