@@ -171,6 +171,8 @@ class Manager(dbus.service.Object):
         picked = next((g for g in gpu.gpus() if g.pci == settings.get("gpu")), None)
         if picked and picked.driver == "nvidia" and android in catalog.VERSIONS and not catalog.get(android, "nvidia"):
             raise Error("Android {} has no NVIDIA build".format(android), "InvalidArgs")
+        if settings.get("gpu") == "software" and catalog.get(android, "software", True) is False:
+            raise Error("Android {} can't render in software".format(android), "InvalidArgs")
 
     def cpus_busy(self, iid):
         """The other instances' (cpus limit, pinned CPUs), for iid's pick: called under

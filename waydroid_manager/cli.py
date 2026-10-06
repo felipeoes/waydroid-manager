@@ -494,7 +494,7 @@ def cmd_doctor(o):
               "no usable GPU: devices render in software", "")
     for g in gpu.gpus():
         check(True, "{} ({}): config <id> set gpu {}".format(g.label, g.driver, g.pci), "")
-    for mod, needs in (("vkms", "Android 14, 15 and 17 in software"), ("videodev", "Android 17"),
+    for mod, needs in (("vkms", "Android 14 and 17 in software"), ("videodev", "Android 17"),
                        ("squashfs", "Android 15's image"), ("erofs", "Android 16 and 17's images")):
         check(subprocess.run(["modinfo", mod], capture_output=True).returncode == 0,
               "{} module ({})".format(mod, needs), "no {} module: {} can't run".format(mod, needs))

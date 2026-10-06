@@ -174,9 +174,14 @@ They render on the CPU into buffers of a hidden vkms device instead:
 - Its node must be `0666`: app processes open it too. At `0660` Android 13 on NVIDIA (which uses
   the same node, below) flickered and went black at times.
 - minigbm allocates linear dumb buffers there: `minigbm_generic` on 14, plain `minigbm` on 15 and
-  17. The hwcomposer only reads the metadata of gralloc modules named `minigbm_*`, so 15's sends the
-  −errno format, which the proxy turns into ABGR8888. Pastel draws, and 17 runs ANGLE on it.
-  `minigbm_gbm_mesa` on vkms fails with a texture error.
+  17. The hwcomposer only reads the metadata of gralloc modules named `minigbm_*` (or `gbm`). Pastel
+  draws, and 17 runs ANGLE on it.
+- **15 can't render in software.** With plain `minigbm` Android draws (screencap shows it), but the
+  hwcomposer, lacking the metadata, imports each frame into SwiftShader as format 0 ("UNSUPPORTED:
+  AHardwareBuffer_Format 0") and sends black `wl_shm` frames with a −errno format. Its image has no
+  `minigbm_generic`; `minigbm_gbm_mesa` on vkms aborts SurfaceFlinger ("Failed to create a valid
+  texture", SwiftShader can't import it), `minigbm_celadon` crashes the hwcomposer, and `gbm` (the
+  2.0 allocator) crash-loops. 15 runs on a GPU only; Software is refused.
 - GNOME can't import vkms dmabufs, so the proxy hands the same fd over as a `wl_shm` pool.
 
 ## NVIDIA

@@ -48,6 +48,7 @@ A version is downloaded the first time a device uses it, and all devices on it s
 - **Experimental** means a single maintainer's build (15) or a pre-release of LineageOS (17):
   expect rough edges.
 - **Root** (Magisk Delta) works on 11 and 13.
+- **Android 15 needs a GPU** (NVIDIA or another): its image can't show frames rendered in software.
 - A device's version is fixed: its data can't move to another Android. Clone it to get a copy on
   the same version.
 - Android 12 has no Waydroid build.
@@ -58,7 +59,7 @@ A version is downloaded the first time a device uses it, and all devices on it s
 - An x86_64 PC running Linux with a Wayland desktop (GNOME, KDE Plasma, …)
 - **Waydroid installed and set up**: you can already run `waydroid show-full-ui`
 - Kernel modules for the newer images: `squashfs` (Android 15), `erofs` (16, 17), `videodev` (17),
-  and `vkms` to render 14, 15 or 17 in software. Ubuntu's and Debian's kernels have them all, and
+  and `vkms` to render 14 or 17 in software. Ubuntu's and Debian's kernels have them all, and
   `waydroid-manager doctor` checks.
 - For NVIDIA cards: NVIDIA's proprietary driver, see [Graphics](#graphics)
 - Optional: `wl-clipboard` for clipboard sharing
@@ -146,7 +147,7 @@ start) decides where Android draws:
 | Choice | Where Android draws |
 |---|---|
 | **Automatic** (default) | on your NVIDIA card when it shows your desktop (Android 13 to 17); otherwise on the GPU your normal Waydroid uses; in software when neither can |
-| **Software** | on the CPU: slower, above all in 3D games, but it works on any PC |
+| **Software** | on the CPU: slower, above all in 3D games, but it works on any PC (not with Android 15) |
 | **GPU 0, GPU 1, …** | on that card, e.g. your integrated GPU while the desktop runs on NVIDIA |
 
 `waydroid-manager doctor` lists your GPUs and what Automatic picks.

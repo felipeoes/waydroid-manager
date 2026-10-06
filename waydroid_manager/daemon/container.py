@@ -311,6 +311,8 @@ def render_for(inst):
         mode, node = gpu.mode(key, inst.get("gpu"))
     except ValueError as e:
         raise RuntimeError(str(e))
+    if mode == "software" and key and catalog.get(key, "software", True) is False:
+        raise RuntimeError("Android {} can't render in software: pick a GPU in Graphics".format(key))
     if mode == "nvidia":
         if not (key and catalog.get(key, "nvidia")):
             raise RuntimeError("Android {} has no NVIDIA build; pick another GPU in Graphics".format(key))

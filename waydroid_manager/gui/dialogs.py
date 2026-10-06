@@ -300,6 +300,9 @@ class InstanceDialog(_Dialog):
         self.root_row.set_sensitive(ok)
         if not ok:
             self.root_row.set_active(False)
+        if catalog.get(key, "software", True) is False and \
+                self.gpu_opts[self.gpu_row.get_selected()][0] == "software":
+            _select(self.gpu_row, self.gpu_opts, "auto")     # it can't render in software
         if self.mode == "create":
             self.android_row.set_subtitle("About {:.1f} GB to download the first time".format(catalog.get(key, "gb")))
 

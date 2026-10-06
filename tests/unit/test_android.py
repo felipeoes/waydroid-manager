@@ -23,7 +23,7 @@ class CatalogTest(unittest.TestCase):
         for key, v in catalog.VERSIONS.items():
             self.assertTrue(("ota" in v) != ("zip" in v), key)    # exactly one source
             self.assertIn(v.get("gapps", "image"), ("image", "mtg14", "gms_apex"), key)
-            self.assertIn(v.get("software", True), (True, "vkms"), key)
+            self.assertIn(v.get("software", True), (True, "vkms", False), key)
 
     def test_android_is_chosen_at_creation(self):
         self.assertEqual(validate_setting("android", "16"), "16")
@@ -185,6 +185,13 @@ class GpuTest(unittest.TestCase):
                          [("gpu", "/dev/dri/renderD129"), ("nvidia", None)])
         with self.assertRaises(ValueError):
             self.modes("16", True, True, ("0000:99:00.0",))
+
+    def test_android_15_refuses_software(self):
+        inst = Instance.new("5", 5, 1000, "", {}, {})
+        inst.cfg["instance"]["android"] = "15"
+        with mock.patch.object(gpu, "mode", return_value=("software", None)), \
+                self.assertRaisesRegex(RuntimeError, "can't render in software"):
+            container.render_for(inst)
 
     def test_marketing_name_from_pci_ids(self):
         with tempfile.NamedTemporaryFile("w", suffix=".ids") as f:

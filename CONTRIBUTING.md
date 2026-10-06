@@ -112,7 +112,8 @@ entry it first loaded.
     runs as the user (`daemon/nvidia.py`); ANGLE runs GLES on it.
   - `gpu`: a host GPU's render node in the container, Mesa in Android.
   - `software`: stock Waydroid's way (gralloc.default, SwiftShader).
-  - `vkms`: CPU rendering for 14, 15 and 17, which can't show gralloc.default buffers. Buffers
+  - `vkms`: CPU rendering for 14 and 17, which can't show gralloc.default buffers (15 can't
+    render on the CPU at all, `catalog` `software=False`). Buffers
     come from a hidden vkms device (configfs `waydroid-manager`, its connector disconnected, udev
     tag `mutter-device-ignore`).
 
