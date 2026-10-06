@@ -64,6 +64,45 @@ def reset_ids_offline(data_dir):
             os.unlink(p)
 
 
+SHADER_CACHES = ("com.android.skia.shaders_cache", "com.android.opengl.shaders_cache")
+
+
+def clear_shader_caches(data_dir):
+    """Delete the apps' GPU shader caches (hwui's and EGL's, in each app's code_cache): they
+    hold what the renderer of the last start built, and Android 13's hwui divides by zero
+    cleaning one another renderer filled (the launcher crashed in a loop after a move from
+    software to NVIDIA). Android's tree: no symlink is followed."""
+    def subdirs(fd, names=None):
+        for name in names or os.listdir(fd):
+            try:
+                sub = os.open(name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC, dir_fd=fd)
+            except OSError:
+                continue                    # missing, a file or a symlink
+            try:
+                yield sub
+            finally:
+                os.close(sub)
+
+    def clear_apps(fd):
+        for app in subdirs(fd):
+            for cache in subdirs(app, ["code_cache"]):
+                for name in SHADER_CACHES:
+                    try:
+                        os.unlink(name, dir_fd=cache)
+                    except OSError:
+                        pass
+
+    root = os.open(data_dir, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
+    try:
+        for apps in subdirs(root, ["data"]):             # data/<app>: user 0
+            clear_apps(apps)
+        for top in subdirs(root, ["user", "user_de"]):   # user[_de]/<user>/<app> (user/0 links to data)
+            for user in subdirs(top):
+                clear_apps(user)
+    finally:
+        os.close(root)
+
+
 def reset_ids_online(iid):
     """After boot: new legacy android_id and fresh Google Services identity."""
     out = []

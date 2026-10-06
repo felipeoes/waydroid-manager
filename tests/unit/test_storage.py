@@ -1,5 +1,7 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 import io
+import os
+import tempfile
 import types
 import unittest
 import zipfile
@@ -52,3 +54,22 @@ class XapkInstallTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ShaderCacheTest(unittest.TestCase):
+    def test_apps_shader_caches_go_and_nothing_through_a_symlink(self):
+        with tempfile.TemporaryDirectory() as d:
+            def put(rel):
+                os.makedirs(os.path.dirname(os.path.join(d, rel)), exist_ok=True)
+                open(os.path.join(d, rel), "w").close()
+            put("data/data/app/code_cache/com.android.skia.shaders_cache")
+            put("data/data/app/code_cache/kept")
+            put("data/user_de/0/launcher/code_cache/com.android.opengl.shaders_cache")
+            put("data/user/10/app/code_cache/com.android.skia.shaders_cache")
+            put("outside/com.android.skia.shaders_cache")
+            os.symlink("../data", os.path.join(d, "data/user/0"))
+            os.makedirs(os.path.join(d, "data/data/evil"))
+            os.symlink(os.path.join(d, "outside"), os.path.join(d, "data/data/evil/code_cache"))
+            storage.clear_shader_caches(os.path.join(d, "data"))
+            left = sorted(os.path.relpath(os.path.join(r, f), d) for r, _, fs in os.walk(d) for f in fs)
+            self.assertEqual(left, ["data/data/app/code_cache/kept", "outside/com.android.skia.shaders_cache"])

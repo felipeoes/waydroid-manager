@@ -269,6 +269,8 @@ which Android reads last.
     on the host.
   - Sockets from the session are opened with `O_PATH|O_NOFOLLOW` and their owner is checked.
   - Passed fds must be regular files with the right access mode.
+  - Files in a device's data are deleted through directory fds opened with `O_NOFOLLOW`
+    (`storage.clear_shader_caches`).
 - **Untrusted values never reach a shell or a config line.** Validators reject newlines, `%`
   (configparser interpolation is disabled everywhere anyway) and whitespace in LXC values.
 - `rm -rf --one-file-system` does **not** stop at bind mounts from the same filesystem. Anything

@@ -22,6 +22,21 @@ mv "$OLD" "$NEW"
 for f in "$NEW"/instances/*/instance.cfg; do
     [ -f "$f" ] && sed -i "s|$OLD/|$NEW/|g" "$f"
 done
+# Its image sets are copies of stock Waydroid's images: describe them as the daemon's sync does
+# (image.cfg), so #0 knows its Android and devices of that version reuse the set
+ota="$(sed -n 's/^system_ota *= *//p' /var/lib/waydroid/waydroid.cfg 2>/dev/null)"
+mnt="$(mktemp -d)"
+for d in "$NEW"/images/*; do
+    [ -f "$d/system.img" ] && [ ! -L "$d" ] && [ ! -e "$d/image.cfg" ] || continue
+    sdk=0
+    if mount -o ro,loop "$d/system.img" "$mnt" 2>/dev/null; then
+        sdk="$(sed -n 's/^ro\.build\.version\.sdk=//p' "$mnt/system/build.prop")"
+        umount "$mnt"
+    fi
+    id="${d##*/}"
+    printf '[image]\nsdk = %s\nbuilt = %s\nstock = true\nchannel = %s\n' "${sdk:-0}" "${id%%-*}" "$ota" > "$d/image.cfg"
+done
+rmdir "$mnt"
 if [ -f /etc/waydroid-multi/daemon.conf ]; then
     mkdir -p /etc/waydroid-manager
     sed 's/wdmulti0/wdm0/' /etc/waydroid-multi/daemon.conf > /etc/waydroid-manager/daemon.conf

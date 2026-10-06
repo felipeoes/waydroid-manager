@@ -515,6 +515,15 @@ def write_props(inst, session, arm, render=("gpu", None)):
     bind_file(full, inst.rootfs + "/vendor/waydroid.prop")
 
 
+# The renderers #0 shares with stock Waydroid's own rendering (its pick of GPU, or software)
+STOCK_GRAPHICS = ("gpu auto", "software")
+
+
+def graphics_key(inst, mode):
+    """Which renderer the apps' shader caches of this start come from."""
+    return "gpu " + inst.get("gpu") if mode == "gpu" else mode
+
+
 def start(inst, net, hosts, session_in, uid, keep_images=(), cpus_busy=list):
     """Bring the container up. session_in: validated dict from the session process.
     keep_images: every instance's image set (the store's gc keeps them).
@@ -562,6 +571,13 @@ def start(inst, net, hosts, session_in, uid, keep_images=(), cpus_busy=list):
     try:
         if inst.index == 0:
             mount_stock_data(inst)
+        # Shader caches of another renderer crash Android 13's apps (storage.clear_shader_caches).
+        # #0's data is also stock Waydroid's: unless it renders as stock does, they go each time
+        key = graphics_key(inst, render[0])
+        if inst.cfg["instance"].get("shader_caches") != key or inst.index == 0 and key not in STOCK_GRAPHICS:
+            storage.clear_shader_caches(inst.data_dir)
+            inst.cfg["instance"]["shader_caches"] = key
+            inst.save()
         guest = nvidia.guest_layers(catalog.get(android_of(inst), "nvidia")) if render[0] == "nvidia" else []
         arm = mount_rootfs(inst, images_dir, guest)
         detect_protocols(inst)
@@ -601,6 +617,8 @@ def cleanup(inst, keep_stock=False):
         if lxc_state(inst.id) != "STOPPED":
             log.error("%s: the container didn't stop; stock Waydroid stays paused", inst.id)
             return
+        if inst.cfg["instance"].get("shader_caches") not in STOCK_GRAPHICS and os.path.ismount(inst.data_dir):
+            storage.clear_shader_caches(inst.data_dir)      # stock Waydroid starts on its own
         umount_tree(inst.data_dir)
         if not keep_stock:
             release_stock()

@@ -225,17 +225,20 @@ def install(key):
             return sid
         if os.path.isfile(os.path.join(d, "system.img")) and cfg.get("channel") != channel:
             raise RuntimeError("image set {} exists but isn't Android {}".format(sid, key))
+        # a new set is checked and described in d.tmp: d only ever appears with its image.cfg
+        work = d if os.path.isfile(os.path.join(d, "system.img")) else d + ".tmp"
         shutil.rmtree(os.path.join(d, "gapps"), ignore_errors=True)    # a failed earlier attempt's
-        if not os.path.isfile(os.path.join(d, "system.img")):
-            _fetch(d + ".tmp", sources, v, key)
-            os.rename(d + ".tmp", d)
-        sys_sdk, ven_sdk = probe(d, os.path.join(d, "gapps") if v.get("gapps") == "gms_apex" else None)
+        if work != d:
+            _fetch(work, sources, v, key)
+        sys_sdk, ven_sdk = probe(work, os.path.join(work, "gapps") if v.get("gapps") == "gms_apex" else None)
         if sys_sdk != v["sdk"] or ven_sdk != v["sdk"]:
-            shutil.rmtree(d, ignore_errors=True)
+            shutil.rmtree(work, ignore_errors=True)
             raise RuntimeError("the Android {} download is API {}/{}, not {}".format(key, sys_sdk, ven_sdk, v["sdk"]))
         if v.get("gapps") == "mtg14":
             gapps.mtg_layer()
-        _write_cfg(d, android=key, sdk=v["sdk"], built=built, channel=channel, stock=cfg.get("stock", "false"))
+        _write_cfg(work, android=key, sdk=v["sdk"], built=built, channel=channel, stock=cfg.get("stock", "false"))
+        if work != d:
+            os.rename(work, d)
         log.info("Android %s installed as image set %s", key, sid)
         return sid
 

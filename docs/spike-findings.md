@@ -212,6 +212,14 @@ They render on the CPU into buffers of a hidden vkms device instead:
   texture first: 0.8 ms. The proxy now copies every attached frame that way into a memfd of its
   own. With RAID at 62 fps, gnome-shell is at 10% CPU and the proxy at 3%.
 
+## Shader caches of another renderer
+- A 0.5 device (software) moved to NVIDIA: its launcher crashed every 2 s, SIGFPE in hwui's
+  `BlobCache::clean()` (integer division by zero) while storing a shader. The caches in
+  `code_cache/com.android.skia.shaders_cache` were SwiftShader's; with them gone it ran. hwui only
+  checks the GLSL version string, which ANGLE reports the same on SwiftShader and on NVIDIA.
+- The daemon clears the apps' shader caches when a device's renderer changes. #0 shares its data with
+  stock Waydroid (software here): when #0 renders otherwise, they are cleared at its start and stop.
+
 ## Measuring
 - `dumpsys SurfaceFlinger --latency` is empty on 16 and newer. `dumpsys SurfaceFlinger --timestats
   -enable`, then `-dump`, gives per-layer fps on every version.

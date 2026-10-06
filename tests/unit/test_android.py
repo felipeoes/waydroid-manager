@@ -62,6 +62,29 @@ class ImageStoreTest(unittest.TestCase):
         images.gc(["100-101"])        # a stopped device still on the older build keeps it
         self.assertEqual(images.available(), ["100-101", "300-301"])
 
+    def test_install_describes_a_set_before_it_appears(self):
+        def fetch(tmp, sources, v, key):
+            self.assertEqual(images.available(), [])
+            os.makedirs(tmp)
+            for f in ("system.img", "vendor.img"):
+                open(os.path.join(tmp, f), "w").close()
+        with mock.patch.object(images, "_build", return_value=("sid", "20260101", [])), \
+                mock.patch.object(images, "_fetch", side_effect=fetch), \
+                mock.patch.object(images, "probe", return_value=(36, 36)):
+            self.assertEqual(images.install("16"), "sid")
+        self.assertEqual(images.read_cfg("sid")["android"], "16")
+        self.assertEqual(os.listdir(self.tmp.name), ["sid"])
+
+    def test_stock_set_of_the_same_build_is_adopted(self):
+        chan = catalog.VERSIONS["13"]["ota"][0]
+        self.make_set("1-2", sdk="33", built="1", stock="true", channel=chan)
+        with mock.patch.object(images, "_build", return_value=("1-2", "1", [])), \
+                mock.patch.object(images, "_fetch") as fetch, \
+                mock.patch.object(images, "probe", return_value=(33, 33)):
+            self.assertEqual(images.install("13"), "1-2")
+        fetch.assert_not_called()
+        self.assertEqual(images.read_cfg("1-2"), dict(android="13", sdk="33", built="1", channel=chan, stock="true"))
+
     def test_newest_build_of_a_channel(self):
         # two builds with one datetime (Android 17's vendor channel): the file name's date decides
         listing = {"response": [

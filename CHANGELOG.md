@@ -30,7 +30,9 @@ follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions f
   Ti", "GPU 1: AMD Radeon Graphics"… (`doctor` lists them with the value to set). A GPU other than
   the one showing a desktop on NVIDIA works too: that GPU copies each frame into memory the desktop
   can show. Android 14, 15 and 17 render in software into a hidden virtual display device (the
-  kernel's vkms module) that no desktop shows. `doctor` reports which applies.
+  kernel's vkms module) that no desktop shows. `doctor` reports which applies. When a device
+  starts on another renderer than last time, its apps' shader caches are cleared: Android 13's
+  launcher crashed in a loop on caches another renderer had left.
 
 ### Changed
 - **waydroid-multi is now Waydroid Manager.** The command is `waydroid-manager`, the package
