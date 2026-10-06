@@ -12,7 +12,7 @@ Depends: waydroid, lxc, dnsmasq-base | dnsmasq, iproute2, iptables | nftables, d
 Conflicts: waydroid-multi
 Replaces: waydroid-multi
 Recommends: wl-clipboard, pkexec | policykit-1
-Homepage: https://github.com/felipeoes/waydroid-multi-instances
+Homepage: https://github.com/felipeoes/waydroid-manager
 Description: create and run Android devices with Waydroid
  Waydroid Manager creates and runs Android devices on Linux with Waydroid.
  Each device picks its Android version (11 to 17, with Google Play), runs

@@ -72,7 +72,7 @@ Tested on Ubuntu 26.04 with Waydroid 1.6 and GNOME 50, on an NVIDIA GeForce RTX 
 ### Ubuntu 24.04+ and Debian 13+
 
 Download `waydroid-manager_<version>_amd64.deb` from the
-[latest release](https://github.com/felipeoes/waydroid-multi-instances/releases/latest), then:
+[latest release](https://github.com/felipeoes/waydroid-manager/releases/latest), then:
 
 ```sh
 sudo apt install ./waydroid-manager_*_amd64.deb
@@ -83,8 +83,8 @@ Updates work the same way: install the newer `.deb`. Running instances keep runn
 ### Other distributions (from source)
 
 ```sh
-git clone https://github.com/felipeoes/waydroid-multi-instances.git
-cd waydroid-multi-instances
+git clone https://github.com/felipeoes/waydroid-manager.git
+cd waydroid-manager
 sudo scripts/install.sh
 ```
 

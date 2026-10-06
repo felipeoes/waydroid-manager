@@ -39,7 +39,8 @@ follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions f
 - **waydroid-multi is now Waydroid Manager.** The command is `waydroid-manager`, the package
   `waydroid-manager`, the app "Waydroid Manager", and the bridge `wdm0`. Installing it over
   waydroid-multi 0.5 stops the running instances once and moves them, with their images and network
-  settings, to `/var/lib/waydroid-manager`. The `waydroid-multi` command is gone.
+  settings, to `/var/lib/waydroid-manager`. The `waydroid-multi` command is gone. The project
+  lives at github.com/felipeoes/waydroid-manager; the old address redirects there.
 - The package is built for amd64 and ships its own libgbinder 1.1.53: Waydroid's 1.1.43 lacks the
   servicemanager protocols of Android 15 and newer. `doctor` checks for them. It also needs
   libepoxy and libgbm now (NVIDIA's renderer, and frames from another GPU).
@@ -168,11 +169,11 @@ First release.
 - Root daemon hardened against symlink and race attacks, root-enabling Android properties,
   and misuse of passed file descriptors. Each user sees and controls only their own instances.
 
-[Unreleased]: https://github.com/felipeoes/waydroid-multi-instances/compare/v1.0.0...HEAD
-[1.0.0]: https://github.com/felipeoes/waydroid-multi-instances/compare/v0.5.0...v1.0.0
-[0.5.0]: https://github.com/felipeoes/waydroid-multi-instances/compare/v0.4.1...v0.5.0
-[0.4.1]: https://github.com/felipeoes/waydroid-multi-instances/compare/v0.4.0...v0.4.1
-[0.4.0]: https://github.com/felipeoes/waydroid-multi-instances/compare/v0.3.0...v0.4.0
-[0.3.0]: https://github.com/felipeoes/waydroid-multi-instances/compare/v0.2.0...v0.3.0
-[0.2.0]: https://github.com/felipeoes/waydroid-multi-instances/compare/v0.1.0...v0.2.0
-[0.1.0]: https://github.com/felipeoes/waydroid-multi-instances/releases/tag/v0.1.0
+[Unreleased]: https://github.com/felipeoes/waydroid-manager/compare/v1.0.0...HEAD
+[1.0.0]: https://github.com/felipeoes/waydroid-manager/compare/v0.5.0...v1.0.0
+[0.5.0]: https://github.com/felipeoes/waydroid-manager/compare/v0.4.1...v0.5.0
+[0.4.1]: https://github.com/felipeoes/waydroid-manager/compare/v0.4.0...v0.4.1
+[0.4.0]: https://github.com/felipeoes/waydroid-manager/compare/v0.3.0...v0.4.0
+[0.3.0]: https://github.com/felipeoes/waydroid-manager/compare/v0.2.0...v0.3.0
+[0.2.0]: https://github.com/felipeoes/waydroid-manager/compare/v0.1.0...v0.2.0
+[0.1.0]: https://github.com/felipeoes/waydroid-manager/releases/tag/v0.1.0

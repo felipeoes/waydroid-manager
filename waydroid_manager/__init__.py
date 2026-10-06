@@ -3,4 +3,4 @@
 
 __version__ = "1.0.0"
 
-HOMEPAGE = "https://github.com/felipeoes/waydroid-multi-instances"
+HOMEPAGE = "https://github.com/felipeoes/waydroid-manager"
