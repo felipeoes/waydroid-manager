@@ -493,13 +493,14 @@ class ClipboardTest(unittest.TestCase):
 
 
 class CpuBufferTest(unittest.TestCase):
-    """Software rendering: Android's dmabufs reach the compositor as shm over the same fd."""
+    """Android's dmabufs reach the compositor as shm: over the same fd ("shared", software
+    rendering), or in memory of our own filled through the GPU they come from."""
     SHM, DMABUF, PARAMS, BUF = 30, 31, 32, 33
     AB24 = 0x34324241
 
     def setUp(self):
         self.h = h = Harness()
-        h.s.cfg.cpu_buffers = True
+        h.s.cfg.cpu_buffers = "shared"
         h.c2s = h.s.c2s = wp.Stream(h.s.on_request, h.s.post_feed_c2s, count_fds=lambda o, op: int(
             h.s.objs.get(o) == "zwp_linux_buffer_params_v1" and op == P.ZWP_LINUX_BUFFER_PARAMS_ADD))
         h.setup_globals()
@@ -535,6 +536,33 @@ class CpuBufferTest(unittest.TestCase):
         ops, _, fds = self.create(modifier=1 << 56 | 4)
         self.assertEqual(ops[-1], (self.PARAMS, P.ZWP_LINUX_BUFFER_PARAMS_CREATE_IMMED))
         self.assertEqual(len(fds), 1)
+
+    def test_gpu_buffer_is_copied_into_our_memory_on_attach(self):
+        h, calls = self.h, []
+
+        class Gpu:
+            def import_buffer(self, *a):
+                calls.append(a[1:])
+                return "bo"
+
+            def read(self, bo, width, height, mem, stride):
+                calls.append(("read", bo, width, height, stride))
+                mem[:5] = b"frame"
+
+            def free(self, bo):
+                calls.append(("free", bo))
+        h.s.cfg.gpu = Gpu()
+        tiled = 1 << 56 | 4                 # any layout the GPU reads
+        ops, (create, _), fds = self.create(modifier=tiled)
+        self.assertEqual(calls, [(64, 32, self.AB24, 0, 256, tiled)])
+        self.assertEqual(ops[2], (self.SHM, P.WL_SHM_CREATE_POOL))
+        self.assertEqual(args(create[2], "niiiiu"), [self.BUF, 0, 64, 32, 256, self.AB24])
+        self.assertNotEqual(os.fstat(fds[1]).st_ino, os.fstat(self.fd).st_ino)
+        h.req(msg(COMP, P.WL_COMPOSITOR_CREATE_SURFACE, "n", S), msg(S, P.WL_SURFACE_ATTACH, "oii", self.BUF, 0, 0))
+        self.assertEqual(calls[-1], ("read", "bo", 64, 32, 256))
+        self.assertEqual(os.pread(fds[1], 5, 0), b"frame")
+        h.ev(msg(1, P.WL_DISPLAY_EV_DELETE_ID, "u", self.BUF))
+        self.assertEqual(calls[-1], ("free", "bo"))
 
 
 class ShmFormatTest(unittest.TestCase):

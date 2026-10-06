@@ -24,8 +24,9 @@ All notable changes to waydroid-multi are listed here. The format follows
   shows your desktop when Android can use it, else software), Software, which renders on the CPU
   (slower, but it works on any PC), or one of your GPUs, listed as "GPU 0: NVIDIA GeForce RTX 5060
   Ti", "GPU 1: AMD Radeon Graphics"… (`doctor` lists them with the value to set). A GPU other than
-  the one showing a desktop on NVIDIA works too: its frames reach the window as shared memory. Android 14, 15 and 17 render in software into a
-  hidden virtual display device (the kernel's vkms module) that no desktop shows. `doctor` reports which applies.
+  the one showing a desktop on NVIDIA works too: that GPU copies each frame into memory the desktop
+  can show. Android 14, 15 and 17 render in software into a hidden virtual display device (the
+  kernel's vkms module) that no desktop shows. `doctor` reports which applies.
 
 ### Changed
 - **waydroid-multi is now Waydroid Manager.** The command is `waydroid-manager`, the package

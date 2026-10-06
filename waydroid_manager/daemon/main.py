@@ -844,9 +844,10 @@ class Manager(dbus.service.Object):
     def PrepareGpu(self, iid, sender, reply, error):
         """How the instance renders at its next start, called by its session before Start:
         {"mode": see gpu.mode, "renderer": for nvidia, the directory of the renderer the session
-        runs, "cpu_buffers": "true" when the desktop can't import Android's buffers as dmabufs
-        (CPU-rendered ones; another GPU's under a desktop on NVIDIA)}. NVIDIA's binaries are
-        downloaded on first use."""
+        runs, "cpu_buffers": when the desktop can't import Android's buffers as dmabufs, how the
+        session's proxy shows them: "shared" (CPU-rendered ones, mapped where they are) or the
+        render node to copy them through (another GPU's under a desktop on NVIDIA)}. NVIDIA's
+        binaries are downloaded on first use."""
         try:
             inst = self.load(iid)
             self.check_owner(inst, self.caller(sender))
@@ -854,12 +855,12 @@ class Manager(dbus.service.Object):
             return error(e)
 
         def prepare():
-            mode = container.render_for(inst)[0]
+            mode, node = container.render_for(inst)
             if mode != "nvidia":
-                cpu = mode == "vkms" or mode == "gpu" and gpu.nvidia_display()
-                return {"mode": mode, "renderer": "", "cpu_buffers": "true" if cpu else "false"}
+                cpu = "shared" if mode == "vkms" else node if mode == "gpu" and gpu.nvidia_display() else ""
+                return {"mode": mode, "renderer": "", "cpu_buffers": cpu or ""}
             nvidia.guest_layers(catalog.get(container.android_of(inst), "nvidia"))
-            return {"mode": mode, "renderer": nvidia.host_dir(), "cpu_buffers": "false"}
+            return {"mode": mode, "renderer": nvidia.host_dir(), "cpu_buffers": ""}
         self.run_async(inst.id, prepare, reply, error, lock=False)
 
     @dbus.service.method(paths.DBUS_IFACE, in_signature="", out_signature="s",

@@ -36,6 +36,7 @@ import argparse
 import array
 import collections
 import math
+import mmap
 import os
 import selectors
 import signal
@@ -47,6 +48,7 @@ import time
 import urllib.parse
 
 from . import frame as fr
+from . import gbm
 from . import wlschema
 from .wlproto import (HEADER, MAX_MSG, ProtocolError, Reader, msg)
 from . import wlproto as P
@@ -554,6 +556,7 @@ class Session:
         self.shm = None          # the HWC's wl_shm, and the formats the compositor takes through it
         self.shm_formats = set()
         self.dmabuf_planes = {}  # cpu_buffers: params id -> [(fd copy, offset, stride, modifier)]
+        self.copies = {}         # cpu_buffers through a GPU: buffer id -> (gbm buffer, width, height, our memory, stride)
         self.dmabuf_kept = set()  # (planes, modifier, format) passed on as dmabufs, noted once each
         # input routing
         self.last_serial = 0
@@ -824,9 +827,10 @@ class Session:
         return None
 
     def _dmabuf_request(self, obj, iface, op, r):
-        """cpu_buffers: Android's linear dmabufs reach the compositor as shared memory over the
-        same fd. A compositor may not import dmabufs from another device (GNOME on NVIDIA
-        doesn't, from vkms or an iGPU), but it can map these."""
+        """cpu_buffers: Android's dmabufs reach the compositor as shared memory. A compositor may
+        not import dmabufs from another device (GNOME on NVIDIA doesn't, from vkms or an iGPU).
+        "shared": vkms's linear ones go over the same fd, mapped where they are. A render node:
+        the buffer gets memory of our own, which each attach fills through that GPU (cfg.gpu)."""
         if iface == "zwp_linux_dmabuf_v1":
             if op == P.ZWP_LINUX_DMABUF_CREATE_PARAMS:
                 self.objs[r.n()] = "zwp_linux_buffer_params_v1"
@@ -854,16 +858,27 @@ class Session:
             fd, offset, stride, modifier = planes[0]
             code = {P.DRM_FORMAT_ARGB8888: 0, P.DRM_FORMAT_XRGB8888: 1}.get(fmt, fmt)
             size = offset + stride * height
-            if modifier not in (P.DRM_FORMAT_MOD_LINEAR, P.DRM_FORMAT_MOD_INVALID) or \
-                    code not in self.shm_formats or os.lseek(fd, 0, os.SEEK_END) < size:
+            pool_fd = None
+            if code not in self.shm_formats:
+                pass
+            elif self.cfg.gpu:
+                bo = self.cfg.gpu.import_buffer(fd, width, height, fmt, offset, stride, modifier)
+                if bo:
+                    pool_fd, offset, size = os.memfd_create("waydroid-frame", os.MFD_CLOEXEC), 0, stride * height
+                    os.ftruncate(pool_fd, size)
+                    self.copies[buf] = (bo, width, height, mmap.mmap(pool_fd, size), stride)
+            elif modifier in (P.DRM_FORMAT_MOD_LINEAR, P.DRM_FORMAT_MOD_INVALID) and \
+                    os.lseek(fd, 0, os.SEEK_END) >= size:
+                pool_fd = fd
+                planes.clear()              # the fd now travels with create_pool
+            if pool_fd is None:
                 if kind not in self.dmabuf_kept:
                     self.dmabuf_kept.add(kind)
                     sys.stderr.write("wlproxy: dmabuf modifier {:#x} format {:#x} left as is\n".format(modifier, fmt))
                 return None
-            planes.clear()                  # the fd now travels with create_pool
             pool = self.new_id("pool")
             self.objs[buf] = "wl_buffer"
-            return [(msg(self.shm, P.WL_SHM_CREATE_POOL, "ni", pool, size), [fd]),
+            return [(msg(self.shm, P.WL_SHM_CREATE_POOL, "ni", pool, size), [pool_fd]),
                     msg(pool, P.WL_SHM_POOL_CREATE_BUFFER, "niiiiu", buf, offset, width, height, stride, code),
                     msg(pool, P.WL_SHM_POOL_DESTROY)]
         finally:
@@ -874,6 +889,10 @@ class Session:
         s = self.surfaces.get(sid)
         if s is None:
             return None
+        if op == P.WL_SURFACE_ATTACH:
+            copy = self.copies.get(r.o())
+            if copy:
+                self.cfg.gpu.read(*copy)    # the frame Android drew, into the memory the compositor reads
         tree = self.in_tree(sid)
         if op == P.WL_SURFACE_DESTROY:
             self._forget_surface(sid)
@@ -1475,6 +1494,10 @@ class Session:
 
     def _forget(self, oid):
         iface = self.objs.pop(oid, None)
+        copy = self.copies.pop(oid, None)
+        if copy:
+            self.cfg.gpu.free(copy[0])
+            copy[3].close()
         if iface == "wl_surface":
             self._forget_surface(oid)
         self.viewports.pop(oid, None)
@@ -1483,6 +1506,11 @@ class Session:
         self.toplevels.pop(oid, None)
         self.outputs.pop(oid, None)
         self.registries.discard(oid)
+
+    def close(self):
+        """The connection is gone: let go of the GPU's buffers."""
+        for oid in list(self.copies):
+            self._forget(oid)
 
     # -- frame ------------------------------------------------------------------------------
     def _global(self, interface):
@@ -1910,6 +1938,7 @@ class Connection:
                 for fd in fds:
                     os.close(fd)
             st.deferred.clear()
+        self.session.close()
         if self in self.proxy.conns:
             self.proxy.conns.remove(self)
 
@@ -1966,7 +1995,7 @@ class Connection:
 
 class Config:
     def __init__(self, inst_id, name, width=0, height=0, zoom="auto", frame=True, theme="dark",
-                 close_action="stop", cpu_buffers=False):
+                 close_action="stop", cpu_buffers=None):
         self.id = inst_id
         self.name = name
         self.width = int(width or 0)
@@ -1975,7 +2004,10 @@ class Config:
         self.frame = frame
         self.theme = theme
         self.close_action = close_action
-        self.cpu_buffers = cpu_buffers   # the compositor can't import Android's dmabufs: show linear ones as shm
+        # the compositor can't import Android's dmabufs: show them as shm ("shared", or the render
+        # node of the GPU to copy them through; Session._dmabuf_request)
+        self.cpu_buffers = cpu_buffers
+        self.gpu = gbm.Device(cpu_buffers) if cpu_buffers not in (None, "shared") else None
 
 
 class Proxy:
@@ -2076,7 +2108,7 @@ def main(argv=None):
     p.add_argument("--zoom", default="auto")
     p.add_argument("--theme", default="dark", choices=("dark", "light"))
     p.add_argument("--close-action", default="stop", choices=("stop", "freeze", "none"))
-    p.add_argument("--cpu-buffers", action="store_true")
+    p.add_argument("--cpu-buffers", help='"shared" or a render node (Config)')
     o = p.parse_args(argv)
     cfg = Config(o.id, o.name, o.width, o.height, o.zoom, True, o.theme, o.close_action, o.cpu_buffers)
     global LOG_PATH

@@ -80,7 +80,7 @@ class Session:
         self.adb_key = None      # our adb public key, once the adb server is up; "" if unreadable
 
     # -- proxy -------------------------------------------------------------------
-    def start_proxy(self, upstream, cpu_buffers=False):
+    def start_proxy(self, upstream, cpu_buffers=""):
         listen = os.path.join(paths.user_runtime_dir(self.iid), "wayland-0")
         env = dict(os.environ)
         env["PYTHONPATH"] = os.path.dirname(paths.PKG_DIR) + os.pathsep + env.get("PYTHONPATH", "")
@@ -91,7 +91,7 @@ class Session:
              "--upstream", upstream, "--id", self.iid, "--name", inst.name,
              "--width", inst.get("width"), "--height", inst.get("height"), "--zoom", inst.get("zoom"),
              "--theme", color_scheme(), "--close-action", inst.get("close_action")]
-            + (["--cpu-buffers"] if cpu_buffers else []),
+            + (["--cpu-buffers", cpu_buffers] if cpu_buffers else []),
             stdout=subprocess.PIPE, stdin=subprocess.DEVNULL, env=env,
             stderr=open(os.path.join(paths.user_runtime_dir(self.iid), "wlproxy.log"), "w")
             if os.environ.get("WDM_PROXY_TRACE") == "1" else None)
@@ -417,7 +417,7 @@ class Session:
         if not os.path.exists(upstream):
             raise RuntimeError("Wayland socket {} not found; is a Wayland compositor running?".format(upstream))
         render = self.daemon.prepare_gpu(self.iid)
-        wl = self.start_proxy(upstream, cpu_buffers=render["cpu_buffers"] == "true")
+        wl = self.start_proxy(upstream, cpu_buffers=render["cpu_buffers"])
         if not os.path.exists(desktop.launcher_path(self.iid)):
             desktop.write_launcher(self.iid, self.inst.name)
         self.session = self.session_dict(wl)
