@@ -96,7 +96,7 @@ before, you can switch to the `.deb` at any time; your instances are kept.
 
 ## Using the manager app
 
-![The manager: your normal Waydroid as #0 under Default, the other instances below with their disk use, some running](docs/screenshots/manager.png)
+![The manager: your normal Waydroid as #0 under Default, the other instances below with their Android version and disk use, some running](docs/screenshots/manager.png)
 
 - **+ New Instance** creates an instance. Instances are numbered automatically: your normal
   Waydroid is **#0**, new ones get the next free number (#1, #2, …).
