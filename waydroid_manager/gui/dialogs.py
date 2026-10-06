@@ -93,6 +93,27 @@ def _with_current(options, value, fmt):
     return options
 
 
+def _toggles(options, active, changed):
+    """Toggle buttons for [(name, label)], returned with a function giving the active name. They are an
+    Adw.ToggleGroup on libadwaita 1.7+, and linked GTK toggle buttons before that (Ubuntu 24.04 has 1.5)."""
+    if hasattr(Adw, "ToggleGroup"):
+        group = Adw.ToggleGroup(valign=Gtk.Align.CENTER)
+        for name, label in options:
+            group.add(Adw.Toggle(name=name, label=label))
+        group.set_active_name(active)
+        group.connect("notify::active-name", lambda *_: changed())
+        return group, group.get_active_name
+    box = Gtk.Box(valign=Gtk.Align.CENTER, css_classes=["linked"])
+    buttons = {}
+    for name, label in options:
+        buttons[name] = Gtk.ToggleButton(label=label, group=next(iter(buttons.values()), None))
+        box.append(buttons[name])
+    buttons[active].set_active(True)
+    for b in buttons.values():
+        b.connect("toggled", lambda b: b.get_active() and changed())
+    return box, lambda: next(name for name, b in buttons.items() if b.get_active())
+
+
 def _spin(title, lo, hi, step, value, digits=0, subtitle=None):
     adj = Gtk.Adjustment(lower=lo, upper=hi, step_increment=step, page_increment=step * 10, value=value)
     row = Adw.SpinRow(title=title, adjustment=adj, digits=digits)
@@ -181,10 +202,9 @@ class InstanceDialog(_Dialog):
         cdpi = int(self.info.get("dpi") or setting_default("dpi"))
         kind, idx = classify(cw, ch, cdpi)
         type_row = Adw.ActionRow(title="Device type")
-        self.kind = Adw.ToggleGroup(valign=Gtk.Align.CENTER)
-        for name, label in (("phone", "Phone"), ("tablet", "Tablet"), ("custom", "Custom")):
-            self.kind.add(Adw.Toggle(name=name, label=label))
-        type_row.add_suffix(self.kind)
+        toggles, self._kind = _toggles((("phone", "Phone"), ("tablet", "Tablet"), ("custom", "Custom")), kind,
+                                       self._kind_changed)
+        type_row.add_suffix(toggles)
         g.add(type_row)
         self.res_row = _wrapping(Adw.ComboRow(title="Resolution"))
         g.add(self.res_row)
@@ -193,9 +213,7 @@ class InstanceDialog(_Dialog):
         self.dpi_row = _spin("Density (DPI)", 80, 640, 10, cdpi)
         for r in (self.width_row, self.height_row, self.dpi_row):
             g.add(r)
-        self.kind.set_active_name(kind)
         self._kind_changed(select=idx)
-        self.kind.connect("notify::active-name", lambda *_: self._kind_changed())
 
         # -- device
         page = self._page("device", "Device", "phone-symbolic")
@@ -301,7 +319,7 @@ class InstanceDialog(_Dialog):
         self.prop_rows.append(entry)
 
     def _kind_changed(self, select=None):
-        kind = self.kind.get_active_name() or "tablet"
+        kind = self._kind()
         custom = kind == "custom"
         self.res_row.set_visible(not custom)
         for r in (self.width_row, self.height_row, self.dpi_row):
@@ -340,7 +358,7 @@ class InstanceDialog(_Dialog):
             v["name"] = name
         if self.mode == "create":
             v["android"] = self.android()
-        if self.kind.get_active_name() == "custom":
+        if self._kind() == "custom":
             w, h, dpi = (int(self.width_row.get_value()), int(self.height_row.get_value()),
                          int(self.dpi_row.get_value()))
         else:

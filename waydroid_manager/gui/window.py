@@ -71,7 +71,10 @@ class BaseRow(Adw.ActionRow):
             self.set_activatable_widget(self.check)
         self.dot = Gtk.Label(label="●", valign=Gtk.Align.CENTER)
         self.add_prefix(self.dot)
-        self.spinner = Adw.Spinner(valign=Gtk.Align.CENTER, visible=False)
+        # Adw.Spinner needs libadwaita 1.6; Ubuntu 24.04 has 1.5
+        self.spinner = Adw.Spinner() if hasattr(Adw, "Spinner") else Gtk.Spinner(spinning=True)
+        self.spinner.set_valign(Gtk.Align.CENTER)
+        self.spinner.set_visible(False)
         self.add_suffix(self.spinner)
         self.play = _flat_button("media-playback-start-symbolic", "Start", lambda: win.start_or_show(self.info))
         self.add_suffix(self.play)

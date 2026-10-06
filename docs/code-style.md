@@ -100,6 +100,9 @@ The HWC is a client we can't change, and it aborts on anything unexpected.
 
 - Use **libadwaita widgets** (`Adw.PreferencesGroup`, `Adw.SwitchRow`, `Adw.ComboRow`,
   `Adw.AlertDialog`, toasts) and follow the GNOME HIG.
+- **The GUI must run on libadwaita 1.5 and GTK 4.14** (Ubuntu 24.04). A widget newer than that
+  (`Adw.ToggleGroup`, `Adw.Spinner`, …) needs a fallback for when it's missing, as `_toggles` in
+  `dialogs.py` does.
 - **Call the daemon asynchronously** (`Backend.call` with `ok`/`fail`), never synchronously from
   a signal handler.
 - Report results with a **toast**. Confirm destructive actions (delete, stop on close,
