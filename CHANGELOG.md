@@ -9,6 +9,8 @@ follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions f
 ### Fixed
 - Android 14 to 17 no longer fill the dock and Files with a drive for each of their APEX loop
   devices.
+- `adb reboot` (and any other reboot from inside Android) restarts the instance in its window
+  instead of stopping it. Powering Android off still stops it.
 
 ## [1.0.0] - 2026-10-06
 
