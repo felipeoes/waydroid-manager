@@ -49,7 +49,7 @@ VERSIONS = {
                zip=("https://huggingface.co/datasets/Minhmc2077/My_Binary_Build/resolve/main/"
                     "LineageOS-22.2-WayDroidx86_64-Vanilla.zip",
                     "3febfdb12f7a930315272df102b9907ffc65fc21570e5b6d005bbd4de7f6685c", "20261005"),
-               props={"ro.gralloc.override": "0", "ro.hardware.gralloc": "minigbm_gbm_mesa"}),
+               props={"ro.gralloc.override": "0", "ro.hardware.gralloc": "minigbm_gbm_mesa", "qemu.hw.mainkeys": "1"}),
     "16": dict(sdk=36, ota=_atv("a16-qpr2") + ("23.2",), gb=1.6, nvidia="venus", loop=True,
                props={"qemu.hw.mainkeys": "1"}, nvidia_props={"ro.waydroid.override_props": "0"}),
     "17": dict(sdk=37, ota=_atv("a17") + ("24.0",), gb=1.7, nvidia="venus", experimental=True,

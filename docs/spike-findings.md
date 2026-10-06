@@ -143,9 +143,10 @@ Notes:
    permission and sysconfig XML, and hide the `.apex` with an overlayfs whiteout. GmsCore then provides
    `com.google.android.gsf.gservices`.
 
-### Navigation on 16/17
-The ATV images use Launcher3's large-screen Taskbar as the navigation bar, and it draws an empty 72 px
-strip on Waydroid. `qemu.hw.mainkeys=1` removes it. Back/Home/Recents come from the window toolbar.
+### Navigation on 15, 16 and 17
+The ATV images (and minhmc's 15) use Launcher3's large-screen Taskbar as the navigation bar, and it
+draws an empty 72 px strip on Waydroid. `qemu.hw.mainkeys=1` removes it. Back/Home/Recents come from
+the window toolbar.
 
 ### Also found
 - App windows (single-window mode) stalled on every focus change: the hwcomposer hotplugs Android's
