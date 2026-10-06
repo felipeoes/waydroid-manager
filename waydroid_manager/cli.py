@@ -486,16 +486,18 @@ def cmd_doctor(o):
     if gpu.nvidia_display():
         check(os.path.exists("/dev/nvidiactl"), "the desktop is on NVIDIA: devices render there (Graphics: auto)",
               "the desktop is on an NVIDIA GPU without NVIDIA's proprietary driver: devices render in software")
-        check(find_library("epoxy") and find_library("gbm"), "libepoxy and libgbm (NVIDIA's renderer needs them)",
-              "libepoxy or libgbm missing: NVIDIA's renderer can't run")
+        check(find_library("epoxy") and find_library("gbm"), "libepoxy and libgbm (NVIDIA's renderer, other GPUs' frames)",
+              "libepoxy or libgbm missing: NVIDIA's renderer can't run, nor another GPU's frames show")
     else:
         node = gpu.host_gpu()
         check(True, "devices render on {} (Graphics: auto)".format(node) if node else
               "no usable GPU: devices render in software", "")
     for g in gpu.gpus():
         check(True, "{} ({}): config <id> set gpu {}".format(g.label, g.driver, g.pci), "")
-    check(subprocess.run(["modinfo", "vkms"], capture_output=True).returncode == 0,
-          "vkms module available (Android 17 in software)", "no vkms module: Android 17 can't render in software")
+    for mod, needs in (("vkms", "Android 14, 15 and 17 in software"), ("videodev", "Android 17"),
+                       ("squashfs", "Android 15's image"), ("erofs", "Android 16 and 17's images")):
+        check(subprocess.run(["modinfo", mod], capture_output=True).returncode == 0,
+              "{} module ({})".format(mod, needs), "no {} module: {} can't run".format(mod, needs))
     try:
         info = Daemon().info()
         check(True, "daemon {} running".format(info["version"]), "")

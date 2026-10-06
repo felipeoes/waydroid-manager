@@ -56,6 +56,7 @@ install -m755 "$SRC/scripts/migrate-from-waydroid-multi.sh" "$D$LIBDIR/migrate-f
 # it, the system's is used and those versions can't install apps or share the clipboard
 if [ -f "$SRC/build/lib/libgbinder.so.1" ]; then
     install -Dm644 "$SRC/build/lib/libgbinder.so.1" "$D$LIBDIR/lib/libgbinder.so.1"
+    install -Dm644 "$SRC/build/lib/libgbinder.LICENSE" "$D$LIBDIR/lib/libgbinder.LICENSE"
 fi
 echo "$METHOD" > "$D$LIBDIR/install-method"
 

@@ -2,6 +2,7 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Build the libgbinder Waydroid Manager ships: Android 15+ need servicemanager protocols
 # (aidl5, aidl6) that Waydroid's own libgbinder 1.1.43 lacks. Output: build/lib/libgbinder.so.1
+# and its license (BSD-3-Clause), build/lib/libgbinder.LICENSE
 # It links the system libglibutil (>= 1.0.52); libglibutil's source is only used for headers.
 #   packaging/build-libgbinder.sh     needs git, make, gcc, pkg-config, libglib2.0-dev
 set -eu
@@ -25,4 +26,5 @@ make -s -C "$WORK/glibutil" release >/dev/null
 make -s -C "$WORK/gbinder" LIBGLIBUTIL_PATH="$WORK/glibutil" release >/dev/null
 mkdir -p "$OUT"
 install -m644 "$WORK/gbinder/build/release/libgbinder.so.$GBINDER_TAG" "$OUT/libgbinder.so.1"
+install -m644 "$WORK/gbinder/LICENSE" "$OUT/libgbinder.LICENSE"
 echo "$OUT/libgbinder.so.1"

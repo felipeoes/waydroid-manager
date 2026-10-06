@@ -1,10 +1,12 @@
 # Changelog
 
-All notable changes to waydroid-multi are listed here. The format follows
-[Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow
+All notable changes to Waydroid Manager (waydroid-multi before 1.0) are listed here. The format
+follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow
 [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
+
+## [1.0.0] - 2026-10-06
 
 ### Added
 - **Pick the Android version of each device: 11, 13, 14, 15, 16 or 17**, every one with Google Play
@@ -16,6 +18,8 @@ All notable changes to waydroid-multi are listed here. The format follows
   has no Waydroid build. Stock Waydroid's own images are reused when they are the same build.
 - Android 14 and 15 get Google Play from MindTheGapps; Android 17's Google services are unpacked
   from the image so they run in a container.
+- ARM apps on 14 to 17 run on the translation their image ships (Houdini on 14, libndk on 15 to 17);
+  the `arm_translation` choice and Root (Magisk Delta) are for 11 and 13.
 - **Full GPU speed on NVIDIA**, with NVIDIA's proprietary driver: Android 13 to 17 render on the
   NVIDIA card when it shows your desktop. Android's Vulkan goes to a renderer that runs as you, one
   per device (quinovax/waydroid-nvidia's build of virglrenderer with Venus, downloaded on first use);
@@ -34,7 +38,11 @@ All notable changes to waydroid-multi are listed here. The format follows
   waydroid-multi 0.5 stops the running instances once and moves them, with their images and network
   settings, to `/var/lib/waydroid-manager`. The `waydroid-multi` command is gone.
 - The package is built for amd64 and ships its own libgbinder 1.1.53: Waydroid's 1.1.43 lacks the
-  servicemanager protocols of Android 15 and newer. `doctor` checks for them.
+  servicemanager protocols of Android 15 and newer. `doctor` checks for them. It also needs
+  libepoxy and libgbm now (NVIDIA's renderer, and frames from another GPU).
+- Devices run under their own AppArmor profile, `lxc-waydroid-manager`: stock Waydroid's, plus a
+  rule that keeps Android from replaying the host's device events. The newer images did, at every
+  boot, and that could log you out of GNOME.
 
 ### Fixed
 - An app opened in its own window (`app launch`, app launchers) no longer stalls for a moment each
@@ -157,7 +165,8 @@ First release.
 - Root daemon hardened against symlink and race attacks, root-enabling Android properties,
   and misuse of passed file descriptors. Each user sees and controls only their own instances.
 
-[Unreleased]: https://github.com/felipeoes/waydroid-multi-instances/compare/v0.5.0...HEAD
+[Unreleased]: https://github.com/felipeoes/waydroid-multi-instances/compare/v1.0.0...HEAD
+[1.0.0]: https://github.com/felipeoes/waydroid-multi-instances/compare/v0.5.0...v1.0.0
 [0.5.0]: https://github.com/felipeoes/waydroid-multi-instances/compare/v0.4.1...v0.5.0
 [0.4.1]: https://github.com/felipeoes/waydroid-multi-instances/compare/v0.4.0...v0.4.1
 [0.4.0]: https://github.com/felipeoes/waydroid-multi-instances/compare/v0.3.0...v0.4.0

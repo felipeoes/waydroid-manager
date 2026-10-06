@@ -4,7 +4,7 @@ Create and run **Android devices on Linux** with [Waydroid](https://waydro.id), 
 BlueStacks or LDPlayer do on Windows. Each device is a real Android system running natively
 in a container, not an emulator.
 
-- **Any Android version from 11 to 17**, chosen per device, all with Google Play
+- **Android 11, 13, 14, 15, 16 or 17**, chosen per device, all with Google Play
 - **Full GPU speed, NVIDIA included**: 3D games run on your graphics card, even with NVIDIA's
   proprietary driver
 - **As many devices as your PC can handle**, side by side, each with its own apps, accounts,
@@ -17,7 +17,7 @@ in a container, not an emulator.
 
 - Create a fresh device on the Android version you need, or **clone** one (including your
   normal Waydroid) to copy its apps and logins. Clones get their own device identity
-- Choose how each device draws: on your **NVIDIA** card, your system's GPU, or in software
+- Choose how each device draws: on your **NVIDIA** card, any other GPU, or in software
 - Pick a **phone or tablet resolution**, the **CPU and memory** each device may use, and a
   **device model** (Samsung, Pixel, Xiaomi, … or your own) that apps will see
 - Every device window has a **title bar and side toolbar**, LDPlayer style:
@@ -31,13 +31,40 @@ in a container, not an emulator.
   `adb devices` by name, e.g. `waydroid-account-1:5555`
 - Run **ARM-only apps**: each device has ARM translation (Houdini or libndk), or none
 
+## Android versions
+
+Each device runs the Android version picked when it is created (13 unless you choose another).
+A version is downloaded the first time a device uses it, and all devices on it share it.
+
+| Android | Build | Google Play | NVIDIA | ARM apps | Download |
+|---|---|---|---|---|---|
+| 11 | official Waydroid (LineageOS 18.1) | in the image | – | Houdini or libndk | 1.1 GB |
+| 13 | official Waydroid (LineageOS 20) | in the image | ✓ | Houdini or libndk | 1.4 GB, nothing when your Waydroid has the same build |
+| 14 | [WayDroid-ATV](https://github.com/WayDroid-ATV) (LineageOS 21) | MindTheGapps | ✓ | Houdini, the image's | 1.1 GB + 0.2 GB |
+| 15 *(experimental)* | [minhmc2007](https://huggingface.co/datasets/Minhmc2077/My_Binary_Build) (LineageOS 22.2) | MindTheGapps | ✓ | libndk, the image's | 1.2 GB + 0.2 GB |
+| 16 | WayDroid-ATV (LineageOS 23.2) | in the image | ✓ | libndk, the image's | 1.6 GB |
+| 17 *(experimental)* | WayDroid-ATV (LineageOS 24.0, a pre-release) | in the image | ✓ | libndk, the image's | 1.7 GB |
+
+- **Experimental** means a single maintainer's build (15) or a pre-release of LineageOS (17):
+  expect rough edges.
+- **Root** (Magisk Delta) works on 11 and 13.
+- A device's version is fixed: its data can't move to another Android. Clone it to get a copy on
+  the same version.
+- Android 12 has no Waydroid build.
+- MindTheGapps (+ 0.2 GB) is downloaded once for 14 and 15.
+
 ## Requirements
 
-- Linux with a Wayland desktop (GNOME, KDE Plasma, …)
+- An x86_64 PC running Linux with a Wayland desktop (GNOME, KDE Plasma, …)
 - **Waydroid installed and set up**: you can already run `waydroid show-full-ui`
+- Kernel modules for the newer images: `squashfs` (Android 15), `erofs` (16, 17), `videodev` (17),
+  and `vkms` to render 14, 15 or 17 in software. Ubuntu's and Debian's kernels have them all, and
+  `waydroid-manager doctor` checks.
+- For NVIDIA cards: NVIDIA's proprietary driver, see [Graphics](#graphics)
 - Optional: `wl-clipboard` for clipboard sharing
 
-Tested on Ubuntu 26.04 with Waydroid 1.6 and GNOME.
+Tested on Ubuntu 26.04 with Waydroid 1.6 and GNOME 50, on an NVIDIA GeForce RTX 5060 Ti (driver
+595) with an AMD Radeon iGPU.
 
 ## Install
 
@@ -111,29 +138,57 @@ waydroid-manager delete 2
 
 Run `waydroid-manager --help` to see all commands.
 
+## Graphics
+
+Each device's **Graphics** setting (in Settings, or `config N set gpu …`; it applies at the next
+start) decides where Android draws:
+
+| Choice | Where Android draws |
+|---|---|
+| **Automatic** (default) | on your NVIDIA card when it shows your desktop (Android 13 to 17); otherwise on the GPU your normal Waydroid uses; in software when neither can |
+| **Software** | on the CPU: slower, above all in 3D games, but it works on any PC |
+| **GPU 0, GPU 1, …** | on that card, e.g. your integrated GPU while the desktop runs on NVIDIA |
+
+`waydroid-manager doctor` lists your GPUs and what Automatic picks.
+
+**On NVIDIA** devices need NVIDIA's proprietary driver (`nvidia` or `nvidia-open`) with its
+Vulkan driver. RAID: Shadow Legends runs at 60 fps there, against 9 in software.
+- The first start on NVIDIA downloads [waydroid-nvidia](https://github.com/quinovax/waydroid-nvidia)'s
+  renderer and Android drivers (about 25 MB).
+- Each running device has its own renderer process, which runs as you. Its log is
+  `~/.cache/waydroid-manager/renderer-N.log`.
+- waydroid-nvidia is young (0.1): a game may hit a driver error, and video memory use grows with
+  every device and app.
+
+**Another GPU under a desktop on NVIDIA** (an iGPU, say) works too. GNOME on NVIDIA can't show
+that card's buffers directly, so the card copies each frame into memory the desktop can show.
+
 ## Good to know
 
 - **Resolution, device model, CPU and memory** changes apply at the next start of the instance.
 - **Writable system:** the per-instance "Writable system" switch (`config set N system_writable true`,
   then restart) lets Android change `/system` and `/vendor`, e.g. to install Magisk. Changes live in
-  the instance's `overlay_rw/` and are lost when Waydroid's images are upgraded. Turning it off keeps
-  earlier changes visible but read-only.
+  the instance's `overlay_rw/` and are lost when the device moves to a newer Android build. Turning
+  it off keeps earlier changes visible but read-only.
 - **Root:** the per-instance "Root" switch (`config set N root true`, then restart) installs
   Magisk Delta, the build `waydroid_script` uses, so apps can get root. The first start downloads
   it, so it needs internet. Then install the Magisk app:
-  `waydroid-manager app install N /var/lib/waydroid-manager/magisk-delta.apk`. Official Magisk does
-  not work on Waydroid (no boot image). The switch is open to the instance owner, and root in
-  Android is close to root on the host, so only enable it on machines you trust.
+  `waydroid-manager app install N /var/lib/waydroid-manager/magisk-delta.apk`. It works on Android
+  11 and 13. Official Magisk does not work on Waydroid (no boot image). The switch is open to the
+  instance owner, and root in Android is close to root on the host, so only enable it on machines
+  you trust.
 - **ARM translation:** instances run ARM-only apps through Houdini by default. In Settings, or with
   `config set N arm_translation libndk` (or `none`), pick libndk or turn it off, then restart. The
   first start with each one downloads it (the builds `waydroid_script` uses), so it needs internet;
-  without internet the instance starts without it. Works on x86_64 with Android 11 or 13 images.
+  without internet the instance starts without it. That choice is for Android 11 and 13: 14 to 17
+  run ARM apps on the translation their image comes with, and `none` turns it off.
 - **adb:** once Android has started, each instance (#0 too) connects to adb by itself as
   `waydroid-<name>:5555`. For example, `adb -s waydroid-account-1:5555 shell`. Like the Android
   Studio emulator, there is no "Allow USB debugging?" prompt: your adb key is trusted in your own
   instances. The names are kept in a marked block in `/etc/hosts`.
-- **Updating Waydroid:** run `waydroid upgrade` as usual. Instances pick up the new Android
-  version the next time they start.
+- **Updates:** `waydroid upgrade` updates your normal Waydroid, and #0 with it, as usual. The other
+  devices get newer builds of their Android with `waydroid-manager images update` (or **Check for
+  Android updates** in the app's menu), and switch to them at their next start.
 - **Google Play on a clone:** a clone counts as a new device, so register it once. Run
   `waydroid-manager gsf-id <instance>` and enter the number at
   <https://www.google.com/android/uncertified>.
@@ -170,6 +225,23 @@ Your normal Waydroid is never modified.
 ## Contributing
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for how it works inside and how to develop it.
+
+## Third-party software
+
+Waydroid Manager downloads these when first needed, each pinned to a version and checked by
+sha256. They keep their own licenses.
+
+| What | From | For |
+|---|---|---|
+| Android images | [Waydroid](https://waydro.id) (11, 13), [WayDroid-ATV](https://github.com/WayDroid-ATV) (14, 16, 17), [minhmc2007](https://huggingface.co/datasets/Minhmc2077/My_Binary_Build) (15) | the devices |
+| MindTheGapps 14 | [MindTheGappsBuilder](https://github.com/s1204IT/MindTheGappsBuilder) | Google Play on 14 and 15 |
+| virglrenderer with Venus, Mesa's Venus driver, ANGLE, minigbm | [waydroid-nvidia](https://github.com/quinovax/waydroid-nvidia) 0.1.2 (MIT, upstream MIT and BSD) | rendering on NVIDIA |
+| Houdini, libndk | the builds [waydroid_script](https://github.com/casualsnek/waydroid_script) uses | ARM apps on 11 and 13 |
+| Magisk Delta | the build waydroid_script uses (GPL-3.0) | Root |
+
+Google's apps, in the images and in MindTheGapps, are under Google's terms. The package ships
+[libgbinder](https://github.com/mer-hybris/libgbinder) 1.1.53 (BSD-3-Clause, its license
+installed next to it) and Wayland protocol files (MIT).
 
 ## License
 

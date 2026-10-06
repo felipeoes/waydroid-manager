@@ -76,7 +76,7 @@ quinovax/waydroid-nvidia v0.1.2 (sha256 checked against its SHA256SUMS).
 |---|---|---|---|
 | 11 | official OTA lineage-18.1 GAPPS 20250628 | ext4 | boots in 12 s (SwiftShader); Houdini pin for SDK 30 works; Play Store in image |
 | 13 | official OTA lineage-20.0 GAPPS | ext4 | as above (NVIDIA) |
-| 14 | WayDroid-ATV 20260125 lineage-21.0 (vanilla) | ext4 | NVIDIA ✓; AMD ✓ with quirk props; software ✗ |
+| 14 | WayDroid-ATV 20260125 lineage-21.0 (vanilla) | ext4 | NVIDIA ✓; AMD ✓ with quirk props; software ✗ (solved later: vkms, below) |
 | 15 | minhmc2007 lineage-22.2 20261005 (vanilla) | squashfs | NVIDIA ✓, boots in 15 s |
 | 15 | WayDroid-ATV 20260224 lineage-22.2 | squashfs | ✗: system_server dies building MediaCodecList |
 | 16 | WayDroid-ATV OTA a16-qpr2 lineage-23.2 GAPPS | EROFS + ext4 | NVIDIA ✓ (RAID renders via libndk), software ✓ |
@@ -114,7 +114,7 @@ Notes:
   iGPU).
 - **14/15 software mode:** the hwcomposer can't read gralloc-default buffer metadata (format 0) and
   sends `wl_shm` format −EINVAL. It's fixed in source (android_hardware_waydroid `1761e9a7af`) but not
-  in any published build.
+  in any published build. Solved later with vkms, below.
 - **ATV 15:** a `c2.ffmpeg.dts.decoder` entry with two `<Type>`s trips
   `AudioCapabilities::getDefaultFormat` (ubsan). Fixed upstream (stagefright-plugins `a44e827c55`); the
   minhmc build includes it.
@@ -151,3 +151,67 @@ strip on Waydroid. `qemu.hw.mainkeys=1` removes it. Back/Home/Recents come from 
 - App windows (single-window mode) stalled on every focus change: the hwcomposer hotplugs Android's
   display on each sized `xdg_toplevel.configure`. Fixed in the proxy (only size changes pass through).
 - 15 started in time zone GMT-11: pass the host time zone.
+
+# Found while building 1.0.0 (2026-10-05 and 06)
+
+Same host. Every item below is in the code now.
+
+## Android replayed the host's device events (GNOME logouts)
+- The WayDroid-ATV images' ueventd remounts sysfs (`fsopen`/`fsmount`/`fspick` RECONFIGURE) and, at
+  coldboot, writes `add` into every `uevent` file it finds. Through the privileged container that is
+  the host's sysfs: every host device event fired again. With vgem around, GNOME re-probed its GPUs,
+  and the session ended.
+- Fix: an AppArmor profile, stock's `lxc-waydroid` plus `deny /**/uevent w,`. Deny rules hold even in
+  complain mode. lxc-start only switches to profiles named `lxc-*`, hence `lxc-waydroid-manager`.
+- A seccomp filter on the mount calls was tried first: it broke Android 16's apexd.
+
+## Software rendering on 14, 15 and 17: vkms
+17 has no gralloc.default mapper, and 14 and 15's hwcomposer can't show gralloc.default buffers.
+They render on the CPU into buffers of a hidden vkms device instead:
+- The device is made through configfs (`/sys/kernel/config/vkms/waydroid-manager`: one plane, crtc,
+  encoder and connector). The connector is disconnected, so no desktop shows it, and a udev rule
+  loaded first tags it `mutter-device-ignore` for GNOME.
+- Its node must be `0666`: app processes open it too. At `0660` Android 13 on NVIDIA (which uses
+  the same node, below) flickered and went black at times.
+- minigbm allocates linear dumb buffers there: `minigbm_generic` on 14, plain `minigbm` on 15 and
+  17. The hwcomposer only reads the metadata of gralloc modules named `minigbm_*`, so 15's sends the
+  −errno format, which the proxy turns into ABGR8888. Pastel draws, and 17 runs ANGLE on it.
+  `minigbm_gbm_mesa` on vkms fails with a texture error.
+- GNOME can't import vkms dmabufs, so the proxy hands the same fd over as a `wl_shm` pool.
+
+## NVIDIA
+- minigbm opens a DRM device even with the gbm wrapper. Without one, SurfaceFlinger aborts with
+  "output buffer not gpu writeable". The vkms node stands in.
+- **17: games' windows were black.** Mesa's `vk_image_usage_to_ahb_usage` turns
+  `VK_IMAGE_CREATE_MUTABLE_FORMAT_BIT` into `CPU_WRITE_RARELY` (to force a linear layout), and
+  NVIDIA can't create those images: an instrumented Venus showed the creation failing with -11.
+  ANGLE asks for mutable-format swapchains, and only 17's libvulkan takes the producer usage from
+  `vkGetPhysicalDeviceImageFormatProperties2`. Fix: `debug.angle.feature_overrides_disabled` with
+  `supportsSwapchainMutableFormat`. ANGLE's override lists are colon-separated, not comma-separated.
+- RAID: Shadow Legends: 62 fps on 16 and 17, 56–60 on 13.
+
+## Loop devices and device-mapper
+- 14, 15 and 16 need loop devices too, not only 17.
+- apexd uses device-mapper when it can open it: it left 35 dm devices on the host. The containers
+  now deny `c 10:236`.
+- An LXC `lxc.cgroup2.devices.deny` line on its own turns the device list into deny-all. Start with
+  `lxc.cgroup2.devices.allow = a`.
+
+## A picked GPU
+- Stock's generated `ro.hardware.gralloc`/`egl`/`vulkan` props must not be inherited: on a picked
+  GPU they kept Android in software. So did a leftover user prop `ro.waydroid.software_rendering=1`.
+
+## Another GPU under a desktop on NVIDIA
+- GNOME on NVIDIA rejects the AMD iGPU's dmabufs (tiled, modifier `0x200000000401b03`; mutter#3930).
+- `minigbm_gbm_mesa` honours the hwcomposer's `waydroid.modifiers.*` props (the compositor's
+  modifiers ∩ the GPU's), which gives LINEAR buffers. Handed to GNOME as `wl_shm` over the same fd,
+  they displayed, but gnome-shell sat at 78% CPU idle and 99% animating.
+- Those buffers live in the iGPU's VRAM carve-out, and the CPU reads them through the PCI BAR,
+  uncached: 340 MB/s, 11 ms a 720p frame. `AMD_DEBUG=nowc` doesn't help (that is GTT, not VRAM).
+- Mapping them for reading through libgbm makes radeonsi blit them into a cached GTT staging
+  texture first: 0.8 ms. The proxy now copies every attached frame that way into a memfd of its
+  own. With RAID at 62 fps, gnome-shell is at 10% CPU and the proxy at 3%.
+
+## Measuring
+- `dumpsys SurfaceFlinger --latency` is empty on 16 and newer. `dumpsys SurfaceFlinger --timestats
+  -enable`, then `-dump`, gives per-layer fps on every version.

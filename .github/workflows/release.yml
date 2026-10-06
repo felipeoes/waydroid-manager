@@ -40,6 +40,7 @@ jobs:
           dpkg-deb --info dist/*.deb
           dpkg-deb --contents dist/*.deb | grep -q './usr/lib/waydroid-manager/waydroid_manager/daemon/main.py'
           dpkg-deb --contents dist/*.deb | grep -q './usr/lib/waydroid-manager/lib/libgbinder.so.1'
+          dpkg-deb --contents dist/*.deb | grep -q './usr/lib/waydroid-manager/lib/libgbinder.LICENSE'
 
       - name: Release notes from CHANGELOG.md
         run: |

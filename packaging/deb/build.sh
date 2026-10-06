@@ -13,10 +13,14 @@ STAGE="$(mktemp -d)"
 trap 'rm -rf "$STAGE"' EXIT
 export SOURCE_DATE_EPOCH="${SOURCE_DATE_EPOCH:-$(git -C "$SRC" log -1 --format=%ct 2>/dev/null || date +%s)}"
 
-[ -f "$SRC/build/lib/libgbinder.so.1" ] || "$SRC/packaging/build-libgbinder.sh" >/dev/null
+[ -f "$SRC/build/lib/libgbinder.so.1" ] && [ -f "$SRC/build/lib/libgbinder.LICENSE" ] ||
+    "$SRC/packaging/build-libgbinder.sh" >/dev/null
 ARCH="$(dpkg --print-architecture)"
 "$SRC/scripts/install.sh" --destdir "$STAGE" --prefix /usr --no-activate --method deb >/dev/null
-install -Dm644 "$SRC/LICENSE" "$STAGE/usr/share/doc/waydroid-manager/copyright"
+mkdir -p "$STAGE/usr/share/doc/waydroid-manager"
+{ cat "$SRC/LICENSE"
+  printf "\n\nusr/lib/waydroid-manager/lib/libgbinder.so.1 is libgbinder (github.com/mer-hybris/libgbinder):\n\n"
+  cat "$SRC/build/lib/libgbinder.LICENSE"; } > "$STAGE/usr/share/doc/waydroid-manager/copyright"
 
 mkdir -p "$STAGE/DEBIAN"
 for f in preinst postinst prerm postrm; do
