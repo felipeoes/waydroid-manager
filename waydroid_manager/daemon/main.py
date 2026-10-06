@@ -25,7 +25,7 @@ import dbus.mainloop.glib
 import dbus.service
 from gi.repository import GLib
 
-from .. import __version__, catalog, paths, stock, stockctl
+from .. import __version__, catalog, gpu, paths, stock, stockctl
 from ..instance import (CREATE_ONLY, Instance, SETTINGS, list_ids, validate_adb_key, validate_id, validate_prop,
                         validate_setting)
 from ..netconfig import host_names
@@ -168,7 +168,8 @@ class Manager(dbus.service.Object):
         """Refuse settings an instance's Android version can't run."""
         if settings.get("root") == "true" and catalog.get(android, "sdk") not in container.ROOT_SDKS:
             raise Error("root is only available on Android 11 and 13", "InvalidArgs")
-        if settings.get("gpu") == "nvidia" and android in catalog.VERSIONS and not catalog.get(android, "nvidia"):
+        picked = next((g for g in gpu.gpus() if g.pci == settings.get("gpu")), None)
+        if picked and picked.driver == "nvidia" and android in catalog.VERSIONS and not catalog.get(android, "nvidia"):
             raise Error("Android {} has no NVIDIA build".format(android), "InvalidArgs")
 
     def cpus_busy(self, iid):
@@ -843,7 +844,9 @@ class Manager(dbus.service.Object):
     def PrepareGpu(self, iid, sender, reply, error):
         """How the instance renders at its next start, called by its session before Start:
         {"mode": see gpu.mode, "renderer": for nvidia, the directory of the renderer the session
-        runs}. NVIDIA's binaries are downloaded on first use."""
+        runs, "cpu_buffers": "true" when the desktop can't import Android's buffers as dmabufs
+        (CPU-rendered ones; another GPU's under a desktop on NVIDIA)}. NVIDIA's binaries are
+        downloaded on first use."""
         try:
             inst = self.load(iid)
             self.check_owner(inst, self.caller(sender))
@@ -853,9 +856,10 @@ class Manager(dbus.service.Object):
         def prepare():
             mode = container.render_for(inst)[0]
             if mode != "nvidia":
-                return {"mode": mode, "renderer": ""}
+                cpu = mode == "vkms" or mode == "gpu" and gpu.nvidia_display()
+                return {"mode": mode, "renderer": "", "cpu_buffers": "true" if cpu else "false"}
             nvidia.guest_layers(catalog.get(container.android_of(inst), "nvidia"))
-            return {"mode": mode, "renderer": nvidia.host_dir()}
+            return {"mode": mode, "renderer": nvidia.host_dir(), "cpu_buffers": "false"}
         self.run_async(inst.id, prepare, reply, error, lock=False)
 
     @dbus.service.method(paths.DBUS_IFACE, in_signature="", out_signature="s",

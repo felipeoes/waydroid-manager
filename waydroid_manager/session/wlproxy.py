@@ -554,6 +554,7 @@ class Session:
         self.shm = None          # the HWC's wl_shm, and the formats the compositor takes through it
         self.shm_formats = set()
         self.dmabuf_planes = {}  # cpu_buffers: params id -> [(fd copy, offset, stride, modifier)]
+        self.dmabuf_kept = set()  # (planes, modifier, format) passed on as dmabufs, noted once each
         # input routing
         self.last_serial = 0
         self.ptr_focus = None    # ("mine", surface) | ("tree", surface) | None
@@ -823,9 +824,9 @@ class Session:
         return None
 
     def _dmabuf_request(self, obj, iface, op, r):
-        """Android renders on the CPU (cpu_buffers): its dmabufs reach the compositor as shared
-        memory over the same fd. A compositor may not import dmabufs from another device (GNOME
-        on NVIDIA doesn't), but it can map these."""
+        """cpu_buffers: Android's linear dmabufs reach the compositor as shared memory over the
+        same fd. A compositor may not import dmabufs from another device (GNOME on NVIDIA
+        doesn't, from vkms or an iGPU), but it can map these."""
         if iface == "zwp_linux_dmabuf_v1":
             if op == P.ZWP_LINUX_DMABUF_CREATE_PARAMS:
                 self.objs[r.n()] = "zwp_linux_buffer_params_v1"
@@ -841,14 +842,23 @@ class Session:
             return None
         planes = self.dmabuf_planes.pop(obj, [])
         try:
-            if op == P.ZWP_LINUX_BUFFER_PARAMS_DESTROY or len(planes) != 1 or self.shm is None:
+            if op == P.ZWP_LINUX_BUFFER_PARAMS_DESTROY or self.shm is None:
                 return None
             buf, width, height, fmt = r.n(), r.i(), r.i(), r.u()
+            kind = (len(planes), planes[0][3] if planes else None, fmt)
+            if len(planes) != 1 and kind not in self.dmabuf_kept:
+                self.dmabuf_kept.add(kind)
+                sys.stderr.write("wlproxy: dmabuf with {} planes left as is\n".format(len(planes)))
+            if len(planes) != 1:
+                return None
             fd, offset, stride, modifier = planes[0]
             code = {P.DRM_FORMAT_ARGB8888: 0, P.DRM_FORMAT_XRGB8888: 1}.get(fmt, fmt)
             size = offset + stride * height
             if modifier not in (P.DRM_FORMAT_MOD_LINEAR, P.DRM_FORMAT_MOD_INVALID) or \
                     code not in self.shm_formats or os.lseek(fd, 0, os.SEEK_END) < size:
+                if kind not in self.dmabuf_kept:
+                    self.dmabuf_kept.add(kind)
+                    sys.stderr.write("wlproxy: dmabuf modifier {:#x} format {:#x} left as is\n".format(modifier, fmt))
                 return None
             planes.clear()                  # the fd now travels with create_pool
             pool = self.new_id("pool")
@@ -1965,7 +1975,7 @@ class Config:
         self.frame = frame
         self.theme = theme
         self.close_action = close_action
-        self.cpu_buffers = cpu_buffers   # Android renders in software: show its dmabufs as shm
+        self.cpu_buffers = cpu_buffers   # the compositor can't import Android's dmabufs: show linear ones as shm
 
 
 class Proxy:

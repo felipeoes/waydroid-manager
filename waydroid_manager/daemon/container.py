@@ -48,6 +48,7 @@ STOCK_WAS_ACTIVE = os.path.join(paths.RUN_DIR, "stock-was-active")  # release_st
 # mappings belong to the host: they outlive the container and collide between devices. Without
 # it apexd mounts its loop devices directly, as 16 and 17 do.
 DEVICE_DENY = "lxc.cgroup2.devices.allow = a\nlxc.cgroup2.devices.deny = c 10:236 rwm\n"   # alone, a deny allows nothing
+GRAPHICS_PROPS = ("ro.hardware.gralloc", "ro.hardware.egl", "ro.hardware.vulkan")
 APPARMOR_PROFILE = "lxc-waydroid-manager"   # lxc-start may only switch to lxc-* profiles
 APPARMOR_FILE = os.path.join(paths.RUN_DIR, "apparmor-profile")
 
@@ -206,7 +207,7 @@ def pinned_cpus(inst):
 
 
 def write_lxc_config(inst, net, cpus_busy=(), render=("gpu", None)):
-    """render: (gpu mode, our vkms device's node or None), see render_for."""
+    """render: (gpu mode, Android's DRM node or None), see render_for."""
     a = stock_args(inst)
     cpuset = inst.get("cpuset")
     if cpuset == "all":
@@ -228,11 +229,11 @@ def write_lxc_config(inst, net, cpus_busy=(), render=("gpu", None)):
     nodes = stock.tools().helpers.lxc.generate_nodes_lxc_config(a)
     if catalog.get(inst.get("android"), "loop") and inst.index != 0:
         nodes += loop_entries()
-    mode, card = render
-    if mode != "gpu":       # Venus needs no DRM device, and software must not take a GPU
+    mode, node = render
+    if node or mode != "gpu":   # only the one picked: minigbm takes the first DRM device it can use
         nodes = [n for n in nodes if "= /dev/dri/" not in n]
-    if card:                # the only DRM device: minigbm takes the first one it can use
-        nodes.append("lxc.mount.entry = {} {} none bind,create=file 0 0".format(card, card[1:]))
+    if node:
+        nodes.append("lxc.mount.entry = {} {} none bind,create=file 0 0".format(node, node[1:]))
     _write(os.path.join(inst.lxc_dir, "config_nodes"), "\n".join(nodes) + "\n")
     session = os.path.join(inst.lxc_dir, "config_session")
     if not os.path.exists(session):
@@ -302,16 +303,20 @@ VKMS_DEVICE = "/sys/kernel/config/vkms/waydroid-manager"
 
 
 def render_for(inst):
-    """(gpu mode, our vkms device's node or None) of this start; refuses what can't run. The
-    vkms node is Android's only DRM device in software (vkms) and NVIDIA modes."""
+    """(gpu mode, Android's DRM node or None: stock Waydroid's pick) of this start; refuses what
+    can't run. In software (vkms) and NVIDIA modes the node is our vkms device's; for a picked
+    GPU, its render node."""
     key = android_of(inst)
-    mode = gpu.mode(key, inst.get("gpu"))
+    try:
+        mode, node = gpu.mode(key, inst.get("gpu"))
+    except ValueError as e:
+        raise RuntimeError(str(e))
     if mode == "nvidia":
         if not (key and catalog.get(key, "nvidia")):
-            raise RuntimeError("Android {} has no NVIDIA build; set Graphics to Automatic or Software".format(key))
+            raise RuntimeError("Android {} has no NVIDIA build; pick another GPU in Graphics".format(key))
         if not nvidia.available():
             raise RuntimeError("NVIDIA rendering needs NVIDIA's proprietary driver")
-    return mode, (vkms_card() if mode in ("vkms", "nvidia") else None)
+    return mode, (vkms_card() if mode in ("vkms", "nvidia") else node)
 
 
 def vkms_card():
@@ -443,7 +448,8 @@ def write_props(inst, session, arm, render=("gpu", None)):
     stock_props = stock.load_stock_cfg()["properties"]
     eff["properties"] = {}
     for k, v in stock_props.items():
-        eff["properties"][k] = v
+        if k not in GRAPHICS_PROPS:     # stock's own choice; ours follow the Graphics setting
+            eff["properties"][k] = v
     kind = inst.get("arm_translation")
     if arm:
         eff["properties"].update(armtrans.PROPS[kind])
@@ -454,18 +460,25 @@ def write_props(inst, session, arm, render=("gpu", None)):
     key = android_of(inst)
     if key:
         eff["properties"].update(catalog.get(key, "props", {}))
-    mode, card = render
+    mode, node = render
+    if mode == "gpu" and node:
+        eff["waydroid"]["drm_device"] = node        # stock's props follow the picked GPU
     if mode == "vkms":
         eff["properties"].update(gpu.VKMS_PROPS)
         eff["properties"].update(catalog.get(key, "software_props", {}))
     elif mode == "software":
         eff["properties"].update(gpu.SOFTWARE_PROPS)
+    elif mode == "gpu" and gpu.nvidia_display():
+        # The desktop can't import this GPU's buffers, so the window proxy shows linear ones as
+        # shared memory: minigbm_gbm_mesa allocates linear when NVIDIA's layouts are all the
+        # desktop offers besides it (the hwcomposer publishes them as waydroid.modifiers.*)
+        eff["properties"].update(gpu.OTHER_GPU_PROPS)
     elif mode == "nvidia":
         eff["properties"].update(gpu.NVIDIA_PROPS)
         eff["properties"]["ro.hardware.gralloc"] = nvidia.GRALLOC[catalog.get(key, "nvidia")]
         eff["properties"].update(catalog.get(key, "nvidia_props", {}))
-    if card:
-        eff["properties"]["gralloc.gbm.device"] = card
+    if node:
+        eff["properties"]["gralloc.gbm.device"] = node
     for k, v in inst.cfg["properties"].items():
         if inst.owner_uid != 0 and PROTECTED_PROP_RE.match(k):
             log.warning("%s: ignoring property %s (only root may set it)", inst.id, k)

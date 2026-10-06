@@ -492,6 +492,8 @@ def cmd_doctor(o):
         node = gpu.host_gpu()
         check(True, "devices render on {} (Graphics: auto)".format(node) if node else
               "no usable GPU: devices render in software", "")
+    for g in gpu.gpus():
+        check(True, "{} ({}): config <id> set gpu {}".format(g.label, g.driver, g.pci), "")
     check(subprocess.run(["modinfo", "vkms"], capture_output=True).returncode == 0,
           "vkms module available (Android 17 in software)", "no vkms module: Android 17 can't render in software")
     try:

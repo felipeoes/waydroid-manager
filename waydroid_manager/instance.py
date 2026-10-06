@@ -125,6 +125,13 @@ def _device(v):
     return s
 
 
+def _gpu(v):
+    s = str(v).strip().lower()
+    if s not in ("auto", "software") and not gpu.PCI_RE.match(s):
+        raise ValueError("expected auto, software or a GPU's PCI address (see 'waydroid-manager doctor')")
+    return s
+
+
 def _choice(options):
     def f(v):
         s = str(v).strip().lower()
@@ -161,8 +168,8 @@ SETTINGS = {
     "arm_translation": (_choice(ARM), "houdini", "runs ARM apps: houdini|libndk|none (restart)"),
     "android": (_choice(tuple(catalog.VERSIONS)), catalog.DEFAULT,
                 "Android version: " + "|".join(catalog.VERSIONS) + " (chosen at creation)"),
-    "gpu": (_choice(gpu.GPU_MODES), "auto", "graphics: auto (the GPU that shows the desktop, if usable) | "
-            "nvidia | software (restart)"),
+    "gpu": (_gpu, "auto", "graphics: auto (the GPU that shows the desktop, if usable) | software | "
+            "a GPU's PCI address, listed by doctor (restart)"),
     "desktop_apps": (_bool, "false", "create desktop entries for this instance's apps"),
 }
 

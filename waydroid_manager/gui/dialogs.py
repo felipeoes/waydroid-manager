@@ -9,7 +9,7 @@ gi.require_version("Adw", "1")
 gi.require_version("Pango", "1.0")
 from gi.repository import Adw, GLib, Gtk, Pango  # noqa: E402
 
-from .. import catalog, devices  # noqa: E402
+from .. import catalog, devices, gpu  # noqa: E402
 from ..instance import host_memory_bytes, setting_default  # noqa: E402
 
 # LDPlayer-style presets: (width, height, dpi)
@@ -18,9 +18,17 @@ PHONE = [(540, 960, 240), (720, 1280, 320), (900, 1600, 320), (1080, 1920, 440),
 ACTIONS = [("stop", "Stop the instance"), ("freeze", "Freeze (pause)"), ("none", "Keep running")]
 IDLE = [("freeze", "Freeze (pause)"), ("none", "Keep running"), ("stop", "Stop the instance")]
 ARM = [("houdini", "Houdini"), ("libndk", "libndk"), ("none", "Off")]
-GPU = [("auto", "Automatic"), ("nvidia", "NVIDIA"), ("software", "Software")]
 ANDROID = [(k, catalog.label(k)) for k in catalog.VERSIONS]
 ROOT_VERSIONS = ("11", "13")    # Magisk Delta works there only
+
+
+def gpu_options(current):
+    """Automatic, Software, then the host's GPUs ("GPU 0: NVIDIA GeForce RTX 5060 Ti"). A picked
+    GPU that's gone stays listed, so saving doesn't switch it."""
+    opts = [("auto", "Automatic"), ("software", "Software")] + [(g.pci, g.label) for g in gpu.gpus()]
+    if current not in dict(opts):
+        opts.append((current, "Missing GPU ({})".format(current)))
+    return opts
 
 
 def cpu_options():
@@ -222,10 +230,11 @@ class InstanceDialog(_Dialog):
                                                               "time. Restart the instance to apply.")
         _select(self.arm_row, ARM, self.info.get("arm_translation", "houdini"))
         g.add(self.arm_row)
-        self.gpu_row = _combo("Graphics", GPU, subtitle="Automatic uses the GPU that shows your desktop "
+        self.gpu_opts = gpu_options(self.info.get("gpu", "auto"))
+        self.gpu_row = _combo("Graphics", self.gpu_opts, subtitle="Automatic uses the GPU that shows your desktop "
                                                         "when it can; Software works on any PC but is "
                                                         "slower. Restart the instance to apply.")
-        _select(self.gpu_row, GPU, self.info.get("gpu", "auto"))
+        _select(self.gpu_row, self.gpu_opts, self.info.get("gpu", "auto"))
         g.add(self.gpu_row)
         self._android_changed()
         if mode == "edit":
@@ -319,7 +328,7 @@ class InstanceDialog(_Dialog):
         v["system_writable"] = "true" if self.writable_row.get_active() else "false"
         v["root"] = "true" if self.root_row.get_active() else "false"
         v["arm_translation"] = ARM[self.arm_row.get_selected()][0]
-        v["gpu"] = GPU[self.gpu_row.get_selected()][0]
+        v["gpu"] = self.gpu_opts[self.gpu_row.get_selected()][0]
         if self.mode == "edit":
             v["desktop_apps"] = "true" if self.apps_row.get_active() else "false"
             seen = set()

@@ -134,27 +134,46 @@ class PropsTest(unittest.TestCase):
 
 
 class GpuTest(unittest.TestCase):
-    def host(self, nvidia_desktop, igpu):
-        exists = os.path.exists
-        return mock.patch.multiple(gpu, nvidia_display=lambda: nvidia_desktop,
-                                   host_gpu=lambda: "/dev/dri/renderD129" if igpu else None), \
-            mock.patch.object(gpu.os.path, "exists", lambda p: nvidia_desktop if p == "/dev/nvidiactl" else exists(p))
+    NV = gpu.Gpu("0000:01:00.0", "GPU 0: NVIDIA GeForce RTX 5060 Ti", "nvidia", "/dev/dri/renderD128")
+    AMD = gpu.Gpu("0000:11:00.0", "GPU 1: AMD Radeon Graphics", "amdgpu", "/dev/dri/renderD129")
 
-    def modes(self, android, **host):
-        a, b = self.host(**host)
-        with a, b:
-            return [gpu.mode(android, s) for s in gpu.GPU_MODES]      # auto, nvidia, software
+    def modes(self, android, nvidia_desktop, igpu, settings=("auto", "software")):
+        exists = os.path.exists
+        with mock.patch.multiple(gpu, nvidia_display=lambda: nvidia_desktop,
+                                 host_gpu=lambda: self.AMD.node if igpu else None,
+                                 gpus=lambda: [self.NV, self.AMD]), \
+                mock.patch.object(gpu.os.path, "exists",
+                                  lambda p: nvidia_desktop if p == "/dev/nvidiactl" else exists(p)):
+            return [gpu.mode(android, s) for s in settings]
 
     def test_desktop_on_nvidia(self):
-        self.assertEqual(self.modes("13", nvidia_desktop=True, igpu=True), ["nvidia", "nvidia", "software"])
-        self.assertEqual(self.modes("17", nvidia_desktop=True, igpu=True), ["nvidia", "nvidia", "vkms"])
+        self.assertEqual(self.modes("13", True, True), [("nvidia", None), ("software", None)])
+        self.assertEqual(self.modes("17", True, True), [("nvidia", None), ("vkms", None)])
         # no NVIDIA build for 11: never the iGPU, whose buffers the desktop can't show
-        self.assertEqual(self.modes("11", nvidia_desktop=True, igpu=True)[0], "software")
+        self.assertEqual(self.modes("11", True, True)[0], ("software", None))
 
     def test_desktop_on_another_gpu_or_none(self):
-        self.assertEqual(self.modes("16", nvidia_desktop=False, igpu=True)[0], "gpu")
-        self.assertEqual(self.modes("17", nvidia_desktop=False, igpu=False)[0], "vkms")
-        self.assertEqual(self.modes(None, nvidia_desktop=False, igpu=False)[0], "software")   # stock on 10
+        self.assertEqual(self.modes("16", False, True)[0], ("gpu", None))       # stock Waydroid's pick
+        self.assertEqual(self.modes("17", False, False)[0], ("vkms", None))
+        self.assertEqual(self.modes(None, False, False)[0], ("software", None))  # stock on 10
+
+    def test_picked_gpu(self):
+        self.assertEqual(self.modes("16", True, True, ("0000:11:00.0", "0000:01:00.0")),
+                         [("gpu", "/dev/dri/renderD129"), ("nvidia", None)])
+        with self.assertRaises(ValueError):
+            self.modes("16", True, True, ("0000:99:00.0",))
+
+    def test_marketing_name_from_pci_ids(self):
+        with tempfile.NamedTemporaryFile("w", suffix=".ids") as f:
+            f.write("10de  NVIDIA Corporation\n\t2d04  GB206 [GeForce RTX 5060 Ti]\n"
+                    "1002  Advanced Micro Devices, Inc. [AMD/ATI]\n\t13c0  Granite Ridge [Radeon Graphics]\n")
+            f.flush()
+            with mock.patch.object(gpu, "PCI_IDS", (f.name,)):
+                self.assertEqual(gpu._pci_name("1002", "13c0"), "Radeon Graphics")
+                self.assertIsNone(gpu._pci_name("1002", "ffff"))
+        self.assertEqual(validate_setting("gpu", "0000:11:00.0"), "0000:11:00.0")
+        with self.assertRaises(ValueError):
+            validate_setting("gpu", "nvidia")
 
 
 class NvidiaLayerTest(unittest.TestCase):

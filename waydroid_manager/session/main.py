@@ -417,7 +417,7 @@ class Session:
         if not os.path.exists(upstream):
             raise RuntimeError("Wayland socket {} not found; is a Wayland compositor running?".format(upstream))
         render = self.daemon.prepare_gpu(self.iid)
-        wl = self.start_proxy(upstream, cpu_buffers=render["mode"] == "vkms")
+        wl = self.start_proxy(upstream, cpu_buffers=render["cpu_buffers"] == "true")
         if not os.path.exists(desktop.launcher_path(self.iid)):
             desktop.write_launcher(self.iid, self.inst.name)
         self.session = self.session_dict(wl)
