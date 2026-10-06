@@ -51,7 +51,9 @@ jobs:
           cat >> notes.md <<'NOTES'
 
           ### Install (Ubuntu 24.04+ / Debian 13+)
-          Download the `.deb` below, then:
+          First set up Waydroid as [its install guide](https://docs.waydro.id/usage/install-on-desktops)
+          says: its package repository has `waydroid` and `python3-gbinder`, which this package needs.
+          Then download the `.deb` below and install it (apt installs the rest):
           ```sh
           sudo apt install ./waydroid-manager_*_amd64.deb
           ```
