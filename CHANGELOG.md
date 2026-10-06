@@ -60,6 +60,8 @@ follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions f
 ### Fixed
 - The manager works on Ubuntu 24.04: since 0.1 it used widgets from newer libadwaita than 24.04's
   1.5, so its instance list stayed empty and Settings didn't open. Newer libadwaita still gets them.
+- The close confirmation of an instance window shows the manager's icon in the dock, not a generic
+  one: it reported its script name as its app id.
 - An app opened in its own window (`app launch`, app launchers) no longer stalls for a moment each
   time its window gains or loses focus: the desktop's focus change made Waydroid reconnect Android's
   display every time.

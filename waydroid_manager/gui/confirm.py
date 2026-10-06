@@ -10,10 +10,9 @@ import gi
 
 gi.require_version("Gtk", "4.0")
 gi.require_version("Adw", "1")
-from gi.repository import Adw, Gio  # noqa: E402
+from gi.repository import Adw, Gio, GLib  # noqa: E402
 
-# Same app id as the manager (NON_UNIQUE, so it never talks to a running manager):
-# the dialog gets the manager's icon in the dock
+# The manager's app id (NON_UNIQUE, so it never talks to a running manager)
 APP_ID = "io.github.waydroidmanager"
 
 
@@ -22,6 +21,9 @@ def main(argv=None):
     p.add_argument("--name", default="this instance")
     o = p.parse_args(argv)
     answer = ["cancel"]
+    # A dialog shown without a parent has no application: the prgname is its app id, which gives it
+    # the manager's icon in the dock
+    GLib.set_prgname(APP_ID)
     app = Adw.Application(application_id=APP_ID, flags=Gio.ApplicationFlags.NON_UNIQUE)
 
     def activate(app):
