@@ -378,14 +378,10 @@ def ensure_videodev():
         raise RuntimeError("Android 17 needs the kernel's videodev module (/sys/class/video4linux)")
 
 
-ROOT_SDKS = (30, 33)   # the Android versions Magisk Delta works on in Waydroid
-
-
 def sync_root(inst):
     """Root switch: Magisk Delta in the instance's own lower layer (removed when off)."""
-    key = android_of(inst)
-    if inst.getbool("root") and (not key or catalog.get(key, "sdk") not in ROOT_SDKS):
-        log.warning("%s: root is only available on Android 11 and 13; starting without it", inst.id)
+    if inst.getbool("root") and not android_of(inst):
+        log.warning("%s: root needs an Android version Waydroid Manager knows; starting without it", inst.id)
     elif inst.getbool("root"):
         magisk.install(inst)
     elif os.path.isdir(os.path.join(inst.dir, "overlay", magisk.MAGISK.lstrip("/"))):

@@ -40,8 +40,7 @@ class CatalogTest(unittest.TestCase):
         check = main.Manager.check_android
         with mock.patch.object(main.gpu, "gpus", return_value=[]):
             check(None, None, {"root": "true", "gpu": "software"})     # checked at start instead
-            with self.assertRaisesRegex(main.Error, "root"):
-                check(None, "14", {"root": "true"})
+            check(None, "16", {"root": "true"})                         # every version can have root
             with self.assertRaisesRegex(main.Error, "software"):
                 check(None, "15", {"gpu": "software"})
 

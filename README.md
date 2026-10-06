@@ -47,7 +47,7 @@ A version is downloaded the first time a device uses it, and all devices on it s
 
 - **Experimental** means a single maintainer's build (15) or a pre-release of LineageOS (17):
   expect rough edges.
-- **Root** (Magisk Delta) works on 11 and 13.
+- **Root** (Magisk Delta) works on every version.
 - **Android 15 needs a GPU** (NVIDIA or another): its image can't show frames rendered in software.
 - A device's version is fixed: its data can't move to another Android. Clone it to get a copy on
   the same version.
@@ -182,8 +182,8 @@ that card's buffers directly, so the card copies each frame into memory the desk
 - **Root:** the per-instance "Root" switch (`config set N root true`, then restart) installs
   Magisk Delta, the build `waydroid_script` uses, so apps can get root. The first start downloads
   it, so it needs internet. Then install the Magisk app:
-  `waydroid-manager app install N /var/lib/waydroid-manager/magisk-delta.apk`. It works on Android
-  11 and 13. Official Magisk does not work on Waydroid (no boot image). The switch is open to the
+  `waydroid-manager app install N /var/lib/waydroid-manager/magisk-delta.apk`. It works on every
+  Android version. Official Magisk does not work on Waydroid (no boot image). The switch is open to the
   instance owner, and root in Android is close to root on the host, so only enable it on machines
   you trust.
 - **ARM translation:** instances run ARM-only apps through Houdini by default. In Settings, or with

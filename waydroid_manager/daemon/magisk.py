@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 """Root switch: put Magisk Delta into an instance's own overlay layer (Waydroid has no boot image)."""
 import gzip
+import hashlib
 import os
 import platform
 import shutil
@@ -24,6 +25,10 @@ MAGISK = "/system/etc/init/magisk"
 OWNED = ("system/etc/init/magisk", "system/etc/init/bootanim.rc", "system/etc/init/bootanim.rc.gz",
          "system/addon.d/99-magisk.sh")
 
+# Android 16's init runs each exec in a cgroup of its own and kills the whole cgroup when it ends,
+# which took the Magisk daemon (forked by --post-fs-data) with it: start it in init's own cgroup.
+# 11 to 15 have no /init cgroup (the write fails harmlessly); 17 runs everything in /init anyway.
+INIT_CGROUP = "echo 0 > /sys/fs/cgroup/init/cgroup.procs"
 BOOTANIM = """
 service bootanim /system/bin/bootanimation
     class core animation
@@ -43,7 +48,7 @@ on post-fs-data
     exec u:r:update_engine:s0 root root -- {m}/magiskpolicy --live --magisk
     mkdir {s} 700
     exec u:r:su:s0 root root -- {m}/{bin} --auto-selinux --setup-sbin {m} {s}
-    exec u:r:su:s0 root root -- {s}/magisk --auto-selinux --post-fs-data
+    exec u:r:su:s0 root root -- /system/bin/sh -c "{cg}; exec {s}/magisk --auto-selinux --post-fs-data"
 
 on nonencrypted
     exec u:r:su:s0 root root -- {s}/magisk --auto-selinux --service
@@ -105,9 +110,12 @@ def install(inst):
     root = os.path.join(inst.dir, "overlay")
     mdir = os.path.join(root, MAGISK.lstrip("/"))
     stamp = os.path.join(inst.dir, STAMP)
+    binary = "magisk64" if abi.endswith("64") else "magisk32"
+    rc_text = BOOTANIM + SETUP.format(m=MAGISK, s=SOCK, bin=binary, cg=INIT_CGROUP)
+    build = hashlib.sha256((APK_SHA256 + rc_text).encode()).hexdigest()   # a new init script reinstalls too
     try:
         with open(stamp) as f:
-            if f.read() == APK_SHA256 and os.path.isdir(mdir):
+            if f.read() == build and os.path.isdir(mdir):
                 return
     except OSError:
         pass
@@ -115,7 +123,6 @@ def install(inst):
     remove(inst, upper=False)
     os.makedirs(mdir)
     os.makedirs(os.path.join(root, "sbin"), exist_ok=True)
-    binary = "magisk64" if abi.endswith("64") else "magisk32"
     with zipfile.ZipFile(apk) as z:
         for name in z.namelist():
             base = os.path.basename(name)
@@ -131,14 +138,14 @@ def install(inst):
     with gzip.open(rc + ".gz", "wb") as f:
         f.write(BOOTANIM.encode())
     with open(rc, "w") as f:
-        f.write(BOOTANIM + SETUP.format(m=MAGISK, s=SOCK, bin=binary))
+        f.write(rc_text)
     for d, _, files in os.walk(mdir):
         os.chown(d, 0, 2000)
         os.chmod(d, 0o755)
         for n in files:
             os.chown(os.path.join(d, n), 0, 2000)
     with open(stamp, "w") as f:
-        f.write(APK_SHA256)
+        f.write(build)
 
 
 def _put(z, name, dst, mode):

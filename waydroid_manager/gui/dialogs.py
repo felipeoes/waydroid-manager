@@ -20,7 +20,6 @@ ACTIONS = [("stop", "Stop the instance"), ("freeze", "Freeze (pause)"), ("none",
 IDLE = [("freeze", "Freeze (pause)"), ("none", "Keep running"), ("stop", "Stop the instance")]
 ARM = [("houdini", "Houdini"), ("libndk", "libndk"), ("none", "Off")]
 ANDROID = [(k, catalog.label(k)) for k in catalog.VERSIONS]
-ROOT_VERSIONS = ("11", "13")    # Magisk Delta works there only
 
 
 def gpu_options(current):
@@ -341,10 +340,6 @@ class InstanceDialog(_Dialog):
 
     def _android_changed(self):
         key = self.android()
-        ok = key in ROOT_VERSIONS or key not in catalog.VERSIONS   # #0's unknown version: checked at start
-        self.root_row.set_sensitive(ok)
-        if not ok:
-            self.root_row.set_active(False)
         if catalog.get(key, "software", True) is False and \
                 self.gpu_opts[self.gpu_row.get_selected()][0] == "software":
             _select(self.gpu_row, self.gpu_opts, "auto")     # it can't render in software

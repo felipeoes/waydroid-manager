@@ -19,7 +19,10 @@ follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions f
 - Android 14 and 15 get Google Play from MindTheGapps; Android 17's Google services are unpacked
   from the image so they run in a container.
 - ARM apps on 14 to 17 run on the translation their image ships (Houdini on 14, libndk on 15 to 17);
-  the `arm_translation` choice and Root (Magisk Delta) are for 11 and 13.
+  the `arm_translation` choice is for 11 and 13.
+- Root (Magisk Delta) works on every version. Android 16's init killed Magisk's daemon together with
+  the boot step that starts it; that step now moves to init's own cgroup first. Devices that already
+  have Root get the new start script at their next start.
 - **Full GPU speed on NVIDIA**, with NVIDIA's proprietary driver: Android 13 to 17 render on the
   NVIDIA card when it shows your desktop. Android's Vulkan goes to a renderer that runs as you, one
   per device (quinovax/waydroid-nvidia's build of virglrenderer with Venus, downloaded on first use);

@@ -169,8 +169,6 @@ class Manager(dbus.service.Object):
         (#0's, stock on Android 10 or not synced yet) is checked at start."""
         if android not in catalog.VERSIONS:
             return
-        if settings.get("root") == "true" and catalog.get(android, "sdk") not in container.ROOT_SDKS:
-            raise Error("root is only available on Android 11 and 13", "InvalidArgs")
         picked = next((g for g in gpu.gpus() if g.pci == settings.get("gpu")), None)
         if picked and picked.driver == "nvidia" and not catalog.get(android, "nvidia"):
             raise Error("Android {} has no NVIDIA build".format(android), "InvalidArgs")

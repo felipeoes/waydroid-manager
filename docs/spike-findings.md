@@ -185,6 +185,19 @@ Same host. Every item below is in the code now.
   2.0 allocator) crash-loops. 15 runs on a GPU only; Software is refused.
 - GNOME can't import vkms dmabufs, so the proxy hands the same fd over as a `wl_shm` pool.
 
+## Root (Magisk Delta) on 11 to 17
+Tested on each version: Magisk's daemon runs, an ungranted uid is refused, and uid 2000 gets
+`uid=0` from `su` once it's allowed in Magisk's `policies` table.
+- **16: the daemon died during boot.** Its log stopped at "Loading modules". 16's init runs each
+  service, `exec` steps included, in a cgroup of its own (`system/uid_0/pid_N`) and kills the whole
+  cgroup when the step ends. 11 to 15 make no cgroups of their own, and 17 keeps everything in
+  `/init`. The daemon is forked by `magisk --post-fs-data`, and Magisk's own cgroup escape can't
+  reach the container's cgroup root, so it died with the step. The step now runs
+  `echo 0 > /sys/fs/cgroup/init/cgroup.procs` first, so the daemon starts in init's cgroup. On 11
+  to 15 there is no `/init` cgroup and the write fails harmlessly.
+- Testing `su` right after a denial for the same uid gets the denial again for ~10 s: Magisk caches
+  it.
+
 ## NVIDIA
 - minigbm opens a DRM device even with the gbm wrapper. Without one, SurfaceFlinger aborts with
   "output buffer not gpu writeable". The vkms node stands in.
