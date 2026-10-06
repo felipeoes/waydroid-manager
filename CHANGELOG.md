@@ -6,6 +6,10 @@ follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions f
 
 ## [Unreleased]
 
+### Fixed
+- Android 14 to 17 no longer fill the dock and Files with a drive for each of their APEX loop
+  devices.
+
 ## [1.0.0] - 2026-10-06
 
 ### Added
