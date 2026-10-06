@@ -573,6 +573,7 @@ class Session:
         self.last_title_click = 0.0
         self.tip_due = None      # (monotonic time, toolbar action) to show a tooltip at
         self.tip_shown = None    # toolbar action whose tooltip is up
+        self.tb_scroll = 0       # how far the toolbar's entries are scrolled up (short windows)
         self.cursor_dev = None
         self.pings = {}           # serial -> time the compositor pinged
         self.ping_stats = {"pings": 0, "pongs": 0, "max_latency": 0.0, "last_latency": 0.0}
@@ -1251,6 +1252,10 @@ class Session:
                 self.last_serial = serial
                 if button == P.BTN_LEFT:
                     self._frame_button(focus[1], *self.ptr_pos, pressed=state == 1, serial=serial)
+            elif op == P.WL_POINTER_EV_AXIS:
+                r.u()
+                if r.u() == 0:   # vertical
+                    self._scroll_toolbar(focus[1], P.fixed_to_float(r.f()))
             self.ptr_group_dropped = True
             return []
         self.ptr_group_forwarded = True
@@ -1632,8 +1637,9 @@ class Session:
             data, pw, ph, stride = fr.render_title(size[0], scale, "{} · #{}".format(self.cfg.name, self.cfg.id),
                                                    self.cfg.theme, hover, pressed)
         else:
+            self.tb_scroll = min(self.tb_scroll, fr.toolbar_scroll_max(size[1]))
             data, pw, ph, stride = fr.render_toolbar(size[1], scale, self.cfg.theme, hover, pressed,
-                                                     fullscreen=w.fullscreen)
+                                                     fullscreen=w.fullscreen, scroll=self.tb_scroll)
         self._attach(f[kind], data, pw, ph, stride, scale)
         return []
 
@@ -1683,7 +1689,7 @@ class Session:
     def _show_tip(self, action):
         f = self.window.frame if self.window else None
         size = f and f["sizes"].get("toolbar")
-        span = [(y0, y1) for a, y0, y1 in fr.toolbar_layout(size[1])
+        span = [(y0, y1) for a, y0, y1 in fr.toolbar_layout(size[1], self.tb_scroll)
                 if a == action] if size and size != "hidden" else []
         if not span:
             return False
@@ -1742,7 +1748,7 @@ class Session:
         if kind == "title":
             return fr.hit_title(x, y, size[0])
         if kind == "toolbar":
-            return fr.hit_toolbar(x, y, size[1])
+            return fr.hit_toolbar(x, y, size[1], self.tb_scroll)
         return fr.border_edge(x, y, size[0], size[1])
 
     def _frame_hover(self, sid, x, y, entered=False):
@@ -1765,6 +1771,18 @@ class Session:
             self._redraw(kind)
             if kind == "toolbar":
                 self._tip(action)
+
+    def _scroll_toolbar(self, sid, dy):
+        f = self.window.frame if self.window else None
+        size = f and f["sizes"].get("toolbar")
+        if getattr(self, "surface_kinds", {}).get(sid) != "toolbar" or not size or size == "hidden":
+            return
+        scroll = max(0, min(fr.toolbar_scroll_max(size[1]), self.tb_scroll + dy))
+        if scroll != self.tb_scroll:
+            self.tb_scroll = scroll
+            self._tip(None)
+            self.hover["toolbar"] = self._hit("toolbar", *self.ptr_pos)
+            self._redraw("toolbar")
 
     def _frame_leave(self, sid):
         kind = getattr(self, "surface_kinds", {}).get(sid)

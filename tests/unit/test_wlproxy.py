@@ -309,6 +309,24 @@ class FrameTest(unittest.TestCase):
         for fd in h.c2s.fds:
             os.close(fd)
 
+    def test_short_toolbar_scrolls(self):
+        h = self.h
+        h.s.set_zoom(0.25)                                       # a 180 px tall toolbar
+        f = h.s.window.frame
+        height = f["sizes"]["toolbar"][1]
+        y = wp.fr.toolbar_end(height) - 10
+        self.assertEqual(wp.fr.hit_toolbar(20, 20, height), "settings")
+        self.assertNotEqual(h.s._hit("toolbar", 20, y), "fullscreen")
+        h.ev(msg(PTR, P.WL_POINTER_EV_ENTER, "uoff", 9, f["toolbar"], fixed(20.0), fixed(y)),
+             *[msg(PTR, P.WL_POINTER_EV_AXIS, "uuf", 10, 0, fixed(15.0))] * 20)
+        self.assertEqual(h.s.tb_scroll, wp.fr.toolbar_scroll_max(height))   # down to the last entry
+        self.assertEqual(h.s.hover["toolbar"], "fullscreen")
+        self.assertEqual(h.s._hit("toolbar", 20, height - 20), "recents")  # the navigation stays put
+        h.ev(*[msg(PTR, P.WL_POINTER_EV_AXIS, "uuf", 11, 0, fixed(-15.0))] * 20)
+        self.assertEqual(h.s.tb_scroll, 0)
+        for fd in h.c2s.fds:
+            os.close(fd)
+
     def test_toolbar_settings_asks_session(self):
         h = self.h
         layout = wp.fr.toolbar_layout(h.s.window.frame["sizes"]["toolbar"][1])

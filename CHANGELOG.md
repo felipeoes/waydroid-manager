@@ -12,6 +12,8 @@ follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions f
 - `adb reboot` (and any other reboot from inside Android) restarts the instance in its window
   instead of stopping it. Powering Android off still stops it.
 - Android 11's picture follows the window's size instead of running past the toolbar.
+- A window too short for the whole toolbar scrolls the toolbar's buttons with the mouse wheel; the
+  Back, Home and Recents buttons stay at the bottom.
 
 ## [1.0.0] - 2026-10-06
 
