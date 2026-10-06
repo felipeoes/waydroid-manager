@@ -15,6 +15,8 @@ BORDER = 8            # invisible resize border around the window
 # (action, icon name); None = drawn here
 TITLE_BUTTONS = [("minimize", "window-minimize-symbolic"), ("close", "window-close-symbolic")]
 TOOLBAR = [
+    ("settings", "emblem-system-symbolic"),
+    None,
     ("volume_up", "audio-volume-high-symbolic"),
     ("volume_down", "audio-volume-low-symbolic"),
     None,
@@ -23,9 +25,9 @@ TOOLBAR = [
     ("fullscreen", "view-fullscreen-symbolic"),
 ]
 NAV = ["back", "home", "recents"]   # at the toolbar's bottom, like Android's navigation bar
-TOOLTIPS = {"back": "Back", "home": "Home", "recents": "Recent apps", "volume_up": "Volume up",
-            "volume_down": "Volume down", "screenshot": "Screenshot", "install": "Install APK",
-            "fullscreen": "Fullscreen (F11)"}
+TOOLTIPS = {"settings": "Settings", "back": "Back", "home": "Home", "recents": "Recent apps",
+            "volume_up": "Volume up", "volume_down": "Volume down", "screenshot": "Screenshot",
+            "install": "Install APK", "fullscreen": "Fullscreen (F11)"}
 SEPARATOR_H = 9
 
 THEMES = {

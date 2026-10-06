@@ -9,10 +9,9 @@ gi.require_version("Adw", "1")
 from gi.repository import Adw, Gio, GLib, Gtk  # noqa: E402
 
 from .. import paths  # noqa: E402
-from ..instance import RESTART_SETTINGS  # noqa: E402
 from ..session import desktop  # noqa: E402
 from .backend import Backend  # noqa: E402
-from .dialogs import CloneDialog, InstanceDialog  # noqa: E402
+from .dialogs import CloneDialog, InstanceDialog, restart_dialog, save_settings  # noqa: E402
 from .pickapk import apk_dialog  # noqa: E402
 
 ACTIVE = ("RUNNING", "FROZEN")
@@ -22,6 +21,8 @@ STATE_LABEL = {"RUNNING": "Running", "FROZEN": "Paused", "STOPPED": "Stopped", "
                "STOPPING": "Stopping…", "CLONING": "Cloning…", "DELETING": "Deleting…"}
 # install.sh puts the uninstaller next to the package (PREFIX/lib/waydroid-manager/)
 UNINSTALL_SCRIPT = os.path.join(os.path.dirname(paths.PKG_DIR), "uninstall.sh")
+# The instance list's rows scroll inside a card; plain lists would draw the view's colour over it
+CSS = ".instances list { background: none; }"
 
 
 def gigabytes(n):
@@ -176,7 +177,9 @@ class MainWindow(Adw.ApplicationWindow):
         menu.append_section(None, about)
         header.pack_start(Gtk.MenuButton(icon_name="open-menu-symbolic", menu_model=menu, tooltip_text="Menu"))
         view.add_top_bar(header)
-
+        css = Gtk.CssProvider()
+        css.load_from_string(CSS)
+        Gtk.StyleContext.add_provider_for_display(self.get_display(), css, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION)
 
         self.stack = Gtk.Stack()
         # Like an Adw.PreferencesPage, but not capped at its 600 px: the list uses the window's width
@@ -185,15 +188,15 @@ class MainWindow(Adw.ApplicationWindow):
         # Default (stock Waydroid, #0) first, then the instances
         self.stock_group = Adw.PreferencesGroup(title="Default", visible=False)
         page.append(self.stock_group)
-        self.group = Adw.PreferencesGroup(title="Instances")
+        self.group = Adw.PreferencesGroup(title="Instances", vexpand=True)
         new_btn = Gtk.Button(child=Adw.ButtonContent(icon_name="list-add-symbolic", label="New Instance"),
                              valign=Gtk.Align.CENTER, css_classes=["flat"])
         new_btn.connect("clicked", lambda *_: self.new_instance())
         self.group.set_header_suffix(new_btn)
         page.append(self.group)
-        # Batch actions on the checked instances: the list's first row, its checkbox in line with
-        # theirs (an invisible dot stands in for the status dot)
-        self.batch_row = Adw.ActionRow(title="Select all", visible=False)
+        # Batch actions on the checked instances: the list's header row, its checkbox in line with
+        # the rows' (an invisible dot stands in for the status dot)
+        self.batch_row = Adw.ActionRow(title="Select all")
         self.select_all = Gtk.CheckButton(valign=Gtk.Align.CENTER)
         self.select_all.connect("toggled", self._toggle_all)
         self.batch_row.add_prefix(self.select_all)
@@ -206,16 +209,27 @@ class MainWindow(Adw.ApplicationWindow):
             b.connect("clicked", lambda _b, cb=cb: cb())
             self.batch_row.add_suffix(b)
             setattr(self, attr, b)
-        self.group.add(self.batch_row)
         self.empty_row = Adw.ActionRow(title="No instances yet",
                                        subtitle="Create one to run another Android next to stock Waydroid")
         new_btn = Gtk.Button(label="New Instance", valign=Gtk.Align.CENTER, css_classes=["suggested-action"])
         new_btn.connect("clicked", lambda *_: self.new_instance())
         self.empty_row.add_suffix(new_btn)
-        self.group.add(self.empty_row)
-        scroll = Gtk.ScrolledWindow(hscrollbar_policy=Gtk.PolicyType.NEVER, propagate_natural_height=True,
-                                    child=Adw.Clamp(maximum_size=1200, child=page))
-        self.stack.add_named(scroll, "list")
+        # A table: the header row stays put and the rows scroll below it. START keeps the card as
+        # short as its rows in a tall window.
+        table = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, css_classes=["card", "instances"],
+                        overflow=Gtk.Overflow.HIDDEN, valign=Gtk.Align.START, vexpand=True)
+        self.head = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, visible=False)
+        head_list = Gtk.ListBox(selection_mode=Gtk.SelectionMode.NONE)
+        head_list.append(self.batch_row)
+        self.head.append(head_list)
+        self.head.append(Gtk.Separator())
+        table.append(self.head)
+        self.list = Gtk.ListBox(selection_mode=Gtk.SelectionMode.NONE, show_separators=True)
+        self.list.append(self.empty_row)
+        table.append(Gtk.ScrolledWindow(hscrollbar_policy=Gtk.PolicyType.NEVER, propagate_natural_height=True,
+                                        vexpand=True, child=self.list))
+        self.group.add(table)
+        self.stack.add_named(Adw.Clamp(maximum_size=1200, child=page), "list")
 
         self.error_page = Adw.StatusPage(icon_name="dialog-error-symbolic", title="Daemon not available",
                                          description="Start it with: sudo systemctl start waydroid-manager")
@@ -249,7 +263,7 @@ class MainWindow(Adw.ApplicationWindow):
         ids = {i["id"] for i in self.instances}
         for iid in list(self.rows):
             if iid not in ids:
-                (self.stock_group if iid == "0" else self.group).remove(self.rows.pop(iid))
+                (self.stock_group if iid == "0" else self.list).remove(self.rows.pop(iid))
         for info in self.instances:
             row = self.rows.get(info["id"])
             if row:
@@ -257,10 +271,13 @@ class MainWindow(Adw.ApplicationWindow):
             else:
                 row = InstanceRow(self, info)
                 self.rows[info["id"]] = row
-                (self.stock_group if info["id"] == "0" else self.group).add(row)
+                if info["id"] == "0":
+                    self.stock_group.add(row)
+                else:
+                    self.list.append(row)
         self.stock_group.set_visible("0" in ids)
         self.empty_row.set_visible(not others)
-        self.batch_row.set_visible(bool(others))
+        self.head.set_visible(bool(others))
         self.selection_changed()
         if not getattr(self, "_fitted", False):
             # Open as tall as the list (scrolling past 800 px), not with empty space below it
@@ -421,35 +438,16 @@ class MainWindow(Adw.ApplicationWindow):
         self.backend.call("Get", iid, ok=got, fail=self.toast, timeout=30)
 
     def _save(self, iid, values, before):
-        # the dialog sends every field: only what it changed may need a restart
-        changed = {k for k, v in values.items() if before.get(k, "") != v}
-        restart = any(k in RESTART_SETTINGS or k.startswith("prop:") for k in changed)
-
-        def ok(*_):
+        def ok(restart):
             info = next((i for i in self.instances if i["id"] == iid), {})
-            if "name" in values and os.path.exists(desktop.launcher_path(iid)):
-                desktop.write_launcher(iid, values["name"])
             self.refresh()
             if restart and info.get("state") in ACTIVE:
-                self.ask_restart(info)
+                restart_dialog(info["name"], lambda: self._cli(
+                    iid, ["stop", iid], "Failed to stop " + info["name"],
+                    then=lambda ok: ok and self.start_or_show(info))).present(self)
             else:
                 self.toast("Saved")
-        self.backend.call("SetConfig", iid, values, ok=ok, fail=self.toast, timeout=60)
-
-    def ask_restart(self, info):
-        dlg = Adw.AlertDialog(heading="Restart “{}”?".format(info["name"]),
-                              body="The new settings apply when the instance restarts.")
-        dlg.add_response("later", "Restart Later")
-        dlg.add_response("restart", "Restart Now")
-        dlg.set_response_appearance("restart", Adw.ResponseAppearance.SUGGESTED)
-        dlg.set_default_response("restart")
-
-        def respond(_d, resp):
-            if resp == "restart":
-                self._cli(info["id"], ["stop", info["id"]], "Failed to stop " + info["name"],
-                          then=lambda ok: ok and self.start_or_show(info))
-        dlg.connect("response", respond)
-        dlg.present(self)
+        save_settings(self.backend, before, values, ok, self.toast)
 
     def uninstall(self):
         running = [i for i in self.instances if i.get("state") in ACTIVE]

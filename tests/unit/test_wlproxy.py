@@ -287,6 +287,20 @@ class FrameTest(unittest.TestCase):
         for fd in h.c2s.fds:
             os.close(fd)
 
+    def test_toolbar_settings_asks_session(self):
+        h = self.h
+        layout = wp.fr.toolbar_layout(h.s.window.frame["sizes"]["toolbar"][1])
+        self.assertEqual(layout[0][0], "settings")               # first, so a short window keeps it
+        y0, y1 = layout[0][1:]
+        out = h.ev(msg(PTR, P.WL_POINTER_EV_ENTER, "uoff", 9, h.s.window.frame["toolbar"], fixed(20.0),
+                       fixed((y0 + y1) / 2)),
+                   msg(PTR, P.WL_POINTER_EV_BUTTON, "uuuu", 10, 0, P.BTN_LEFT, 1),
+                   msg(PTR, P.WL_POINTER_EV_BUTTON, "uuuu", 11, 0, P.BTN_LEFT, 0))
+        self.assertEqual(out, [])
+        self.assertIn("action settings", h.events)
+        for fd in h.c2s.fds:
+            os.close(fd)
+
     def test_recents_goes_through_daemon(self):
         h = self.h
         h.s.do_action("recents")

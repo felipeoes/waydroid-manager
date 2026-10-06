@@ -10,7 +10,8 @@ gi.require_version("Pango", "1.0")
 from gi.repository import Adw, GLib, Gtk, Pango  # noqa: E402
 
 from .. import catalog, devices, gpu  # noqa: E402
-from ..instance import host_memory_bytes, setting_default  # noqa: E402
+from ..instance import RESTART_SETTINGS, host_memory_bytes, setting_default  # noqa: E402
+from ..session import desktop  # noqa: E402
 
 # LDPlayer-style presets: (width, height, dpi)
 TABLET = [(960, 540, 160), (1280, 720, 240), (1600, 900, 240), (1920, 1080, 280), (2560, 1440, 360)]
@@ -101,7 +102,7 @@ def _spin(title, lo, hi, step, value, digits=0, subtitle=None):
 
 
 class _Dialog(Adw.Dialog):
-    def _frame(self, title, submit_label):
+    def _frame(self, title, submit_label, content):
         self.set_title(title)
         view = Adw.ToolbarView()
         header = Adw.HeaderBar()
@@ -114,10 +115,8 @@ class _Dialog(Adw.Dialog):
         self.submit.connect("clicked", self._on_submit)
         header.pack_end(self.submit)
         view.add_top_bar(header)
-        page = Adw.PreferencesPage()
-        view.set_content(page)
+        view.set_content(content)
         self.set_child(view)
-        return page
 
 
 class InstanceDialog(_Dialog):
@@ -128,14 +127,24 @@ class InstanceDialog(_Dialog):
         self.mode = mode
         self.on_submit = on_submit
         self.info = info or {}
-        self.set_content_width(540)
-        self.set_content_height(760)
-        page = self._frame("New Instance" if mode == "create" else
-                           "#{} {} — Settings".format(self.info.get("id", ""), self.info.get("name", "")),
-                           "Create" if mode == "create" else "Save")
+        self.set_content_width(720)
+        self.set_content_height(560)
+        edit = mode == "edit"     # when a change applies only matters for an existing instance
+        # A sidebar of sections, each its own short page
+        self.stack = Gtk.Stack(hexpand=True)
+        self.nav = Gtk.ListBox(css_classes=["navigation-sidebar"])
+        self.nav.connect("row-selected", lambda _l, row: row and self.stack.set_visible_child_name(row.get_name()))
+        content = Gtk.Box()
+        content.append(Gtk.ScrolledWindow(child=self.nav, hscrollbar_policy=Gtk.PolicyType.NEVER, width_request=180))
+        content.append(Gtk.Separator(orientation=Gtk.Orientation.VERTICAL))
+        content.append(self.stack)
+        self._frame("New Instance" if mode == "create" else
+                    "#{} {} — Settings".format(self.info.get("id", ""), self.info.get("name", "")),
+                    "Create" if mode == "create" else "Save", content)
 
         # -- general
-        g = Adw.PreferencesGroup(title="General")
+        page = self._page("general", "General", "preferences-other-symbolic")
+        g = Adw.PreferencesGroup()
         page.add(g)
         self.name_row = Adw.EntryRow(title="Name")
         self.name_row.set_text(self.info.get("name", ""))
@@ -150,9 +159,22 @@ class InstanceDialog(_Dialog):
         else:
             g.add(Adw.ActionRow(title="Android version", subtitle=catalog.label(self.info["android"])
                                 if self.info.get("android") in catalog.VERSIONS else "Stock Waydroid's own"))
+            self.apps_row = Adw.SwitchRow(title="App shortcuts in the app grid",
+                                          subtitle="Create launchers for this instance's apps")
+            self.apps_row.set_active(self.info.get("desktop_apps", "false") == "true")
+            g.add(self.apps_row)
+        g = Adw.PreferencesGroup(title="Behavior")
+        page.add(g)
+        self.close_row = _combo("When the window is closed", ACTIONS)
+        _select(self.close_row, ACTIONS, self.info.get("close_action", "stop"))
+        g.add(self.close_row)
+        self.idle_row = _combo("When Android goes idle", IDLE)
+        _select(self.idle_row, IDLE, self.info.get("idle_action", "freeze"))
+        g.add(self.idle_row)
 
         # -- display
-        g = Adw.PreferencesGroup(title="Display", description="Takes effect at the next start")
+        page = self._page("display", "Display", "preferences-desktop-display-symbolic")
+        g = Adw.PreferencesGroup(description="Takes effect at the next start" if edit else None)
         page.add(g)
         cw = int(self.info.get("width") or setting_default("width"))
         ch = int(self.info.get("height") or setting_default("height"))
@@ -176,7 +198,8 @@ class InstanceDialog(_Dialog):
         self.kind.connect("notify::active-name", lambda *_: self._kind_changed())
 
         # -- device
-        g = Adw.PreferencesGroup(title="Device", description="What apps see as this device (next start)")
+        page = self._page("device", "Device", "phone-symbolic")
+        g = Adw.PreferencesGroup(description="What apps see as this device" + (" (next start)" if edit else ""))
         page.add(g)
         self.dev_keys = list(devices.PRESETS)
         self.device_row = _wrapping(Adw.ComboRow(title="Device model"))
@@ -194,7 +217,8 @@ class InstanceDialog(_Dialog):
         self._device_changed()
 
         # -- performance
-        g = Adw.PreferencesGroup(title="Performance", description="Limits apply at the next start")
+        page = self._page("performance", "Performance", "power-profile-performance-symbolic")
+        g = Adw.PreferencesGroup(description="Limits apply at the next start" if edit else None)
         page.add(g)
         cur = self.info.get("cpus") or setting_default("cpus")
         self.cpu_opts = _with_current(cpu_options(), cur, lambda v: "{} cores".format(v))
@@ -207,44 +231,36 @@ class InstanceDialog(_Dialog):
         _select(self.mem_row, self.mem_opts, cur)
         g.add(self.mem_row)
 
-        # -- behavior
-        g = Adw.PreferencesGroup(title="Behavior")
+        # -- graphics
+        page = self._page("graphics", "Graphics", "applications-graphics-symbolic")
+        g = Adw.PreferencesGroup(description="Restart the instance to apply" if edit else None)
         page.add(g)
-        self.close_row = _combo("When the window is closed", ACTIONS)
-        _select(self.close_row, ACTIONS, self.info.get("close_action", "stop"))
-        g.add(self.close_row)
-        self.idle_row = _combo("When Android goes idle", IDLE)
-        _select(self.idle_row, IDLE, self.info.get("idle_action", "freeze"))
-        g.add(self.idle_row)
+        self.gpu_opts = gpu_options(self.info.get("gpu", "auto"))
+        self.gpu_row = _combo("GPU", self.gpu_opts, subtitle="Automatic uses the GPU that shows your desktop "
+                                                   "when it can; Software works on any PC but is slower.")
+        _select(self.gpu_row, self.gpu_opts, self.info.get("gpu", "auto"))
+        g.add(self.gpu_row)
+
+        # -- system
+        page = self._page("system", "System", "emblem-system-symbolic")
+        g = Adw.PreferencesGroup(description="Restart the instance to apply" if edit else None)
+        page.add(g)
         self.writable_row = Adw.SwitchRow(title="Writable system",
-                                          subtitle="Lets Android change its system files. "
-                                                   "Restart the instance to apply.")
+                                          subtitle="Lets Android change its system files")
         self.writable_row.set_active(self.info.get("system_writable", "false") == "true")
         g.add(self.writable_row)
         self.root_row = Adw.SwitchRow(title="Root",
-                                      subtitle="Installs Magisk Delta; needs internet the first time. "
-                                               "Restart the instance to apply.")
+                                      subtitle="Installs Magisk Delta; needs internet the first time")
         self.root_row.set_active(self.info.get("root", "false") == "true")
         g.add(self.root_row)
-        self.arm_row = _combo("ARM translation", ARM, subtitle="Runs ARM-only apps; needs internet the first "
-                                                              "time. Restart the instance to apply.")
+        self.arm_row = _combo("ARM translation", ARM, subtitle="Runs ARM-only apps; needs internet the first time")
         _select(self.arm_row, ARM, self.info.get("arm_translation", "houdini"))
         g.add(self.arm_row)
-        self.gpu_opts = gpu_options(self.info.get("gpu", "auto"))
-        self.gpu_row = _combo("Graphics", self.gpu_opts, subtitle="Automatic uses the GPU that shows your desktop "
-                                                        "when it can; Software works on any PC but is "
-                                                        "slower. Restart the instance to apply.")
-        _select(self.gpu_row, self.gpu_opts, self.info.get("gpu", "auto"))
-        g.add(self.gpu_row)
         self._android_changed()
-        if mode == "edit":
-            self.apps_row = Adw.SwitchRow(title="App shortcuts in the app grid",
-                                          subtitle="Create launchers for this instance's apps")
-            self.apps_row.set_active(self.info.get("desktop_apps", "false") == "true")
-            g.add(self.apps_row)
 
         # -- properties (edit only)
         if mode == "edit":
+            page = self._page("properties", "Properties", "text-x-generic-symbolic")
             self.prop_group = Adw.PreferencesGroup(title="Android properties",
                                                    description="Overrides for vendor/waydroid.prop (next start)")
             add = Gtk.Button(icon_name="list-add-symbolic", valign=Gtk.Align.CENTER, tooltip_text="Add property",
@@ -257,8 +273,19 @@ class InstanceDialog(_Dialog):
                                if k.startswith("prop:") and not k.startswith("prop:ro.product.waydroid.")}
             for k, v in sorted(self.orig_props.items()):
                 self._add_prop_row(k, v)
+        self.nav.select_row(self.nav.get_row_at_index(0))
 
     # -- helpers
+    def _page(self, name, title, icon):
+        """A sidebar entry and its page."""
+        page = Adw.PreferencesPage()
+        self.stack.add_named(page, name)
+        box = Gtk.Box(spacing=12, margin_start=6, margin_end=6)
+        box.append(Gtk.Image(icon_name=icon))
+        box.append(Gtk.Label(label=title, xalign=0))
+        self.nav.append(Gtk.ListBoxRow(name=name, child=box))
+        return page
+
     def _add_prop_row(self, key, value):
         box = Gtk.Box(spacing=6, margin_top=6, margin_bottom=6, margin_start=12, margin_end=6)
         k = Gtk.Entry(text=key, placeholder_text="ro.some.property", hexpand=True)
@@ -362,7 +389,8 @@ class CloneDialog(_Dialog):
         self.source = source          # dict with id, name, state
         self.on_submit = on_submit
         self.set_content_width(460)
-        page = self._frame("Clone “{}”".format(source["name"]), "Clone")
+        page = Adw.PreferencesPage()
+        self._frame("Clone “{}”".format(source["name"]), "Clone", page)
         what = "apps, accounts and data" if source["id"] == "0" else "apps, accounts, data and settings"
         g = Adw.PreferencesGroup(description="Creates a new instance (next free number) with a copy of the "
                                              "{} of “{}”.".format(what, source["name"]))
@@ -391,6 +419,38 @@ class CloneDialog(_Dialog):
             values["name"] = name
         self.on_submit(self.source, values)
         self.close()
+
+
+def save_settings(backend, before, values, ok, fail):
+    """SetConfig, then rename the app grid entry; ok(restart): whether a changed setting needs a restart."""
+    iid = before["id"]
+    # the dialog sends every field: only what it changed may need a restart
+    restart = any(k in RESTART_SETTINGS or k.startswith("prop:") for k, v in values.items() if before.get(k, "") != v)
+
+    def done(*_):
+        if "name" in values and os.path.exists(desktop.launcher_path(iid)):
+            desktop.write_launcher(iid, values["name"])
+        ok(restart)
+    backend.call("SetConfig", iid, values, ok=done, fail=fail, timeout=60)
+
+
+def restart_dialog(name, on_restart, on_later=None):
+    """Asks to restart a running instance now, after saving settings that need it."""
+    dlg = Adw.AlertDialog(heading="Restart “{}”?".format(name),
+                          body="The new settings apply when the instance restarts.")
+    dlg.add_response("later", "Restart Later")
+    dlg.add_response("restart", "Restart Now")
+    dlg.set_response_appearance("restart", Adw.ResponseAppearance.SUGGESTED)
+    dlg.set_default_response("restart")
+    dlg.set_close_response("later")
+
+    def respond(_d, resp):
+        if resp == "restart":
+            on_restart()
+        elif on_later:
+            on_later()
+    dlg.connect("response", respond)
+    return dlg
 
 
 def show_error(parent, msg):

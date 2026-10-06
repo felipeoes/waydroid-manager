@@ -24,7 +24,7 @@ in a container, not an emulator.
   - drag the title bar to move it, drag an edge to **resize** (the picture scales, and the size
     is remembered)
   - double-click the title bar to maximize
-  - **◁ ○ □** Back / Home / Recents, volume buttons, screenshots, Install APK and fullscreen
+  - **⚙** Settings, **◁ ○ □** Back / Home / Recents, volume buttons, screenshots, Install APK and fullscreen
   - drop `.apk` files on the window to install them
 - Find each device in the dock and app grid under its own name
 - Install APKs, launch apps, and use `adb`, per device: running devices show up in
@@ -119,6 +119,7 @@ before, you can switch to the `.deb` at any time; your instances are kept.
 | Android buttons | ◁ Back, ○ Home, □ Recents, volume up/down |
 | Screenshot | toolbar camera button, saved to `~/Pictures/Waydroid/<instance name>` |
 | Install APK | toolbar **APK** button, then pick an `.apk`; or drop `.apk` files on the window |
+| Settings | toolbar **⚙** button: this device's Settings, without opening the manager |
 
 Closing the window stops the instance after asking you to confirm. In its Settings you can
 make closing pause it or keep it running instead.

@@ -23,7 +23,7 @@ import dbus.mainloop.glib
 from gi.repository import GLib
 
 from .. import paths
-from ..client import Daemon, DaemonError
+from ..client import Daemon, DaemonError, open_settings
 from ..instance import Instance
 from ..glibcompat import signal_add
 from . import desktop, services
@@ -151,6 +151,8 @@ class Session:
             self.screenshot()
         elif ev == "action install":
             self.pick_apk()
+        elif ev == "action settings":
+            open_settings(self.iid)
         elif ev.startswith("install "):           # an APK dropped on the window
             self.install_apk(ev[len("install "):])
         elif ev.startswith("action key "):

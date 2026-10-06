@@ -173,19 +173,15 @@ def session_active(iid):
     return r.returncode == 0
 
 
-def start_session(iid, background=False):
-    """Start the per-instance session as a transient user unit."""
-    cmd = [sys.executable, "-m", "waydroid_manager", "session", iid]
-    if background:
-        cmd.append("--background")
+def run_unit(name, description, cmd, props=()):
+    """Run cmd as the transient user unit waydroid-manager-<name>, so it has a cgroup of its own;
+    a detached process without systemd-run. Nothing happens if the unit is already running."""
+    unit = "waydroid-manager-{}.service".format(name)
     env = {"PYTHONPATH": os.path.dirname(paths.PKG_DIR)}
     if shutil.which("systemd-run"):
-        subprocess.run(["systemctl", "--user", "reset-failed", session_unit(iid)],
-                       stderr=subprocess.DEVNULL, check=False)
-        r = subprocess.run(["systemd-run", "--user", "--unit=" + session_unit(iid), "--collect",
-                            "--description=waydroid-manager session for " + iid,
-                            "-p", "KillSignal=SIGTERM", "-p", "TimeoutStopSec=60",
-                            "--setenv=PYTHONPATH=" + env["PYTHONPATH"]] + cmd,
+        subprocess.run(["systemctl", "--user", "reset-failed", unit], stderr=subprocess.DEVNULL, check=False)
+        r = subprocess.run(["systemd-run", "--user", "--unit=" + unit, "--collect", "--description=" + description]
+                           + [a for p in props for a in ("-p", p)] + ["--setenv=PYTHONPATH=" + env["PYTHONPATH"]] + cmd,
                            capture_output=True, text=True)
         if r.returncode == 0:
             return
@@ -196,9 +192,25 @@ def start_session(iid, background=False):
     os.makedirs(log_dir, exist_ok=True)
     full_env = dict(os.environ)
     full_env.update(env)
-    with open(os.path.join(log_dir, iid + ".log"), "ab") as log:
+    with open(os.path.join(log_dir, name + ".log"), "ab") as log:
         subprocess.Popen(cmd, stdout=log, stderr=log, stdin=subprocess.DEVNULL,
                          start_new_session=True, env=full_env)
+
+
+def start_session(iid, background=False):
+    """Start the per-instance session as a transient user unit."""
+    cmd = [sys.executable, "-m", "waydroid_manager", "session", iid]
+    if background:
+        cmd.append("--background")
+    run_unit("session-" + iid, "waydroid-manager session for " + iid, cmd,
+             props=("KillSignal=SIGTERM", "TimeoutStopSec=60"))
+
+
+def open_settings(iid):
+    """The instance window's Settings button. Not a child of the session: Restart Now stops the
+    session's unit, which kills everything in it."""
+    run_unit("settings-" + iid, "waydroid-manager settings for " + iid,
+             [sys.executable, "-m", "waydroid_manager.gui.settings", iid])
 
 
 def stop_session(iid):

@@ -143,7 +143,7 @@ entry it first loaded.
 | `waydroid_manager/daemon/` | root daemon: `main.py` (D-Bus API), `container.py`, `storage.py` (clone, identity reset, APK, screenshot), `images.py`, `layers.py`, `armtrans.py`, `gapps.py`, `nvidia.py`, `magisk.py`, `network.py`, `binder.py`, `util.py` (mounts, safe opens), `hwhelper.py` |
 | `waydroid_manager/session/` | user session, Wayland proxy, frame drawing, desktop launchers; `gbm.py` reads another GPU's buffers |
 | `waydroid_manager/session/protocols/` | vendored Wayland protocol XML (MIT, see its README) |
-| `waydroid_manager/gui/` | GTK4/libadwaita manager app; `confirm.py` is the close confirmation |
+| `waydroid_manager/gui/` | GTK4/libadwaita manager app; `confirm.py` is the close confirmation, `settings.py` the instance window's Settings |
 | `data/` | network script, LXC hooks, D-Bus policy and activation, systemd unit, desktop file |
 | `scripts/` | `install.sh` (the installed file layout), `uninstall.sh`, `spike/` (original feasibility scripts) |
 | `packaging/deb/` | `.deb` build script, control template and maintainer scripts |

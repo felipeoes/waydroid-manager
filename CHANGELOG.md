@@ -35,8 +35,15 @@ follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions f
   frames rendered on the CPU. `doctor` reports which applies. When a device
   starts on another renderer than last time, its apps' shader caches are cleared: Android 13's
   launcher crashed in a loop on caches another renderer had left.
+- A **Settings** button (the gear) at the top of the instance window's toolbar opens that device's
+  Settings in a window of their own, without the manager. Saving there asks to restart the device
+  too, when a change needs it.
 
 ### Changed
+- Settings has a sidebar of sections (General, Display, Device, Performance, Graphics, System and
+  Properties), each on its own short page, instead of one long page to scroll.
+- In the manager, the instance list scrolls under its header row (Select all, Start, Stop,
+  Delete), which stays in view.
 - **waydroid-multi is now Waydroid Manager.** The command is `waydroid-manager`, the package
   `waydroid-manager`, the app "Waydroid Manager", and the bridge `wdm0`. Installing it over
   waydroid-multi 0.5 stops the running instances once and moves them, with their images and network
