@@ -1,5 +1,0 @@
-[D-BUS Service]
-Name=io.github.waydroidmulti.Manager
-Exec=/bin/false
-User=root
-SystemdService=waydroid-multi.service

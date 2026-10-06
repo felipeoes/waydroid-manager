@@ -1,6 +1,6 @@
 # Code style and guidelines
 
-How code in waydroid-multi is written, and what to do and not do when you add to it. The
+How code in waydroid-manager is written, and what to do and not do when you add to it. The
 overall rule: **new code should look like the code around it.** If something here disagrees
 with a file you're editing, follow this guide for new code, and don't reformat old code in the
 same change.
@@ -39,14 +39,14 @@ See [CONTRIBUTING.md](../CONTRIBUTING.md) for the architecture and the PR workfl
   - in the CLI, use `die(message)`;
   - don't catch broad exceptions unless you log them (`log.exception`) or turn them into an
     `Error`. A bare `except Exception` needs `# noqa: BLE001` and a reason.
-- **Logging:** use the module's `log` (`logging.getLogger("waydroid-multi…")`), never `print` in
+- **Logging:** use the module's `log` (`logging.getLogger("waydroid-manager…")`), never `print` in
   the daemon or the session. Prefix messages with the instance id: `log.info("%s: …", inst.id)`.
   Log user-supplied strings with `%r`, so they can't fake log lines.
 - **User-facing text** (CLI output, GUI, notifications) uses plain words and refers to instances
   as `#N` or by name. Never show internal terms (lxc, binder, overlay) unless the user is
   debugging.
 
-## Root daemon (`waydroid_multi/daemon/`)
+## Root daemon (`waydroid_manager/daemon/`)
 
 The daemon runs as root and takes requests from every local user. Treat each change as
 security-relevant.
@@ -80,7 +80,7 @@ security-relevant.
 - Don't modify anything that belongs to stock Waydroid (`/var/lib/waydroid`,
   `~/.local/share/waydroid`, its LXC container or config).
 
-## Wayland proxy (`waydroid_multi/session/wlproxy.py`)
+## Wayland proxy (`waydroid_manager/session/wlproxy.py`)
 
 The HWC is a client we can't change, and it aborts on anything unexpected.
 
@@ -96,10 +96,13 @@ The HWC is a client we can't change, and it aborts on anything unexpected.
   forward `xdg_toplevel.close` (it wipes Android's recent tasks).
 - Don't block. The proxy is a single-threaded event loop; anything slow belongs in the session.
 
-## GUI (`waydroid_multi/gui/`)
+## GUI (`waydroid_manager/gui/`)
 
 - Use **libadwaita widgets** (`Adw.PreferencesGroup`, `Adw.SwitchRow`, `Adw.ComboRow`,
   `Adw.AlertDialog`, toasts) and follow the GNOME HIG.
+- **The GUI must run on libadwaita 1.5 and GTK 4.14** (Ubuntu 24.04). A widget newer than that
+  (`Adw.ToggleGroup`, `Adw.Spinner`, …) needs a fallback for when it's missing, as `_toggles` in
+  `dialogs.py` does.
 - **Call the daemon asynchronously** (`Backend.call` with `ok`/`fail`), never synchronously from
   a signal handler.
 - Report results with a **toast**. Confirm destructive actions (delete, stop on close,

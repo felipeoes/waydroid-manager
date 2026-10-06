@@ -8,9 +8,9 @@ import threading
 import time
 import unittest
 
-from waydroid_multi.session import wlproto as P
-from waydroid_multi.session import wlproxy as wp
-from waydroid_multi.session.wlproto import Reader, msg, parse
+from waydroid_manager.session import wlproto as P
+from waydroid_manager.session import wlproxy as wp
+from waydroid_manager.session.wlproto import Reader, msg, parse
 
 # HWC-side object ids used in the scenarios
 REG, COMP, SUBC, VPR, WM, SEAT, PTR, KBD, OUT, FRAC_MGR = 2, 3, 4, 5, 6, 7, 8, 9, 20, 21
@@ -89,7 +89,7 @@ class LabelTest(unittest.TestCase):
         out = h.create_window(app_id="waydroid.com.example.game")
         titles = {op: args(p, "s")[0] for o, op, p in out if o == TL}
         self.assertEqual(titles[P.XDG_TOPLEVEL_SET_TITLE], "Waydroid · Game")
-        self.assertEqual(titles[P.XDG_TOPLEVEL_SET_APP_ID], "waydroid-multi.3.com.example.game")
+        self.assertEqual(titles[P.XDG_TOPLEVEL_SET_APP_ID], "waydroid-manager.3.com.example.game")
         self.assertIsNone(h.s.window)       # not the full-UI window
 
     def test_full_ui_labels(self):
@@ -97,8 +97,24 @@ class LabelTest(unittest.TestCase):
         h.setup_globals()
         out = h.create_window()
         app = [args(p, "s")[0] for o, op, p in out if o == TL and op == P.XDG_TOPLEVEL_SET_APP_ID]
-        self.assertEqual(app, ["waydroid-multi.3"])
+        self.assertEqual(app, ["waydroid-manager.3"])
         self.assertIsNotNone(h.s.window)
+
+
+class AppWindowConfigureTest(unittest.TestCase):
+    def test_unchanged_size_hidden(self):
+        # The HWC hotplugs Android's display on every sized configure, and the desktop sends one
+        # on each focus change (the activated state, 4): only a new size may reach it
+        h = Harness()
+        h.setup_globals()
+        h.create_window(app_id="waydroid.com.example.game")
+        focused = struct.pack("=I", 4)
+        sizes = []
+        for w, ht, states in ((1280, 720, b""), (1280, 720, focused), (0, 0, b""), (1280, 720, b""),
+                              (1000, 600, focused)):
+            (_, _, p), = h.ev(msg(TL, P.XDG_TOPLEVEL_EV_CONFIGURE, "iia", w, ht, states))
+            sizes.append(args(p, "ii"))
+        self.assertEqual(sizes, [[1280, 720], [0, 0], [0, 0], [0, 0], [1000, 600]])
 
 
 class CalibrationMaximizeTest(unittest.TestCase):
@@ -271,6 +287,20 @@ class FrameTest(unittest.TestCase):
         for fd in h.c2s.fds:
             os.close(fd)
 
+    def test_toolbar_settings_asks_session(self):
+        h = self.h
+        layout = wp.fr.toolbar_layout(h.s.window.frame["sizes"]["toolbar"][1])
+        self.assertEqual(layout[0][0], "settings")               # first, so a short window keeps it
+        y0, y1 = layout[0][1:]
+        out = h.ev(msg(PTR, P.WL_POINTER_EV_ENTER, "uoff", 9, h.s.window.frame["toolbar"], fixed(20.0),
+                       fixed((y0 + y1) / 2)),
+                   msg(PTR, P.WL_POINTER_EV_BUTTON, "uuuu", 10, 0, P.BTN_LEFT, 1),
+                   msg(PTR, P.WL_POINTER_EV_BUTTON, "uuuu", 11, 0, P.BTN_LEFT, 0))
+        self.assertEqual(out, [])
+        self.assertIn("action settings", h.events)
+        for fd in h.c2s.fds:
+            os.close(fd)
+
     def test_recents_goes_through_daemon(self):
         h = self.h
         h.s.do_action("recents")
@@ -359,7 +389,7 @@ class WindowStateTest(unittest.TestCase):
         self.assertEqual(len(out), 1)
 
     def test_nav_glyphs_render(self):
-        from waydroid_multi.session import frame
+        from waydroid_manager.session import frame
         data, w, h_, stride = frame.render_toolbar(400, 1, "dark")
         self.assertEqual(len(data), stride * h_)
 
@@ -476,6 +506,79 @@ class ClipboardTest(unittest.TestCase):
         self.assertEqual(self.hwc_reads()[0], b"")
 
 
+class CpuBufferTest(unittest.TestCase):
+    """Android's dmabufs reach the compositor as shm: over the same fd ("shared", software
+    rendering), or in memory of our own filled through the GPU they come from."""
+    SHM, DMABUF, PARAMS, BUF = 30, 31, 32, 33
+    AB24 = 0x34324241
+
+    def setUp(self):
+        self.h = h = Harness()
+        h.s.cfg.cpu_buffers = "shared"
+        h.c2s = h.s.c2s = wp.Stream(h.s.on_request, h.s.post_feed_c2s, count_fds=lambda o, op: int(
+            h.s.objs.get(o) == "zwp_linux_buffer_params_v1" and op == P.ZWP_LINUX_BUFFER_PARAMS_ADD))
+        h.setup_globals()
+        h.req(msg(REG, P.WL_REGISTRY_BIND, "usun", 7, "wl_shm", 1, self.SHM),
+              msg(REG, P.WL_REGISTRY_BIND, "usun", 11, "zwp_linux_dmabuf_v1", 3, self.DMABUF))
+        h.ev(msg(self.SHM, P.WL_SHM_EV_FORMAT, "u", 0), msg(self.SHM, P.WL_SHM_EV_FORMAT, "u", self.AB24))
+        self.fd = os.memfd_create("dmabuf")
+        os.ftruncate(self.fd, 64 * 4 * 32)
+
+    def create(self, modifier=0):
+        h = self.h
+        sent = h.req(msg(self.DMABUF, P.ZWP_LINUX_DMABUF_CREATE_PARAMS, "n", self.PARAMS),
+                     msg(self.PARAMS, P.ZWP_LINUX_BUFFER_PARAMS_ADD, "uuuuu", 0, 0, 64 * 4, modifier >> 32,
+                         modifier & 0xffffffff), fds=[self.fd])
+        sent += h.req(msg(self.PARAMS, P.ZWP_LINUX_BUFFER_PARAMS_CREATE_IMMED, "niiuu", self.BUF, 64, 32,
+                          self.AB24, 0))
+        fds = h.c2s.fds[:h.c2s.out_fds]
+        return [(o, op) for o, op, _ in sent], sent[-2:], fds
+
+    def test_linear_buffer_becomes_shm_on_its_own_fd(self):
+        ops, (create, destroy), fds = self.create()
+        pool = create[0]
+        self.assertEqual(ops[:2], [(self.DMABUF, P.ZWP_LINUX_DMABUF_CREATE_PARAMS),
+                                   (self.PARAMS, P.ZWP_LINUX_BUFFER_PARAMS_ADD)])
+        self.assertEqual(ops[2], (self.SHM, P.WL_SHM_CREATE_POOL))
+        self.assertEqual((create[1], args(create[2], "niiiiu")), (P.WL_SHM_POOL_CREATE_BUFFER,
+                                                                  [self.BUF, 0, 64, 32, 256, self.AB24]))
+        self.assertEqual(destroy[:2], (pool, P.WL_SHM_POOL_DESTROY))
+        self.assertEqual(len(fds), 2)          # the dmabuf for add, a copy of it for create_pool
+        self.assertEqual(os.fstat(fds[1]).st_ino, os.fstat(self.fd).st_ino)
+
+    def test_tiled_buffer_stays_a_dmabuf(self):
+        ops, _, fds = self.create(modifier=1 << 56 | 4)
+        self.assertEqual(ops[-1], (self.PARAMS, P.ZWP_LINUX_BUFFER_PARAMS_CREATE_IMMED))
+        self.assertEqual(len(fds), 1)
+
+    def test_gpu_buffer_is_copied_into_our_memory_on_attach(self):
+        h, calls = self.h, []
+
+        class Gpu:
+            def import_buffer(self, *a):
+                calls.append(a[1:])
+                return "bo"
+
+            def read(self, bo, width, height, mem, stride):
+                calls.append(("read", bo, width, height, stride))
+                mem[:5] = b"frame"
+
+            def free(self, bo):
+                calls.append(("free", bo))
+        h.s.cfg.gpu = Gpu()
+        tiled = 1 << 56 | 4                 # any layout the GPU reads
+        ops, (create, _), fds = self.create(modifier=tiled)
+        self.assertEqual(calls, [(64, 32, self.AB24, 0, 256, tiled)])
+        self.assertEqual(ops[2], (self.SHM, P.WL_SHM_CREATE_POOL))
+        self.assertEqual(args(create[2], "niiiiu"), [self.BUF, 0, 64, 32, 256, self.AB24])
+        self.assertNotEqual(os.fstat(fds[1]).st_ino, os.fstat(self.fd).st_ino)
+        h.req(msg(COMP, P.WL_COMPOSITOR_CREATE_SURFACE, "n", S), msg(S, P.WL_SURFACE_ATTACH, "oii", self.BUF, 0, 0))
+        self.assertEqual(calls[-1], ("read", "bo", 64, 32, 256))
+        self.assertEqual(os.pread(fds[1], 5, 0), b"frame")
+        h.ev(msg(1, P.WL_DISPLAY_EV_DELETE_ID, "u", self.BUF))
+        self.assertEqual(calls[-1], ("free", "bo"))
+
+
 class FileDropTest(unittest.TestCase):
     """Files dropped on the window are the proxy's: the APKs among them are reported for installing."""
 
@@ -529,7 +632,7 @@ class FileDropTest(unittest.TestCase):
 
 class TranslatorTest(unittest.TestCase):
     def setUp(self):
-        from waydroid_multi.session import wlschema
+        from waydroid_manager.session import wlschema
         self.tr = wp.Translator(wlschema.load())
 
     def req(self, data):
