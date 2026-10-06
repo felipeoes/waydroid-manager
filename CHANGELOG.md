@@ -54,6 +54,12 @@ follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions f
   display every time.
 - `gsf-id` reads the ID from Google Services' database, so it works on Android 14 and newer too.
 
+### Known issues
+- Android 15 on NVIDIA: opening some screens (Settings' sub-pages, for one) restarts Android's
+  display. Android 15's window manager draws an edge effect for the transition that the NVIDIA
+  GPU rejects (Xid 69 in the kernel log), a known fault of waydroid-nvidia's renderer. 13, 14, 16
+  and 17 are not affected.
+
 ### Removed
 - Support for upgrading from 0.4 and older: name-based instance ids from 0.1, the settings removed in
   0.4, and the stock-UI unit from 0.2 are no longer handled.

@@ -226,6 +226,20 @@ They render on the CPU into buffers of a hidden vkms device instead:
 - The daemon clears the apps' shader caches when a device's renderer changes. #0 shares its data with
   stock Waydroid (software here): when #0 renders otherwise, they are cleared at its start and stop.
 
+## Android 15 on NVIDIA: Xid 69 on screen transitions (open)
+- Opening a new activity (any Settings sub-page) on 15 ends in `NVRM: Xid 69 … Class 0000ce97,
+  Offset 000019d0, Data 0000003c` from SurfaceFlinger's context; the renderer reports
+  VK_ERROR_DEVICE_LOST and restarts, SurfaceFlinger aborts in `vn_relax`, and Android's display
+  restarts. Method 0x19D0 of the 3D class is `CLEAR_SURFACE` (NVIDIA open-gpu-doc), data 0x3C =
+  clear R, G, B and A of colour target 0: the GPU rejects a colour clear.
+- 15's Shell builds a "Right Edge Extension" layer for activity transitions (a 1 px wide capture
+  of the window's edge through SurfaceFlinger, stretched); 17 makes the same transition without one
+  and doesn't fault. Not the cause: the RenderEngine backend (skiavkthreaded faults too), the
+  animation scale (0 still builds the extension), Settings' activity embedding.
+- waydroid-nvidia's own telemetry names this fingerprint (Class 0xC197 Offset 0x19D0 Data 0x3C) as
+  a recurring, unattributed fault. Candidates for a fix: a framework overlay dropping `<extend>`
+  from 15's activity animations, or Venus skipping degenerate clears.
+
 ## Measuring
 - `dumpsys SurfaceFlinger --latency` is empty on 16 and newer. `dumpsys SurfaceFlinger --timestats
   -enable`, then `-dump`, gives per-layer fps on every version.

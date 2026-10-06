@@ -49,6 +49,9 @@ A version is downloaded the first time a device uses it, and all devices on it s
   expect rough edges.
 - **Root** (Magisk Delta) works on 11 and 13.
 - **Android 15 needs a GPU** (NVIDIA or another): its image can't show frames rendered in software.
+  On NVIDIA, opening some screens (Settings' sub-pages, for one) makes the GPU reject a drawing
+  command and Android's display restarts; it recovers by itself. This is a known fault of
+  waydroid-nvidia's renderer (NVIDIA Xid 69).
 - A device's version is fixed: its data can't move to another Android. Clone it to get a copy on
   the same version.
 - Android 12 has no Waydroid build.
