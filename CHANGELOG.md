@@ -37,7 +37,8 @@ follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions f
   launcher crashed in a loop on caches another renderer had left.
 - A **Settings** button (the gear) at the top of the instance window's toolbar opens that device's
   Settings in a window of their own, without the manager. Saving there asks to restart the device
-  too, when a change needs it.
+  too, when a change needs it. After the first time it opens at once: one small background process
+  keeps these windows ready while any device runs.
 
 ### Changed
 - Settings has a sidebar of sections (General, Display, Device, Performance, Graphics, System and
