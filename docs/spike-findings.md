@@ -4,8 +4,7 @@ Host: Ubuntu, kernel 7.0, LXC 6.0.6, cgroup v2, stock Waydroid 1.6.2 (LineageOS 
 Android 13 GAPPS image), GNOME 50 Wayland, swiftshader rendering. The stock instance
 kept running (frozen) during the whole spike and was unaffected.
 
-Scripts: `scripts/spike/spike.py` (bring-up as root), `scripts/spike/spike_hw.py`
-(binder service test), `waydroid_multi/session/wlproxy.py` (window labelling proxy).
+The window labelling proxy from this spike became `waydroid_manager/session/wlproxy.py`.
 
 | # | Question | Result |
 |---|----------|--------|
@@ -41,3 +40,239 @@ Scripts: `scripts/spike/spike.py` (bring-up as root), `scripts/spike/spike_hw.py
   so the window is not resizable.
 - Window sizes must fit the monitor (this host: 1366×768); presets are computed from the monitor's
   work area.
+
+# 1.0.0 spikes: NVIDIA and Android 11–17 (2026-10-05)
+
+Host: Ubuntu 26.04, kernel 7.0, GNOME 50 on an NVIDIA RTX 5060 Ti (nvidia-open 595.91.07), plus an AMD
+Granite Ridge iGPU, Waydroid 1.6.2. Every check ran in throwaway instances on this host.
+
+## NVIDIA: Venus over vtest (waydroid-nvidia)
+
+The only way onto the NVIDIA GPU with the proprietary driver: Android's Venus Vulkan driver sends Vulkan
+over a unix socket to a patched `virgl_test_server --no-virgl --venus --multi-clients` on the host. GLES
+goes through ANGLE on Vulkan, and gralloc allocates through `libgbm_mesa_wrapper.so`. Binaries:
+quinovax/waydroid-nvidia v0.1.2 (sha256 checked against its SHA256SUMS).
+
+| Check | Result |
+|---|---|
+| Android 13 boots | ANGLE `Vulkan 1.3.329 (NVIDIA Virtio-GPU Venus (NVIDIA GeForce RTX 5060 Ti))`; each Android client gets its own `virgl_render_server` |
+| Display through our proxy (`persist.waydroid.use_subsurface=false`) | works, smooth |
+| RAID: Shadow Legends 3D intro (arm64, Houdini) | **59.8 fps** (game cap), 27% CPU. Software (ANGLE on SwiftShader): **8.6 fps** at 173% CPU |
+| Two instances, each with its own renderer | 59.7 fps each; GPU 12%, 2.6 GB VRAM |
+| Freeze 15 s, then thaw | survives |
+| Kill one renderer | only that instance breaks |
+| New renderer on the same socket path | not seen by the container: a socket-file bind pins the dead inode. Bind the renderer's **directory** (rbind) |
+| A renderer died during a SurfaceFlinger crash loop | respawn is needed |
+
+- The socket mount must be `rbind`: a plain bind drops the nested socket bind.
+- No render node is needed in the container for this path.
+- **Android 14–17 need only** the A13-built `vulkan.virtio.so` (x86 + x86_64) and
+  `libgbm_mesa_wrapper.so`. Their own ANGLE and hwcomposer work; the A13 ANGLE breaks 14 ("no suitable
+  EGLConfig"). Android 13 uses the full set (Venus, ANGLE, wrapper, hwcomposer).
+
+## Android images
+
+| Android | Image | FS | Result on this host |
+|---|---|---|---|
+| 11 | official OTA lineage-18.1 GAPPS 20250628 | ext4 | boots in 12 s (SwiftShader); Houdini pin for SDK 30 works; Play Store in image |
+| 13 | official OTA lineage-20.0 GAPPS | ext4 | as above (NVIDIA) |
+| 14 | WayDroid-ATV 20260125 lineage-21.0 (vanilla) | ext4 | NVIDIA ✓; AMD ✓ with quirk props; software ✗ (solved later: vkms, below) |
+| 15 | minhmc2007 lineage-22.2 20261005 (vanilla) | squashfs | NVIDIA ✓, boots in 15 s |
+| 15 | WayDroid-ATV 20260224 lineage-22.2 | squashfs | ✗: system_server dies building MediaCodecList |
+| 16 | WayDroid-ATV OTA a16-qpr2 lineage-23.2 GAPPS | EROFS + ext4 | NVIDIA ✓ (RAID renders via libndk), software ✓ |
+| 17 | WayDroid-ATV OTA a17 lineage-24.0 GAPPS | EROFS + ext4 | NVIDIA ✓ with four fixes (below) |
+
+Notes:
+- **Checksums.** The OTA JSON `id` is the zip's sha256. GitHub release digests and the Hugging Face
+  LFS oid are sha256 too. MindTheGapps `.sha256sum` files hold a bare hash with no file name.
+- **Pairing.** Pair system and vendor by `version`. The a17 vendor channel lists two builds with the
+  same datetime, so pick by the file name's date.
+- **Downloads.** SourceForge's automatic mirror can crawl (80–190 KB/s). `master.dl.sourceforge.net`
+  was ~1.5 MB/s. Downloads must resume.
+- **Verification.** Verify by read-only loop mount (ext4, squashfs, EROFS), not debugfs.
+- **Stock's set.** Official 13's newest build has the same datetimes as stock's set, so it is reused.
+- **Host link.** libgbinder 1.1.53 built against the host's libglibutil 1.0.80 and preloaded with
+  `ctypes.CDLL(RTLD_GLOBAL)` works with python3-gbinder 1.3.1: aidl5 (15) and aidl6 (16, 17 = API 37).
+
+### How each image family picks graphics HALs
+
+| Image | Selector | Our setting |
+|---|---|---|
+| 13 (official) | Waydroid init patch | plain props; a later duplicate key wins |
+| 14 (ATV) | `/system/bin/waydroid-init`: amdgpu → `minigbm_amdgpu`, which fails on RDNA | `gralloc.override=0` + `ro.hardware.gralloc=minigbm_gbm_mesa` |
+| 15 (minhmc) | vendor waydroid-init | `ro.gralloc.override=0` + `ro.hardware.gralloc=minigbm_gbm_mesa` |
+| 16, 17 (ATV) | vendor waydroid-init: detects NVIDIA and falls back to software | `ro.waydroid.override_props=0` keeps our `ro.hardware.*` |
+
+- On 14+, the FIRST duplicate key wins. Generated props must have exactly one line per key.
+- With `egl=angle`, 14+ load ANGLE from `/system/lib64`.
+- An overlay layer must contain `system/…`. Mounting a layer's `system/` at the image root hides the
+  `/product` and `/system_ext` symlinks, and boot hangs.
+
+### 14 and 15 bugs and workarounds
+- **14 + AMD:** `allocator@4.0-service.minigbm_amdgpu: Failed to initialize driver`, fixed by the props
+  above. On this host GNOME (on NVIDIA) then rejects the AMD dmabufs (mutter#3930, the same as 13 on the
+  iGPU).
+- **14/15 software mode:** the hwcomposer can't read gralloc-default buffer metadata (format 0) and
+  sends `wl_shm` format −EINVAL. It's fixed in source (android_hardware_waydroid `1761e9a7af`) but not
+  in any published build. Solved later for 14 with vkms, below; 15 still can't render in software.
+- **ATV 15:** a `c2.ffmpeg.dts.decoder` entry with two `<Type>`s trips
+  `AudioCapabilities::getDefaultFormat` (ubsan). Fixed upstream (stagefright-plugins `a44e827c55`); the
+  minhmc build includes it.
+
+### Google Play on 14 and 15 (MindTheGapps layer)
+- The zip's `system/` tree becomes an overlay layer. Pre-extract the x86/x86_64 libs of each APK next
+  to it: the system partition is read-only.
+- Leave out **SetupWizard**: it crashes ("WifiService: Permission denied") and blocks GSF check-in.
+  Images without a setup wizard of their own then need `device_provisioned=1` / `user_setup_complete=1`.
+- Use **MindTheGapps 14.0.0 for 15 as well.** 15.0.0's GSF registers its gservices provider as
+  `…gms.gservices.provider.do.not.use`, and Play Store and GMS crash ("Failed to find provider
+  com.google.android.gsf.gservices").
+- The GSF ID: `content query` on the gservices provider returns nothing on 14+. Read
+  `data/data/com.google.android.gsf/databases/gservices.db` on the host instead.
+
+### Android 17 needs
+1. `/dev/loop-control` plus loop nodes (`/dev/block/loopN`) in the container: `apexd-bootstrap` mounts
+   `.apex` files through loop devices (45 APEXes). Host nodes must already exist for the numbers
+   `LOOP_CTL_GET_FREE` returns.
+2. The host `videodev` module loaded. Without `/sys/class/video4linux`, 17's ueventd passes a null DIR*
+   to `dirfd()` ("FORTIFY: dirfd: null DIR*"), aborts 4×, and init reboots.
+3. `debug.hwui.renderer=skiavk`. skiagl over ANGLE+Venus aborts ("Failed to set damage region …
+   EGL_BAD_ACCESS", "GL errors! SkiaOpenGLPipeline.cpp").
+4. GMS ships as a signed APEX (`com.google.android.gmssystem.prodvic.apex`) that needs device-mapper.
+   Unpack its EROFS payload into a layer as `system/product/priv-app/PrebuiltGmsCoreVic/` plus its
+   permission and sysconfig XML, and hide the `.apex` with an overlayfs whiteout. GmsCore then provides
+   `com.google.android.gsf.gservices`.
+
+### Navigation on 15, 16 and 17
+The ATV images (and minhmc's 15) use Launcher3's large-screen Taskbar as the navigation bar, and it
+draws an empty 72 px strip on Waydroid. `qemu.hw.mainkeys=1` removes it. Back/Home/Recents come from
+the window toolbar.
+
+### Also found
+- App windows (single-window mode) stalled on every focus change: the hwcomposer hotplugs Android's
+  display on each sized `xdg_toplevel.configure`. Fixed in the proxy (only size changes pass through).
+- 15 started in time zone GMT-11: pass the host time zone.
+
+# Found while building 1.0.0 (2026-10-05 and 06)
+
+Same host. Every item below is in the code now.
+
+## Android replayed the host's device events (GNOME logouts)
+- The WayDroid-ATV images' ueventd remounts sysfs (`fsopen`/`fsmount`/`fspick` RECONFIGURE) and, at
+  coldboot, writes `add` into every `uevent` file it finds. Through the privileged container that is
+  the host's sysfs: every host device event fired again. With vgem around, GNOME re-probed its GPUs,
+  and the session ended.
+- Fix: an AppArmor profile, stock's `lxc-waydroid` plus `deny /**/uevent w,`. Deny rules hold even in
+  complain mode. lxc-start only switches to profiles named `lxc-*`, hence `lxc-waydroid-manager`.
+- A seccomp filter on the mount calls was tried first: it broke Android 16's apexd.
+
+## Software rendering on 14 and 17: vkms (not 15)
+17 has no gralloc.default mapper, and 14 and 15's hwcomposer can't show gralloc.default buffers.
+14 and 17 render on the CPU into buffers of a hidden vkms device instead; 15 can't (below):
+- The device is made through configfs (`/sys/kernel/config/vkms/waydroid-manager`: one plane, crtc,
+  encoder and connector). The connector is disconnected, so no desktop shows it, and a udev rule
+  loaded first tags it `mutter-device-ignore` for GNOME.
+- Its node must be `0666`: app processes open it too. At `0660` Android 13 on NVIDIA (which uses
+  the same node, below) flickered and went black at times.
+- minigbm allocates linear dumb buffers there: `minigbm_generic` on 14, plain `minigbm` on 15 and
+  17. The hwcomposer only reads the metadata of gralloc modules named `minigbm_*` (or `gbm`). Pastel
+  draws, and 17 runs ANGLE on it.
+- **15 can't render in software.** With plain `minigbm` Android draws (screencap shows it), but the
+  hwcomposer, lacking the metadata, imports each frame into SwiftShader as format 0 ("UNSUPPORTED:
+  AHardwareBuffer_Format 0") and sends black `wl_shm` frames with a −errno format. Its image has no
+  `minigbm_generic`; `minigbm_gbm_mesa` on vkms aborts SurfaceFlinger ("Failed to create a valid
+  texture", SwiftShader can't import it), `minigbm_celadon` crashes the hwcomposer, and `gbm` (the
+  2.0 allocator) crash-loops. 15 runs on a GPU only; Software is refused.
+- GNOME can't import vkms dmabufs, so the proxy hands the same fd over as a `wl_shm` pool.
+
+## Root (Magisk Delta) on 11 to 17
+Tested on each version: Magisk's daemon runs, an ungranted uid is refused, and uid 2000 gets
+`uid=0` from `su` once it's allowed in Magisk's `policies` table.
+- **16: the daemon died during boot.** Its log stopped at "Loading modules". 16's init runs each
+  service, `exec` steps included, in a cgroup of its own (`system/uid_0/pid_N`) and kills the whole
+  cgroup when the step ends. 11 to 15 make no cgroups of their own, and 17 keeps everything in
+  `/init`. The daemon is forked by `magisk --post-fs-data`, and Magisk's own cgroup escape can't
+  reach the container's cgroup root, so it died with the step. The step now runs
+  `echo 0 > /sys/fs/cgroup/init/cgroup.procs` first, so the daemon starts in init's cgroup. On 11
+  to 15 there is no `/init` cgroup and the write fails harmlessly.
+- Testing `su` right after a denial for the same uid gets the denial again for ~10 s: Magisk caches
+  it.
+
+## NVIDIA
+- minigbm opens a DRM device even with the gbm wrapper. Without one, SurfaceFlinger aborts with
+  "output buffer not gpu writeable". The vkms node stands in.
+- **17: games' windows were black.** Mesa's `vk_image_usage_to_ahb_usage` turns
+  `VK_IMAGE_CREATE_MUTABLE_FORMAT_BIT` into `CPU_WRITE_RARELY` (to force a linear layout), and
+  NVIDIA can't create those images: an instrumented Venus showed the creation failing with -11.
+  ANGLE asks for mutable-format swapchains, and only 17's libvulkan takes the producer usage from
+  `vkGetPhysicalDeviceImageFormatProperties2`. Fix: `debug.angle.feature_overrides_disabled` with
+  `supportsSwapchainMutableFormat`. ANGLE's override lists are colon-separated, not comma-separated.
+- RAID: Shadow Legends: 62 fps on 16 and 17, 56–60 on 13.
+
+## Loop devices and device-mapper
+- 14, 15 and 16 need loop devices too, not only 17.
+- apexd uses device-mapper when it can open it: it left 35 dm devices on the host. The containers
+  now deny `c 10:236`.
+- An LXC `lxc.cgroup2.devices.deny` line on its own turns the device list into deny-all. Start with
+  `lxc.cgroup2.devices.allow = a`.
+
+## A picked GPU
+- Stock's generated `ro.hardware.gralloc`/`egl`/`vulkan` props must not be inherited: on a picked
+  GPU they kept Android in software. So did a leftover user prop `ro.waydroid.software_rendering=1`.
+
+## Another GPU under a desktop on NVIDIA
+- GNOME on NVIDIA rejects the AMD iGPU's dmabufs (tiled, modifier `0x200000000401b03`; mutter#3930).
+- `minigbm_gbm_mesa` honours the hwcomposer's `waydroid.modifiers.*` props (the compositor's
+  modifiers ∩ the GPU's), which gives LINEAR buffers. Handed to GNOME as `wl_shm` over the same fd,
+  they displayed, but gnome-shell sat at 78% CPU idle and 99% animating.
+- Those buffers live in the iGPU's VRAM carve-out, and the CPU reads them through the PCI BAR,
+  uncached: 340 MB/s, 11 ms a 720p frame. `AMD_DEBUG=nowc` doesn't help (that is GTT, not VRAM).
+- Mapping them for reading through libgbm makes radeonsi blit them into a cached GTT staging
+  texture first: 0.8 ms. The proxy now copies every attached frame that way into a memfd of its
+  own. With RAID at 62 fps, gnome-shell is at 10% CPU and the proxy at 3%.
+
+## Shader caches of another renderer
+- A 0.5 device (software) moved to NVIDIA: its launcher crashed every 2 s, SIGFPE in hwui's
+  `BlobCache::clean()` (integer division by zero) while storing a shader. The caches in
+  `code_cache/com.android.skia.shaders_cache` were SwiftShader's; with them gone it ran. hwui only
+  checks the GLSL version string, which ANGLE reports the same on SwiftShader and on NVIDIA.
+- The daemon clears the apps' shader caches when a device's renderer changes. #0 shares its data with
+  stock Waydroid (software here): when #0 renders otherwise, they are cleared at its start and stop.
+
+## NVIDIA: Xid 69 on screen captures
+- **Symptom:** opening or leaving a screen (Settings' sub-pages, toggling Wi-Fi there) restarted
+  Android's display: `NVRM: Xid 69 … Class 0000ce97, Offset 000019d0, Data 0000003c` from
+  SurfaceFlinger's context, VK_ERROR_DEVICE_LOST, SurfaceFlinger aborting in `vn_relax`, and
+  system_server restarting with it.
+  - It hit 15 at 1280x720, 13 in portrait (720x1280 at 320 dpi, not at 1280x720) and `screencap`.
+  - Method 0x19D0 of the 3D class is `CLEAR_SURFACE` (NVIDIA open-gpu-doc), data 0x3C clears R, G,
+    B and A of colour target 0.
+- **Cause:** SurfaceFlinger rendering into a CPU-readable buffer, which waydroid-nvidia's renderer
+  allocates as NVIDIA's own LINEAR memory (`path=nvidia-linear-hostvis`).
+  - Those buffers are screen captures: the task snapshot taken on every activity switch,
+    `screencap`, 15's edge-extension capture.
+  - An instrumented Venus showed SurfaceFlinger importing one LINEAR colour target (720x1280,
+    usage 0x97) right before the fault.
+  - waydroid-nvidia's telemetry names this fingerprint (Class 0xC197 Offset 0x19D0 Data 0x3C)
+    without a cause. Its `WAYDROID_NVIDIA_CPU_LINEAR=0` switch exists to test this hypothesis.
+- **Fix:** the session starts each renderer with `WAYDROID_NVIDIA_CPU_LINEAR=0`, so CPU-readable
+  buffers come from system memory (udmabuf).
+  - No Xid over repeated runs on 13 (portrait) and 15, and screenshots come out correct.
+  - For 720x1280 that allocation fails without a log line, and Android falls back to a block-linear
+    buffer, which also renders cleanly.
+- **Not the cause:**
+  - the RenderEngine backend (skiavkthreaded faults too);
+  - the animation scale;
+  - Settings' activity embedding;
+  - the navigation bar;
+  - ANGLE's framebuffer fetch, advanced blend emulation and imageless framebuffers.
+- **The validation layer's `VUID-VkRenderPassBeginInfo-framebuffer-04627` is a separate mismatch.**
+  It's the INPUT_ATTACHMENT usage Venus strips from LINEAR AHB imports while ANGLE's imageless
+  framebuffer keeps it. Its errors preceded each fault, but with imageless framebuffers off they
+  went away and the Xid stayed.
+- Android caps a property value at 91 characters, and Android drops a longer
+  `debug.angle.feature_overrides_disabled` silently.
+
+## Measuring
+- `dumpsys SurfaceFlinger --latency` is empty on 16 and newer. `dumpsys SurfaceFlinger --timestats
+  -enable`, then `-dump`, gives per-layer fps on every version.

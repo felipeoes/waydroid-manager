@@ -1,11 +1,13 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 import os
+import sys
 import tempfile
+import types
 import unittest
 from unittest import mock
 
-from waydroid_multi import stockctl
-from waydroid_multi.daemon import images
+from waydroid_manager import stock, stockctl
+from waydroid_manager.daemon import images
 
 
 class EnsureSyncedTest(unittest.TestCase):
@@ -16,8 +18,8 @@ class EnsureSyncedTest(unittest.TestCase):
                 mock.patch.object(images, "stock_busy", return_value=busy), \
                 mock.patch.object(images, "_sync", side_effect=lambda: (calls.append("sync"),
                                                                       current.__setitem__(0, stock_id))[1] or stock_id), \
-                mock.patch.object(images, "gc", side_effect=lambda in_use: calls.append(("gc", tuple(in_use)))):
-            result = images.ensure_synced(["old"])
+                mock.patch.object(images, "gc", side_effect=lambda in_use: calls.append(("gc", tuple(in_use())))):
+            result = images.ensure_synced(lambda: ["old"])
         return result, calls
 
     def test_up_to_date_does_nothing(self):
@@ -49,6 +51,28 @@ class StockStateTest(unittest.TestCase):
                 f.write("populated 1\nfrozen 1\n")
             with mock.patch.object(stockctl, "CGROUP", d):
                 self.assertEqual(stockctl.state(), "FROZEN")
+
+
+class GbinderTest(unittest.TestCase):
+    def test_shipped_library_loaded_before_gbinder(self):
+        fake = types.ModuleType("gbinder")
+        with tempfile.NamedTemporaryFile() as lib, mock.patch.object(stock.paths, "GBINDER_LIB", lib.name), \
+                mock.patch.object(stock.ctypes, "CDLL") as cdll, mock.patch.dict(sys.modules, {"gbinder": fake}):
+            self.assertIs(stock.load_gbinder(), fake)
+            cdll.assert_called_once_with(lib.name, mode=stock.ctypes.RTLD_GLOBAL)
+        with mock.patch.object(stock.paths, "GBINDER_LIB", "/nonexistent/libgbinder.so.1"), \
+                mock.patch.object(stock.ctypes, "CDLL") as cdll, mock.patch.dict(sys.modules, {"gbinder": fake}):
+            stock.load_gbinder()                    # a checkout: the system library
+            cdll.assert_not_called()
+
+    def test_protocols_of_the_shipped_library(self):
+        with tempfile.NamedTemporaryFile() as lib:
+            lib.write(b"\0aidl4\0aidl5\0aidl6\0")
+            lib.flush()
+            with mock.patch.object(stock.paths, "GBINDER_LIB", lib.name):
+                self.assertEqual(stock.known_sm_protocols()[-2:], ("aidl5", "aidl6"))
+        self.assertEqual(stock.protocols_for_sdk(37, ("aidl3", "aidl6")), ("aidl3", "aidl6"))
+        self.assertEqual(stock.protocols_for_sdk(35, ("aidl3",)), ("aidl3", "aidl3"))   # unknown: fallback
 
 
 if __name__ == "__main__":

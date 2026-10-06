@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=Waydroid Manager
+Comment=Create and run Android devices with Waydroid
+Exec=waydroid-manager-gui
+Icon=waydroid
+Categories=System;Emulator;
+Keywords=android;waydroid;emulator;device;instances;google play;games;
+StartupNotify=true

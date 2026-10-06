@@ -1,0 +1,470 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+"""Create / clone / settings dialogs."""
+import os
+
+import gi
+
+gi.require_version("Gtk", "4.0")
+gi.require_version("Adw", "1")
+gi.require_version("Pango", "1.0")
+from gi.repository import Adw, GLib, Gtk, Pango  # noqa: E402
+
+from .. import catalog, devices, gpu  # noqa: E402
+from ..instance import RESTART_SETTINGS, host_memory_bytes, setting_default  # noqa: E402
+from ..session import desktop  # noqa: E402
+
+# LDPlayer-style presets: (width, height, dpi)
+TABLET = [(960, 540, 160), (1280, 720, 240), (1600, 900, 240), (1920, 1080, 280), (2560, 1440, 360)]
+PHONE = [(540, 960, 240), (720, 1280, 320), (900, 1600, 320), (1080, 1920, 440), (1440, 2560, 560)]
+ACTIONS = [("stop", "Stop the instance"), ("freeze", "Freeze (pause)"), ("none", "Keep running")]
+IDLE = [("freeze", "Freeze (pause)"), ("none", "Keep running"), ("stop", "Stop the instance")]
+ARM = [("houdini", "Houdini"), ("libndk", "libndk"), ("none", "Off")]
+ANDROID = [(k, catalog.label(k)) for k in catalog.VERSIONS]
+
+
+def gpu_options(current):
+    """Automatic, Software, then the host's GPUs ("GPU 0: NVIDIA GeForce RTX 5060 Ti"). A picked
+    GPU that's gone stays listed, so saving doesn't switch it."""
+    opts = [("auto", "Automatic"), ("software", "Software")] + [(g.pci, g.label) for g in gpu.gpus()]
+    if current not in dict(opts):
+        opts.append((current, "Missing GPU ({})".format(current)))
+    return opts
+
+
+def cpu_options():
+    n = os.cpu_count() or 2
+    return [(str(c), "{} core{}".format(c, "s" if c > 1 else "")) for c in (1, 2, 3, 4, 6, 8) if c <= n]
+
+
+def memory_options():
+    total = host_memory_bytes()
+    opts = [("1G", 1), ("1536M", 1.5), ("2G", 2), ("3G", 3), ("4G", 4), ("6G", 6), ("8G", 8), ("12G", 12),
+            ("16G", 16)]
+    return [(v, "{:g} GB".format(gb)) for v, gb in opts if gb * 1024 ** 3 <= total]
+
+
+def resolution_presets(kind):
+    """[(label, width, height, dpi)] for 'phone' or 'tablet'. Windows are zoomed to fit
+    the screen, so every preset is usable on any monitor."""
+    presets = TABLET if kind == "tablet" else PHONE
+    return [("{} × {} · {} dpi".format(w, h, d), w, h, d) for w, h, d in presets]
+
+
+def classify(width, height, dpi):
+    """Which form factor/preset index an existing size belongs to."""
+    for kind in ("tablet", "phone"):
+        for i, (_, w, h, d) in enumerate(resolution_presets(kind)):
+            if (w, h, d) == (width, height, dpi):
+                return kind, i
+    return "custom", 0
+
+
+def _wrapping(row):
+    """Options wrap onto more lines instead of ending in "…" when they don't fit."""
+    f = Gtk.SignalListItemFactory()
+    f.connect("setup", lambda _f, item: item.set_child(
+        Gtk.Label(wrap=True, wrap_mode=Pango.WrapMode.WORD_CHAR, max_width_chars=22, xalign=0)))
+    f.connect("bind", lambda _f, item: item.get_child().set_label(item.get_item().get_string()))
+    row.set_factory(f)
+    return row
+
+
+def _combo(title, options, subtitle=None):
+    row = _wrapping(Adw.ComboRow(title=title))
+    if subtitle:
+        row.set_subtitle(subtitle)
+    row.set_model(Gtk.StringList.new([label for _, label in options]))
+    return row
+
+
+def _select(row, options, value):
+    for i, (v, _) in enumerate(options):
+        if v == value:
+            row.set_selected(i)
+            return True
+    return False
+
+
+def _with_current(options, value, fmt):
+    """Keep an existing non-preset value selectable."""
+    if value and value not in dict(options):
+        return options + [(value, fmt(value))]
+    return options
+
+
+def _toggles(options, active, changed):
+    """Toggle buttons for [(name, label)], returned with a function giving the active name. They are an
+    Adw.ToggleGroup on libadwaita 1.7+, and linked GTK toggle buttons before that (Ubuntu 24.04 has 1.5)."""
+    if hasattr(Adw, "ToggleGroup"):
+        group = Adw.ToggleGroup(valign=Gtk.Align.CENTER)
+        for name, label in options:
+            group.add(Adw.Toggle(name=name, label=label))
+        group.set_active_name(active)
+        group.connect("notify::active-name", lambda *_: changed())
+        return group, group.get_active_name
+    box = Gtk.Box(valign=Gtk.Align.CENTER, css_classes=["linked"])
+    buttons = {}
+    for name, label in options:
+        buttons[name] = Gtk.ToggleButton(label=label, group=next(iter(buttons.values()), None))
+        box.append(buttons[name])
+    buttons[active].set_active(True)
+    for b in buttons.values():
+        b.connect("toggled", lambda b: b.get_active() and changed())
+    return box, lambda: next(name for name, b in buttons.items() if b.get_active())
+
+
+def _spin(title, lo, hi, step, value, digits=0, subtitle=None):
+    adj = Gtk.Adjustment(lower=lo, upper=hi, step_increment=step, page_increment=step * 10, value=value)
+    row = Adw.SpinRow(title=title, adjustment=adj, digits=digits)
+    if subtitle:
+        row.set_subtitle(subtitle)
+    return row
+
+
+class _Dialog(Adw.Dialog):
+    def _frame(self, title, submit_label, content):
+        self.set_title(title)
+        view = Adw.ToolbarView()
+        header = Adw.HeaderBar()
+        header.set_show_end_title_buttons(False)
+        header.set_show_start_title_buttons(False)
+        cancel = Gtk.Button(label="Cancel")
+        cancel.connect("clicked", lambda *_: self.close())
+        header.pack_start(cancel)
+        self.submit = Gtk.Button(label=submit_label, css_classes=["suggested-action"])
+        self.submit.connect("clicked", self._on_submit)
+        header.pack_end(self.submit)
+        view.add_top_bar(header)
+        view.set_content(content)
+        self.set_child(view)
+
+
+class InstanceDialog(_Dialog):
+    """mode: 'create' (fresh instance from the stock image) or 'edit'."""
+
+    def __init__(self, mode, on_submit, info=None):
+        super().__init__()
+        self.mode = mode
+        self.on_submit = on_submit
+        self.info = info or {}
+        self.set_content_width(720)
+        self.set_content_height(560)
+        edit = mode == "edit"     # when a change applies only matters for an existing instance
+        # A sidebar of sections, each its own short page
+        self.stack = Gtk.Stack(hexpand=True)
+        self.nav = Gtk.ListBox(css_classes=["navigation-sidebar"])
+        self.nav.connect("row-selected", lambda _l, row: row and self.stack.set_visible_child_name(row.get_name()))
+        content = Gtk.Box()
+        content.append(Gtk.ScrolledWindow(child=self.nav, hscrollbar_policy=Gtk.PolicyType.NEVER, width_request=180))
+        content.append(Gtk.Separator(orientation=Gtk.Orientation.VERTICAL))
+        content.append(self.stack)
+        self._frame("New Instance" if mode == "create" else
+                    "#{} {} — Settings".format(self.info.get("id", ""), self.info.get("name", "")),
+                    "Create" if mode == "create" else "Save", content)
+
+        # -- general
+        page = self._page("general", "General", "preferences-other-symbolic")
+        g = Adw.PreferencesGroup()
+        page.add(g)
+        self.name_row = Adw.EntryRow(title="Name")
+        self.name_row.set_text(self.info.get("name", ""))
+        g.add(self.name_row)
+        if mode == "create":
+            g.set_description("A fresh Android device; it gets the next free number. "
+                              "To copy an existing instance, use Clone.")
+            self.android_row = _combo("Android version", ANDROID)
+            _select(self.android_row, ANDROID, catalog.DEFAULT)
+            self.android_row.connect("notify::selected", lambda *_: self._android_changed())
+            g.add(self.android_row)
+        else:
+            g.add(Adw.ActionRow(title="Android version", subtitle=catalog.label(self.info["android"])
+                                if self.info.get("android") in catalog.VERSIONS else "Stock Waydroid's own"))
+            self.apps_row = Adw.SwitchRow(title="App shortcuts in the app grid",
+                                          subtitle="Create launchers for this instance's apps")
+            self.apps_row.set_active(self.info.get("desktop_apps", "false") == "true")
+            g.add(self.apps_row)
+        g = Adw.PreferencesGroup(title="Behavior")
+        page.add(g)
+        self.close_row = _combo("When the window is closed", ACTIONS)
+        _select(self.close_row, ACTIONS, self.info.get("close_action", "stop"))
+        g.add(self.close_row)
+        self.idle_row = _combo("When Android goes idle", IDLE)
+        _select(self.idle_row, IDLE, self.info.get("idle_action", "freeze"))
+        g.add(self.idle_row)
+
+        # -- display
+        page = self._page("display", "Display", "preferences-desktop-display-symbolic")
+        g = Adw.PreferencesGroup(description="Takes effect at the next start" if edit else None)
+        page.add(g)
+        cw = int(self.info.get("width") or setting_default("width"))
+        ch = int(self.info.get("height") or setting_default("height"))
+        cdpi = int(self.info.get("dpi") or setting_default("dpi"))
+        kind, idx = classify(cw, ch, cdpi)
+        type_row = Adw.ActionRow(title="Device type")
+        toggles, self._kind = _toggles((("phone", "Phone"), ("tablet", "Tablet"), ("custom", "Custom")), kind,
+                                       self._kind_changed)
+        type_row.add_suffix(toggles)
+        g.add(type_row)
+        self.res_row = _wrapping(Adw.ComboRow(title="Resolution"))
+        g.add(self.res_row)
+        self.width_row = _spin("Width", 240, 7680, 2, cw)
+        self.height_row = _spin("Height", 240, 7680, 2, ch)
+        self.dpi_row = _spin("Density (DPI)", 80, 640, 10, cdpi)
+        for r in (self.width_row, self.height_row, self.dpi_row):
+            g.add(r)
+        self._kind_changed(select=idx)
+
+        # -- device
+        page = self._page("device", "Device", "phone-symbolic")
+        g = Adw.PreferencesGroup(description="What apps see as this device" + (" (next start)" if edit else ""))
+        page.add(g)
+        self.dev_keys = list(devices.PRESETS)
+        self.device_row = _wrapping(Adw.ComboRow(title="Device model"))
+        self.device_row.set_model(Gtk.StringList.new([devices.label(k) for k in self.dev_keys]))
+        cur = self.info.get("device_model", "waydroid")
+        self.device_row.set_selected(self.dev_keys.index(cur) if cur in self.dev_keys else 0)
+        g.add(self.device_row)
+        self.custom_rows = {}
+        for f in devices.FIELDS:
+            r = Adw.EntryRow(title=f.capitalize())
+            r.set_text(self.info.get("prop:ro.product.waydroid." + f, ""))
+            g.add(r)
+            self.custom_rows[f] = r
+        self.device_row.connect("notify::selected", lambda *_: self._device_changed())
+        self._device_changed()
+
+        # -- performance
+        page = self._page("performance", "Performance", "power-profile-performance-symbolic")
+        g = Adw.PreferencesGroup(description="Limits apply at the next start" if edit else None)
+        page.add(g)
+        cur = self.info.get("cpus") or setting_default("cpus")
+        self.cpu_opts = _with_current(cpu_options(), cur, lambda v: "{} cores".format(v))
+        self.cpu_row = _combo("CPU", self.cpu_opts)
+        _select(self.cpu_row, self.cpu_opts, cur)
+        g.add(self.cpu_row)
+        cur = self.info.get("memory") or setting_default("memory")
+        self.mem_opts = _with_current(memory_options(), cur, lambda v: v.replace("G", " GB").replace("M", " MB"))
+        self.mem_row = _combo("Memory", self.mem_opts)
+        _select(self.mem_row, self.mem_opts, cur)
+        g.add(self.mem_row)
+
+        # -- graphics
+        page = self._page("graphics", "Graphics", "applications-graphics-symbolic")
+        g = Adw.PreferencesGroup(description="Restart the instance to apply" if edit else None)
+        page.add(g)
+        self.gpu_opts = gpu_options(self.info.get("gpu", "auto"))
+        self.gpu_row = _combo("GPU", self.gpu_opts, subtitle="Automatic uses the GPU that shows your desktop "
+                                                   "when it can; Software works on any PC but is slower.")
+        _select(self.gpu_row, self.gpu_opts, self.info.get("gpu", "auto"))
+        g.add(self.gpu_row)
+
+        # -- system
+        page = self._page("system", "System", "emblem-system-symbolic")
+        g = Adw.PreferencesGroup(description="Restart the instance to apply" if edit else None)
+        page.add(g)
+        self.writable_row = Adw.SwitchRow(title="Writable system",
+                                          subtitle="Lets Android change its system files")
+        self.writable_row.set_active(self.info.get("system_writable", "false") == "true")
+        g.add(self.writable_row)
+        self.root_row = Adw.SwitchRow(title="Root",
+                                      subtitle="Installs Magisk Delta; needs internet the first time")
+        self.root_row.set_active(self.info.get("root", "false") == "true")
+        g.add(self.root_row)
+        self.arm_row = _combo("ARM translation", ARM, subtitle="Runs ARM-only apps; needs internet the first time")
+        _select(self.arm_row, ARM, self.info.get("arm_translation", "houdini"))
+        g.add(self.arm_row)
+        self._android_changed()
+
+        # -- properties (edit only)
+        if mode == "edit":
+            page = self._page("properties", "Properties", "text-x-generic-symbolic")
+            self.prop_group = Adw.PreferencesGroup(title="Android properties",
+                                                   description="Overrides for vendor/waydroid.prop (next start)")
+            add = Gtk.Button(icon_name="list-add-symbolic", valign=Gtk.Align.CENTER, tooltip_text="Add property",
+                             css_classes=["flat"])
+            add.connect("clicked", lambda *_: self._add_prop_row("", ""))
+            self.prop_group.set_header_suffix(add)
+            page.add(self.prop_group)
+            self.prop_rows = []
+            self.orig_props = {k[5:]: v for k, v in self.info.items()
+                               if k.startswith("prop:") and not k.startswith("prop:ro.product.waydroid.")}
+            for k, v in sorted(self.orig_props.items()):
+                self._add_prop_row(k, v)
+        self.nav.select_row(self.nav.get_row_at_index(0))
+
+    # -- helpers
+    def _page(self, name, title, icon):
+        """A sidebar entry and its page."""
+        page = Adw.PreferencesPage()
+        self.stack.add_named(page, name)
+        box = Gtk.Box(spacing=12, margin_start=6, margin_end=6)
+        box.append(Gtk.Image(icon_name=icon))
+        box.append(Gtk.Label(label=title, xalign=0))
+        self.nav.append(Gtk.ListBoxRow(name=name, child=box))
+        return page
+
+    def _add_prop_row(self, key, value):
+        box = Gtk.Box(spacing=6, margin_top=6, margin_bottom=6, margin_start=12, margin_end=6)
+        k = Gtk.Entry(text=key, placeholder_text="ro.some.property", hexpand=True)
+        v = Gtk.Entry(text=value, placeholder_text="value", hexpand=True)
+        rm = Gtk.Button(icon_name="user-trash-symbolic", tooltip_text="Remove", css_classes=["flat"])
+        row = Gtk.ListBoxRow(activatable=False, child=box)
+        box.append(k)
+        box.append(v)
+        box.append(rm)
+        entry = (row, k, v)
+        rm.connect("clicked", lambda *_: (self.prop_group.remove(row), self.prop_rows.remove(entry)))
+        self.prop_group.add(row)
+        self.prop_rows.append(entry)
+
+    def _kind_changed(self, select=None):
+        kind = self._kind()
+        custom = kind == "custom"
+        self.res_row.set_visible(not custom)
+        for r in (self.width_row, self.height_row, self.dpi_row):
+            r.set_visible(custom)
+        if not custom:
+            self.presets = resolution_presets(kind)
+            self.res_row.set_model(Gtk.StringList.new([p[0] for p in self.presets]))
+            if select is None:
+                select = 1   # 1280x720 tablet / 720x1280 phone
+            self.res_row.set_selected(min(select, len(self.presets) - 1))
+
+    def _device_changed(self):
+        custom = self.dev_keys[self.device_row.get_selected()] == "custom"
+        for r in self.custom_rows.values():
+            r.set_visible(custom)
+
+    def android(self):
+        return ANDROID[self.android_row.get_selected()][0] if self.mode == "create" else self.info.get("android")
+
+    def _android_changed(self):
+        key = self.android()
+        if catalog.get(key, "software", True) is False and \
+                self.gpu_opts[self.gpu_row.get_selected()][0] == "software":
+            _select(self.gpu_row, self.gpu_opts, "auto")     # it can't render in software
+        if self.mode == "create":
+            self.android_row.set_subtitle("About {:.1f} GB to download the first time".format(catalog.get(key, "gb")))
+
+    def values(self):
+        v = {}
+        name = self.name_row.get_text().strip()
+        if name:
+            v["name"] = name
+        if self.mode == "create":
+            v["android"] = self.android()
+        if self._kind() == "custom":
+            w, h, dpi = (int(self.width_row.get_value()), int(self.height_row.get_value()),
+                         int(self.dpi_row.get_value()))
+        else:
+            _, w, h, dpi = self.presets[self.res_row.get_selected()]
+        v["width"], v["height"], v["dpi"] = str(w), str(h), str(dpi)
+        key = self.dev_keys[self.device_row.get_selected()]
+        v["device_model"] = key
+        if key == "custom":
+            for f, r in self.custom_rows.items():
+                v["prop:ro.product.waydroid." + f] = r.get_text().strip()
+        v["cpus"] = self.cpu_opts[self.cpu_row.get_selected()][0]
+        v["memory"] = self.mem_opts[self.mem_row.get_selected()][0]
+        v["close_action"] = ACTIONS[self.close_row.get_selected()][0]
+        v["idle_action"] = IDLE[self.idle_row.get_selected()][0]
+        v["system_writable"] = "true" if self.writable_row.get_active() else "false"
+        v["root"] = "true" if self.root_row.get_active() else "false"
+        v["arm_translation"] = ARM[self.arm_row.get_selected()][0]
+        v["gpu"] = self.gpu_opts[self.gpu_row.get_selected()][0]
+        if self.mode == "edit":
+            v["desktop_apps"] = "true" if self.apps_row.get_active() else "false"
+            seen = set()
+            for _, k, val in self.prop_rows:
+                pk = k.get_text().strip()
+                if pk:
+                    seen.add(pk)
+                    if self.orig_props.get(pk) != val.get_text():
+                        v["prop:" + pk] = val.get_text()
+            for pk in self.orig_props:
+                if pk not in seen:
+                    v["prop:" + pk] = ""
+        return v
+
+    def _on_submit(self, *_):
+        if self.mode == "create":
+            self.on_submit(self.values())
+        else:
+            self.on_submit(self.info["id"], self.values())
+        self.close()
+
+
+class CloneDialog(_Dialog):
+    """Copy an instance (or stock Waydroid) with its apps, data and settings."""
+
+    def __init__(self, source, on_submit):
+        super().__init__()
+        self.source = source          # dict with id, name, state
+        self.on_submit = on_submit
+        self.set_content_width(460)
+        page = Adw.PreferencesPage()
+        self._frame("Clone “{}”".format(source["name"]), "Clone", page)
+        what = "apps, accounts and data" if source["id"] == "0" else "apps, accounts, data and settings"
+        g = Adw.PreferencesGroup(description="Creates a new instance (next free number) with a copy of the "
+                                             "{} of “{}”.".format(what, source["name"]))
+        page.add(g)
+        self.name_row = Adw.EntryRow(title="Name")
+        self.name_row.set_text("{} (copy)".format(source["name"]))
+        g.add(self.name_row)
+        self.reset_row = Adw.SwitchRow(title="New device identity",
+                                       subtitle="New Android ID and Google services ID, so the copy "
+                                                "counts as a separate device")
+        self.reset_row.set_active(True)
+        g.add(self.reset_row)
+        if source.get("state") in ("RUNNING", "FROZEN"):
+            note = Adw.PreferencesGroup()
+            row = Adw.ActionRow(title="“{}” is running".format(source["name"]),
+                                subtitle="It will be stopped before copying.")
+            row.add_prefix(Gtk.Image(icon_name="dialog-warning-symbolic"))
+            note.add(row)
+            page.add(note)
+
+    def _on_submit(self, *_):
+        values = {"clone_from": self.source["id"],
+                  "reset_ids": "true" if self.reset_row.get_active() else "false"}
+        name = self.name_row.get_text().strip()
+        if name:
+            values["name"] = name
+        self.on_submit(self.source, values)
+        self.close()
+
+
+def save_settings(backend, before, values, ok, fail):
+    """SetConfig, then rename the app grid entry; ok(restart): whether a changed setting needs a restart."""
+    iid = before["id"]
+    # the dialog sends every field: only what it changed may need a restart
+    restart = any(k in RESTART_SETTINGS or k.startswith("prop:") for k, v in values.items() if before.get(k, "") != v)
+
+    def done(*_):
+        if "name" in values and os.path.exists(desktop.launcher_path(iid)):
+            desktop.write_launcher(iid, values["name"])
+        ok(restart)
+    backend.call("SetConfig", iid, values, ok=done, fail=fail, timeout=60)
+
+
+def restart_dialog(name, on_restart, on_later=None):
+    """Asks to restart a running instance now, after saving settings that need it."""
+    dlg = Adw.AlertDialog(heading="Restart “{}”?".format(name),
+                          body="The new settings apply when the instance restarts.")
+    dlg.add_response("later", "Restart Later")
+    dlg.add_response("restart", "Restart Now")
+    dlg.set_response_appearance("restart", Adw.ResponseAppearance.SUGGESTED)
+    dlg.set_default_response("restart")
+    dlg.set_close_response("later")
+
+    def respond(_d, resp):
+        if resp == "restart":
+            on_restart()
+        elif on_later:
+            on_later()
+    dlg.connect("response", respond)
+    return dlg
+
+
+def show_error(parent, msg):
+    parent.add_toast(Adw.Toast(title=GLib.markup_escape_text(msg)))

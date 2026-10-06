@@ -3,19 +3,19 @@
 set -e
 # Moving from a source install (scripts/install.sh, files not owned by dpkg). Instances
 # are kept; postinst restarts the daemon from the packaged files.
-if [ "$1" = install ] && [ -d /usr/lib/waydroid-multi ] &&
-   ! dpkg-query -S /usr/lib/waydroid-multi >/dev/null 2>&1; then
+if [ "$1" = install ] && [ -d /usr/lib/waydroid-manager ] &&
+   ! dpkg-query -S /usr/lib/waydroid-manager >/dev/null 2>&1; then
     # its unit in /etc would shadow the packaged one
-    if grep -qs waydroid-multi-daemon /etc/systemd/system/waydroid-multi.service; then
+    if grep -qs waydroid-manager-daemon /etc/systemd/system/waydroid-manager.service; then
         if [ -d /run/systemd/system ]; then
-            systemctl disable waydroid-multi.service >/dev/null 2>&1 || true
+            systemctl disable waydroid-manager.service >/dev/null 2>&1 || true
         fi
-        rm -f /etc/systemd/system/waydroid-multi.service
+        rm -f /etc/systemd/system/waydroid-manager.service
     fi
     # an unmodified daemon.conf it wrote: let dpkg install ours without asking
-    conf=/etc/waydroid-multi/daemon.conf
+    conf=/etc/waydroid-manager/daemon.conf
     if [ -f "$conf" ] && [ "$(grep -v '^[[:space:]]*\(#\|$\)' "$conf" | tr -d ' ' | tr '\n' ';')" = \
-        "[network];bridge=wdmulti0;subnet=192.168.241.0/24;isolate_instances=true;use_nft=false;" ]; then
+        "[network];bridge=wdm0;subnet=192.168.241.0/24;isolate_instances=true;use_nft=false;" ]; then
         rm -f "$conf"
     fi
 fi

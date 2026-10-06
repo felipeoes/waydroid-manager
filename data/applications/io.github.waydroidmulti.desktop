@@ -1,9 +1,0 @@
-[Desktop Entry]
-Type=Application
-Name=Waydroid Multi-Instance Manager
-Comment=Create and run several Waydroid instances side by side
-Exec=waydroid-multi-gui
-Icon=waydroid
-Categories=System;Emulator;
-Keywords=android;waydroid;emulator;instances;
-StartupNotify=true
