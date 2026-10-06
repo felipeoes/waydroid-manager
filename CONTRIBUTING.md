@@ -28,7 +28,9 @@ the maintainer too), and force-pushes and deletion are blocked.
 3. **Test:** run the unit tests, and also `tests/integration/smoke.sh` for daemon, container,
    network or cloning changes.
 4. **Open a pull request against `dev`, not `main`.** GitHub proposes `main` (the default branch)
-   for new PRs, so change the base. Describe what changed, why, and how you tested it.
+   for new PRs, so change the base. Fill in the template
+   ([.github/pull_request_template.md](.github/pull_request_template.md)): what changed, why, and
+   how you tested it.
 5. **The PR is reviewed and merged into `dev`.** Small PRs are squash-merged.
 
 Releases are cut from `dev` by the maintainer, see [Releasing](#releasing).
@@ -146,6 +148,7 @@ entry it first loaded.
 | `scripts/` | `install.sh` (the installed file layout), `uninstall.sh`, `spike/` (original feasibility scripts) |
 | `packaging/deb/` | `.deb` build script, control template and maintainer scripts |
 | `.github/workflows/release.yml` | builds and publishes a release when a version tag is pushed |
+| `.github/pull_request_template.md` | what a PR describes and checks |
 | `tests/unit/`, `tests/integration/smoke.sh` | unit tests; end-to-end test on a real host |
 | `docs/spike-findings.md` | verified design assumptions from the feasibility spike |
 
