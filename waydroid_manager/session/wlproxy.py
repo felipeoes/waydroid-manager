@@ -496,6 +496,7 @@ class Window:
         self.pending_apply = False
         self.frame = None        # dict of our objects once created
         self.saved_zoom = None
+        self.own_vp = None       # our wp_viewport on the surface, when the HWC has none (Android 11)
 
 
 TRACE = os.environ.get("WDM_PROXY_TRACE") == "1"
@@ -572,6 +573,7 @@ class Session:
         self.last_title_click = 0.0
         self.tip_due = None      # (monotonic time, toolbar action) to show a tooltip at
         self.tip_shown = None    # toolbar action whose tooltip is up
+        self.tb_scroll = 0       # how far the toolbar's entries are scrolled up (short windows)
         self.cursor_dev = None
         self.pings = {}           # serial -> time the compositor pinged
         self.ping_stats = {"pings": 0, "pongs": 0, "max_latency": 0.0, "last_latency": 0.0}
@@ -641,7 +643,9 @@ class Session:
 
     def content_offset(self):
         a = self.area()
-        if a and self.res:
+        # ponytail: Android 11 draws on the toplevel itself, which can't move: its picture stays
+        # top-left when maximized or fullscreen; centring it needs a subsurface of our own
+        if a and self.res and not self.window.own_vp:
             dw, dh = self.content_size()
             return max(0, (a[0] - dw) // 2), max(0, (a[1] - dh) // 2)
         return 0, 0
@@ -764,6 +768,10 @@ class Session:
             self.viewports[new] = sid
             if sid in self.surfaces:
                 self.surfaces[sid].viewport = new
+            w = self.window
+            if w and w.own_vp and sid == w.surface:     # a surface has one viewport: ours goes
+                own, w.own_vp = w.own_vp, None
+                return [msg(own, P.WP_VIEWPORT_DESTROY), msg(obj, op, "no", new, sid)]
             return None
         if iface == "xdg_wm_base" and op == 3:          # pong
             t0 = self.pings.pop(r.u(), None)
@@ -1244,6 +1252,10 @@ class Session:
                 self.last_serial = serial
                 if button == P.BTN_LEFT:
                     self._frame_button(focus[1], *self.ptr_pos, pressed=state == 1, serial=serial)
+            elif op == P.WL_POINTER_EV_AXIS:
+                r.u()
+                if r.u() == 0:   # vertical
+                    self._scroll_toolbar(focus[1], P.fixed_to_float(r.f()))
             self.ptr_group_dropped = True
             return []
         self.ptr_group_forwarded = True
@@ -1402,6 +1414,8 @@ class Session:
             return []
         if S.viewport and S.req_dest:
             out.append(msg(S.viewport, P.WP_VIEWPORT_SET_DESTINATION, "ii", *self.scaled_dest(S.id, *S.req_dest)))
+        elif not S.viewport and (w.own_vp or self._own_viewport()):
+            out.append(msg(w.own_vp, P.WP_VIEWPORT_SET_DESTINATION, "ii", *self.content_size()))
         for cid in S.children:
             c = self.surfaces.get(cid)
             if not c or c.parent != S.id:
@@ -1418,6 +1432,15 @@ class Session:
         if commit and not S.dirty:
             out.append(msg(S.id, P.WL_SURFACE_COMMIT))
         return out
+
+    def _own_viewport(self):
+        """Android 11's HWC draws on its toplevel's surface and scales nothing: the zoom needs a
+        viewport of ours there."""
+        vpr = self._bind("wp_viewporter", 1)
+        if vpr:
+            self.window.own_vp = self.new_id("viewport")
+            self.to_server(msg(vpr, P.WP_VIEWPORTER_GET_VIEWPORT, "no", self.window.own_vp, self.window.surface))
+        return self.window.own_vp
 
     def apply_now(self):
         # Computed now, so the dirty flags reflect everything the HWC has sent
@@ -1460,6 +1483,8 @@ class Session:
         w = self.window
         if not w:
             return
+        if w.own_vp:
+            self.to_server(msg(w.own_vp, P.WP_VIEWPORT_DESTROY))
         if w.frame:
             for key in ("tip_sub", "title_sub", "toolbar_sub", "border_sub", "border_vp"):
                 oid = w.frame.get(key)
@@ -1612,8 +1637,9 @@ class Session:
             data, pw, ph, stride = fr.render_title(size[0], scale, "{} · #{}".format(self.cfg.name, self.cfg.id),
                                                    self.cfg.theme, hover, pressed)
         else:
+            self.tb_scroll = min(self.tb_scroll, fr.toolbar_scroll_max(size[1]))
             data, pw, ph, stride = fr.render_toolbar(size[1], scale, self.cfg.theme, hover, pressed,
-                                                     fullscreen=w.fullscreen)
+                                                     fullscreen=w.fullscreen, scroll=self.tb_scroll)
         self._attach(f[kind], data, pw, ph, stride, scale)
         return []
 
@@ -1663,7 +1689,7 @@ class Session:
     def _show_tip(self, action):
         f = self.window.frame if self.window else None
         size = f and f["sizes"].get("toolbar")
-        span = [(y0, y1) for a, y0, y1 in fr.toolbar_layout(size[1])
+        span = [(y0, y1) for a, y0, y1 in fr.toolbar_layout(size[1], self.tb_scroll)
                 if a == action] if size and size != "hidden" else []
         if not span:
             return False
@@ -1722,7 +1748,7 @@ class Session:
         if kind == "title":
             return fr.hit_title(x, y, size[0])
         if kind == "toolbar":
-            return fr.hit_toolbar(x, y, size[1])
+            return fr.hit_toolbar(x, y, size[1], self.tb_scroll)
         return fr.border_edge(x, y, size[0], size[1])
 
     def _frame_hover(self, sid, x, y, entered=False):
@@ -1745,6 +1771,18 @@ class Session:
             self._redraw(kind)
             if kind == "toolbar":
                 self._tip(action)
+
+    def _scroll_toolbar(self, sid, dy):
+        f = self.window.frame if self.window else None
+        size = f and f["sizes"].get("toolbar")
+        if getattr(self, "surface_kinds", {}).get(sid) != "toolbar" or not size or size == "hidden":
+            return
+        scroll = max(0, min(fr.toolbar_scroll_max(size[1]), self.tb_scroll + dy))
+        if scroll != self.tb_scroll:
+            self.tb_scroll = scroll
+            self._tip(None)
+            self.hover["toolbar"] = self._hit("toolbar", *self.ptr_pos)
+            self._redraw("toolbar")
 
     def _frame_leave(self, sid):
         kind = getattr(self, "surface_kinds", {}).get(sid)

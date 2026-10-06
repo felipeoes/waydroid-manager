@@ -1,2 +1,4 @@
 # The hidden vkms device software rendering draws into: GNOME must not take it for a GPU
 SUBSYSTEM=="drm", KERNELS=="waydroid-manager", TAG+="mutter-device-ignore"
+# apexd mounts each APEX on a host loop device: keep them out of the dock and Files
+SUBSYSTEM=="block", KERNEL=="loop*", ATTR{loop/backing_file}=="*.apex", ENV{UDISKS_IGNORE}="1"

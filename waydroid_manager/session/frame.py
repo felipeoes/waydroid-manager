@@ -161,60 +161,78 @@ def render_title(width, scale, text, theme="dark", hover=None, pressed=None):
 
 # -- toolbar ------------------------------------------------------------------------
 
-def toolbar_layout(height):
-    """[(action|None, y0, y1)]: the entries that fit from the top, the navigation buttons at the bottom."""
-    nav_top = height - 4 - BUTTON_H * len(NAV)
+def toolbar_layout(height, scroll=0):
+    """[(action|None, y0, y1)]: the entries from the top, moved up by scroll, and the navigation
+    buttons at the bottom. On a short window the entries run under the navigation buttons; up
+    to toolbar_end they are shown and clickable, and scrolling brings the rest up."""
+    y = 4 - scroll
     out = []
-    y = 4
-    # Drop the top buttons from the end if the window is short; the navigation buttons stay
-    entries = list(TOOLBAR)
-    while entries and sum(SEPARATOR_H if e is None else BUTTON_H for e in entries) > nav_top - SEPARATOR_H - 4:
-        entries.pop()
-        while entries and entries[-1] is None:
-            entries.pop()
-    for e in entries:
+    for e in TOOLBAR:
         h = SEPARATOR_H if e is None else BUTTON_H
         out.append((None if e is None else e[0], y, y + h))
         y += h
-    out += [(a, nav_top + i * BUTTON_H, nav_top + (i + 1) * BUTTON_H) for i, a in enumerate(NAV)]
-    return out
+    nav_top = toolbar_end(height) + 4
+    return out + [(a, nav_top + i * BUTTON_H, nav_top + (i + 1) * BUTTON_H) for i, a in enumerate(NAV)]
 
 
-def hit_toolbar(x, y, height):
-    for action, y0, y1 in toolbar_layout(height):
-        if action and y0 <= y < y1:
+def toolbar_end(height):
+    """Where the scrolling entries stop, above the navigation buttons."""
+    return height - 8 - BUTTON_H * len(NAV)
+
+
+def toolbar_scroll_max(height):
+    return max(0, 8 + sum(SEPARATOR_H if e is None else BUTTON_H for e in TOOLBAR) - toolbar_end(height))
+
+
+def hit_toolbar(x, y, height, scroll=0):
+    end = toolbar_end(height)
+    for action, y0, y1 in toolbar_layout(height, scroll):
+        if action and y0 <= y < y1 and (action in NAV or y < end):
             return action
     return None
 
 
-def render_toolbar(height, scale, theme="dark", hover=None, pressed=None, fullscreen=False):
+def render_toolbar(height, scale, theme="dark", hover=None, pressed=None, fullscreen=False, scroll=0):
+    import cairo
     t = THEMES.get(theme, THEMES["dark"])
     w = TOOLBAR_W
+    end = toolbar_end(height)
     surf, cr = _surface(w, height, scale)
     cr.set_source_rgb(*t["bg"])
     cr.paint()
     icons = dict(e for e in TOOLBAR if e)
-    for action, y0, y1 in toolbar_layout(height):
+    for action, y0, y1 in toolbar_layout(height, scroll):
         cy = (y0 + y1) / 2
+        cr.save()
+        if action not in NAV:
+            cr.rectangle(0, 0, w, end)
+            cr.clip()
         if action is None:
             cr.set_source_rgba(*t["sep"])
             cr.rectangle(10, cy - 0.5, w - 20, 1)
             cr.fill()
-            continue
-        if action == hover:
-            cr.set_source_rgba(*(t["press"] if action == pressed else t["hover"]))
-            _rounded(cr, 4, y0 + 2, w - 8, y1 - y0 - 4, 6)
-            cr.fill()
-        if action in ("back", "home", "recents"):
-            _draw_nav(cr, action, w / 2, cy, t["fg"])
-            continue
-        if action == "install":
-            _draw_apk(cr, w / 2, cy, t["fg"])
-            continue
-        name = icons[action]
-        if action == "fullscreen" and fullscreen:
-            name = "view-restore-symbolic"
-        _draw_icon(cr, name, w / 2, cy, 16, t["fg"])
+        else:
+            if action == hover:
+                cr.set_source_rgba(*(t["press"] if action == pressed else t["hover"]))
+                _rounded(cr, 4, y0 + 2, w - 8, y1 - y0 - 4, 6)
+                cr.fill()
+            if action in NAV:
+                _draw_nav(cr, action, w / 2, cy, t["fg"])
+            elif action == "install":
+                _draw_apk(cr, w / 2, cy, t["fg"])
+            else:
+                name = "view-restore-symbolic" if action == "fullscreen" and fullscreen else icons[action]
+                _draw_icon(cr, name, w / 2, cy, 16, t["fg"])
+        cr.restore()
+    # Entries cut off at either end fade out there: they scroll
+    fades = ([(4, 4 + 14)] if scroll > 0 else []) + ([(end, end - 14)] if scroll < toolbar_scroll_max(height) else [])
+    for y0, y1 in fades:
+        g = cairo.LinearGradient(0, y0, 0, y1)
+        g.add_color_stop_rgba(0, *t["bg"], 1)
+        g.add_color_stop_rgba(1, *t["bg"], 0)
+        cr.set_source(g)
+        cr.rectangle(0, min(y0, y1) - 4, w, 18)
+        cr.fill()
     return _finish(surf)
 
 
