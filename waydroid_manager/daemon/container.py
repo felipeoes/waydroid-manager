@@ -333,7 +333,11 @@ def vkms_card():
     cards = glob.glob("/sys/devices/faux/waydroid-manager/drm/card*")
     if not cards:
         raise RuntimeError("software rendering needs the kernel's vkms module")
-    return "/dev/dri/" + os.path.basename(cards[0])
+    node = "/dev/dri/" + os.path.basename(cards[0])
+    # Android's apps open it with their own uids: open to all, like the render nodes stock opens
+    # (16 and 17 do it themselves at boot, 13 doesn't). It has no output to drive.
+    os.chmod(node, 0o666)
+    return node
 
 
 def ensure_videodev():
