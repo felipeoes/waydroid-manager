@@ -12,6 +12,7 @@ import fcntl
 import logging
 import os
 import pwd
+import re
 import shutil
 import stat
 import subprocess
@@ -37,6 +38,8 @@ from .util import active_ids, adb_disconnect, container_pid, log, lxc_state, ope
 ERR = "io.github.waydroidmanager.Error"
 AID_SYSTEM, AID_SHELL = 1000, 2000   # adb_keys is system:shell 0640, as Android writes it on "Always allow"
 ACTIVE = ("RUNNING", "FROZEN")
+# persist.sys.boot.reason = "reboot,…" in the persistent_properties protobuf
+REBOOT_REASON_RE = re.compile(rb"\x0a\x17persist\.sys\.boot\.reason\x12[\x01-\x7f]reboot")
 MAX_PER_USER = 64
 
 
@@ -466,21 +469,23 @@ class Manager(dbus.service.Object):
         s = self.sessions.get(iid)
         if not s:
             return self._stop(iid)
+        self.set_transient(iid, "STARTING")   # the session quits on a STOPPED
         inst = Instance.load(iid)
-        self.stop_helper(iid)
-        container.stop(inst, keep_stock=True)  # #0: stock Waydroid stays paused across the reboot
-        session = dict(s["session"])
-        session["background_start"] = "false"
         try:
-            container.start(inst, self.net, self.hosts(), session, s["uid"], self.images_in_use,
-                            lambda: self.cpus_busy(iid))
-        except Exception:
-            container.cleanup(inst)  # #0 didn't come back: give stock Waydroid back
-            raise
+            self.stop_helper(iid)
+            container.stop(inst, keep_stock=True)  # #0: stock Waydroid stays paused across the reboot
+            session = dict(s["session"])
+            session["background_start"] = "false"
+            try:
+                container.start(inst, self.net, self.hosts(), session, s["uid"], self.images_in_use,
+                                lambda: self.cpus_busy(iid))
+            except Exception:
+                container.cleanup(inst)  # #0 didn't come back: give stock Waydroid back
+                raise
+            self.start_helper(Instance.load(iid))
         finally:
             self.picked.discard(iid)
-        self.start_helper(Instance.load(iid))
-        GLib.idle_add(self._emit_state, iid)
+            self.set_transient(iid, None)
 
     def _freeze(self, iid):
         inst = Instance.load(iid)
@@ -937,11 +942,31 @@ class Manager(dbus.service.Object):
     def _on_observed(self, iid, st):
         prev = self.known.get(iid)
         self.known[iid] = st
+        if st == "STOPPED" and prev in ACTIVE and iid not in self.transient and self._rebooted(iid):
+            log.info("%s: android rebooted, starting it again", iid)
+            self.run_async(iid, lambda: self._restart(iid), lambda *a: None, lambda e: log.error("%s", e))
+            return False   # no STOPPED: the session would quit and take the instance down with it
         if st == "STOPPED" and prev in ACTIVE and iid not in self.transient:
             log.info("%s: container stopped on its own, cleaning up", iid)
             self.run_async(iid, lambda: self._stop(iid), lambda *a: None, lambda e: log.error("%s", e))
         self.StateChanged(iid, st)
         return False
+
+    def _rebooted(self, iid):
+        """Whether Android stopped to reboot, with a session waiting for it. Its init lacks
+        CAP_SYS_BOOT, so it exits on a reboot as on a power off; the reason stays in its
+        persistent properties (bootstat clears it on the next boot). Only a fresh one counts:
+        an instance that dies early in boot then can't restart forever on a stale reason."""
+        if iid not in self.sessions:
+            return False
+        path = os.path.join(Instance.load(iid).data_dir, "property", "persistent_properties")
+        try:
+            if time.time() - os.path.getmtime(path) > 30:
+                return False
+            with open(path, "rb") as f:
+                return REBOOT_REASON_RE.search(f.read()) is not None
+        except OSError:
+            return False
 
     def reconcile(self):
         try:
