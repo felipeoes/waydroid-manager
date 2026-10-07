@@ -236,9 +236,9 @@ class MainWindow(Adw.ApplicationWindow):
             page.append(probe)
 
         self.error_page = Adw.StatusPage(icon_name="dialog-error-symbolic", title="Daemon not available",
-                                         description="Start it with: sudo systemctl start waydroid-manager")
+                                         description="Retry starts it (sudo systemctl start waydroid-manager)")
         retry = Gtk.Button(label="Retry", halign=Gtk.Align.CENTER, css_classes=["pill"])
-        retry.connect("clicked", lambda *_: self.refresh())
+        retry.connect("clicked", lambda *_: self.retry())
         self.error_page.set_child(retry)
         self.stack.add_named(self.error_page, "error")
 
@@ -256,6 +256,34 @@ class MainWindow(Adw.ApplicationWindow):
     def refresh(self):
         self.backend.call("List", ok=self._got_list, fail=lambda m: self.stack.set_visible_child_name("error"),
                           timeout=30)
+
+    def retry(self):
+        """Reach the daemon, starting it (as root, through pkexec) if it is still down."""
+        self.backend.call("List", ok=self._got_list, fail=lambda m: self._start_daemon(), timeout=30)
+
+    def _start_daemon(self):
+        try:
+            # D-Bus activation already starts a stopped daemon: it is down because systemd gave up on it
+            proc = Gio.Subprocess.new(["pkexec", "sh", "-c", "systemctl reset-failed waydroid-manager; "
+                                       "systemctl start waydroid-manager"],
+                                      Gio.SubprocessFlags.STDOUT_PIPE | Gio.SubprocessFlags.STDERR_MERGE)
+        except GLib.Error as e:
+            self.toast("Could not start the daemon: " + e.message)
+            return
+
+        def done(p, res):
+            try:
+                _ok, out, _err = p.communicate_utf8_finish(res)
+            except GLib.Error as e:
+                out = e.message
+            status = p.get_exit_status() if p.get_if_exited() else -1
+            if status in (126, 127):     # pkexec: authentication cancelled or failed
+                return
+            if status != 0:
+                self.toast("Could not start the daemon: " + ((out or "").strip().splitlines() or
+                                                             ["exit status {}".format(status)])[-1])
+            self.refresh()
+        proc.communicate_utf8_async(None, None, done)
 
     def _got_list(self, items):
         self.stack.set_visible_child_name("list")

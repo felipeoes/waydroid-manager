@@ -6,6 +6,27 @@ follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions f
 
 ## [Unreleased]
 
+## [1.1.0] - 2026-10-07
+
+### Added
+- The window turns with Android: an app that wants the other orientation (a landscape game in a
+  portrait instance, or a portrait one in a landscape instance) turns the window instead of being
+  letterboxed, and it turns back when the app closes. The instance's size never changes.
+
+### Fixed
+- Rotated clicks and touches use each HWC layer's dimensions when subsurface composition is enabled.
+- Stock instance #0 uses its actual Android version for rotated mouse input.
+- Stopping frozen #0 restores stock Waydroid's rotation setting before releasing its shared data.
+- Resizing a window is easier: the invisible border around it is wider, every edge also grips a few
+  pixels inside the window, and pulling out a single edge makes the window bigger (before, only the
+  corners could). Edge drags use the grabbed edge's axis even when the compositor rounds or holds
+  the other dimension fixed.
+- The inside-edge resize grips stay above Android content created after the window frame.
+- The manager's Retry button starts the daemon (it asks for your password) when it is down.
+- Android 11's picture is centred, with black around it, when the window is maximized or fullscreen.
+- The window no longer disappears when a toolbar tooltip shows after the toolbar was scrolled with a
+  touchpad.
+
 ## [1.0.1] - 2026-10-06
 
 ### Fixed
@@ -198,7 +219,8 @@ First release.
 - Root daemon hardened against symlink and race attacks, root-enabling Android properties,
   and misuse of passed file descriptors. Each user sees and controls only their own instances.
 
-[Unreleased]: https://github.com/felipeoes/waydroid-manager/compare/v1.0.1...HEAD
+[Unreleased]: https://github.com/felipeoes/waydroid-manager/compare/v1.1.0...HEAD
+[1.1.0]: https://github.com/felipeoes/waydroid-manager/compare/v1.0.1...v1.1.0
 [1.0.1]: https://github.com/felipeoes/waydroid-manager/compare/v1.0.0...v1.0.1
 [1.0.0]: https://github.com/felipeoes/waydroid-manager/compare/v0.5.0...v1.0.0
 [0.5.0]: https://github.com/felipeoes/waydroid-manager/compare/v0.4.1...v0.5.0

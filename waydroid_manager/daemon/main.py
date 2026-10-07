@@ -821,6 +821,24 @@ class Manager(dbus.service.Object):
         except OSError as e:
             raise Error("could not send key: {}".format(e))
 
+    @dbus.service.method(paths.DBUS_IFACE, in_signature="sh", out_signature="", sender_keyword="sender")
+    def WatchRotation(self, iid, fd, sender):
+        """Write the instance's display rotation (0-3) to the passed pipe, a line every half second,
+        until its reader goes away. Meanwhile the display turns for apps that want the other
+        orientation."""
+        inst = self.load(iid)
+        self.check_owner(inst, self.caller(sender))
+        raw = fd.take()
+        try:
+            if (not stat.S_ISFIFO(os.fstat(raw).st_mode)
+                    or fcntl.fcntl(raw, fcntl.F_GETFL) & os.O_ACCMODE != os.O_WRONLY):
+                raise Error("expected a pipe opened for writing", "InvalidArgs")
+        except (OSError, Error):
+            os.close(raw)
+            raise
+        threading.Thread(target=container.watch_rotation, args=(inst, raw), daemon=True,
+                         name="rotation-" + inst.id).start()
+
     @dbus.service.method(paths.DBUS_IFACE, in_signature="sh", out_signature="t",
                          sender_keyword="sender", async_callbacks=("reply", "error"))
     def Screenshot(self, iid, fd, sender, reply, error):

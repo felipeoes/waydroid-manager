@@ -10,7 +10,8 @@ import os
 TITLE_H = 32          # logical px
 TOOLBAR_W = 40
 BUTTON_H = 36
-BORDER = 8            # invisible resize border around the window
+BORDER = 12           # invisible resize border around the window
+GRIP = 4              # resize grip inside the window, on the title bar's and toolbar's outer edges
 
 # (action, icon name); None = drawn here
 TITLE_BUTTONS = [("minimize", "window-minimize-symbolic"), ("close", "window-close-symbolic")]
@@ -308,6 +309,19 @@ def _rounded(cr, x, y, w, h, r):
     cr.arc(x + r, y + h - r, r, math.pi / 2, math.pi)
     cr.arc(x + r, y + r, r, math.pi, 3 * math.pi / 2)
     cr.close_path()
+
+
+def grip_edge(x, y, w, h, sides, b=GRIP, corner=16):
+    """Which resize edge a point on a frame surface (w×h) grips, or None. sides: which of its
+    edges are the window's ("top", "left", ...); the picture's own edges stay Android's."""
+    def side(lo, hi, pos, size, reach):
+        return lo if lo in sides and pos < reach else hi if hi in sides and pos >= size - reach else None
+    v, hz = side("top", "bottom", y, h, b), side("left", "right", x, w, b)
+    if v and not hz:     # along an edge, near a corner: the corner
+        hz = side("left", "right", x, w, b + corner)
+    elif hz and not v:
+        v = side("top", "bottom", y, h, b + corner)
+    return v + "_" + hz if v and hz else v or hz
 
 
 def border_edge(x, y, w, h, b=BORDER, corner=16):

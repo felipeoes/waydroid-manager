@@ -71,6 +71,8 @@ Then open **Waydroid Manager** from your app grid.
   Clone, Install APK and Delete.
 - Each device's window has a toolbar: **⚙** Settings, **◁ ○ □** Back / Home / Recents, volume,
   screenshot, Install APK and fullscreen (**F11**). Drop `.apk` files on the window to install them.
+- The window turns with Android: a landscape game in a portrait device turns it to landscape, and
+  it turns back when the game closes.
 - Running devices show up in `adb devices` as `waydroid-<name>:5555`.
 - **Root** (Magisk Delta): turn it on in Settings, then install the Magisk app with
   `waydroid-manager app install N /var/lib/waydroid-manager/magisk-delta.apk`. Root in Android is
