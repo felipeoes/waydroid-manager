@@ -780,7 +780,11 @@ class Session:
         x, y = x / z, y / z
         if self.turn and self.res and not (pointer and self.cfg.logical_pointer):
             # back to Android's natural orientation: its input reader turns touches itself
-            x, y = rotate(x, y, *self.view(), (4 - self.turn) % 4)
+            size = self.surfaces[sid].req_dest if sid != self.window.surface else None
+            rw, rh = size or self.res     # HWC adds the layer's offset after receiving local input
+            if self.turn & 1:
+                rw, rh = rh, rw
+            x, y = rotate(x, y, rw, rh, (4 - self.turn) % 4)
         return P.float_to_fixed(x), P.float_to_fixed(y)
 
     # -- client -> server -------------------------------------------------------------

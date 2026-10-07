@@ -12,6 +12,7 @@ follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions f
   letterboxed, and it turns back when the app closes. The instance's size never changes.
 
 ### Fixed
+- Rotated clicks and touches use each HWC layer's dimensions when subsurface composition is enabled.
 - Resizing a window is easier: the invisible border around it is wider, every edge also grips a few
   pixels inside the window, and pulling out a single edge makes the window bigger (before, only the
   corners could). Continuous edge drags keep the same axis even when the compositor holds the

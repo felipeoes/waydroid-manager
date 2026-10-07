@@ -288,6 +288,24 @@ class RotationTest(unittest.TestCase):
         down = args(out[0][2], "uuoiff")
         self.assertEqual((P.fixed_to_float(down[4]), P.fixed_to_float(down[5])), (620.0, 200.0))
 
+    def test_subsurface_input_uses_layer_dimensions(self):
+        h = self.h
+        h.req(msg(LV, P.WP_VIEWPORT_SET_DESTINATION, "ii", 100, 200),
+              msg(LSUB, P.WL_SUBSURFACE_SET_POSITION, "ii", 80, 90),
+              msg(SEAT, P.WL_SEAT_GET_TOUCH, "n", 30))
+        for zoom in (0.5, 1.0):
+            h.s.set_zoom(zoom)
+            for rotation, expected in enumerate(((20, 30), (70, 20), (80, 170), (30, 180))):
+                self.turn(rotation)
+                x, y = fixed(20 * zoom), fixed(30 * zoom)
+                out = h.ev(msg(PTR, P.WL_POINTER_EV_ENTER, "uoff", 5, L, x, y),
+                           msg(PTR, P.WL_POINTER_EV_MOTION, "uff", 1, x, y),
+                           msg(30, P.WL_TOUCH_EV_DOWN, "uuoiff", 6, 0, L, 0, x, y),
+                           msg(30, P.WL_TOUCH_EV_MOTION, "uiff", 1, 0, x, y))
+                for (_, _, payload), sig in zip(out, ("uoff", "uff", "uuoiff", "uiff")):
+                    self.assertEqual(tuple(P.fixed_to_float(v) for v in args(payload, sig)[-2:]), expected)
+                h.ev(msg(30, P.WL_TOUCH_EV_UP, "uui", 7, 1, 0))
+
     def test_pointer_image_turned_back(self):
         """Android's pointer reaches the HWC's cursor surface turned with the display."""
         h = self.h
