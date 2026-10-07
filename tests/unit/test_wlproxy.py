@@ -379,14 +379,23 @@ class FrameTest(unittest.TestCase):
 
     def test_pulling_one_edge_out_grows_the_window(self):
         h = self.h
-        h.ev(msg(TL, P.XDG_TOPLEVEL_EV_CONFIGURE, "iia", 880, 392, struct.pack("=I", P.XDG_TOPLEVEL_STATE_RESIZING)),
-             msg(XS, P.XDG_SURFACE_EV_CONFIGURE, "u", 7))
-        self.assertAlmostEqual(h.s.zoom, (880 - 40) / 1280)          # the width decides, not the height
-        gw, gh = h.s.geometry()[2:]
         resizing = struct.pack("=I", P.XDG_TOPLEVEL_STATE_RESIZING)
-        h.ev(msg(TL, P.XDG_TOPLEVEL_EV_CONFIGURE, "iia", gw, gh + 100, resizing),
-             msg(XS, P.XDG_SURFACE_EV_CONFIGURE, "u", 8))
-        self.assertAlmostEqual(h.s.zoom, (gh + 100 - 32) / 720)      # pulled down: the height decides
+        # Sway keeps the undragged side at its original size throughout a drag. Include the
+        # unchanged first configure, reversing direction, and the final non-resizing configure.
+        for axis in (0, 1):
+            for delta in (0, 20, 40, 60, 40, 0):
+                width, height = 680 + (delta if axis == 0 else 0), 392 + (delta if axis == 1 else 0)
+                h.ev(msg(TL, P.XDG_TOPLEVEL_EV_CONFIGURE, "iia", width, height, resizing),
+                     msg(XS, P.XDG_SURFACE_EV_CONFIGURE, "u", 7))
+                h.req(msg(XS, P.XDG_SURFACE_ACK_CONFIGURE, "u", 7))
+                expected = (width - 40) / 1280 if axis == 0 else (height - 32) / 720
+                self.assertAlmostEqual(h.s.zoom, expected)
+            h.ev(msg(TL, P.XDG_TOPLEVEL_EV_CONFIGURE, "iia", width, height, b""))
+            self.assertAlmostEqual(h.s.zoom, 0.5)
+        # The last configure can also retain the original undragged dimension.
+        for states in (resizing, resizing, resizing, b""):
+            h.ev(msg(TL, P.XDG_TOPLEVEL_EV_CONFIGURE, "iia", 740, 392, states))
+            self.assertAlmostEqual(h.s.zoom, 700 / 1280)
         for fd in h.c2s.fds:
             os.close(fd)
 

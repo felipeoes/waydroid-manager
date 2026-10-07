@@ -509,6 +509,7 @@ class Window:
         self.fill_size = None    # maximized/tiled: window size given by the compositor
         self.maximized = False
         self.resizing = False
+        self.resize_axis = None
         self.pending_apply = False
         self.frame = None        # dict of our objects once created
         self.saved_zoom = None
@@ -1303,12 +1304,19 @@ class Session:
         elif sized and self.res:
             gx, gy, gw, gh = self.geometry()
             if w.resizing or abs(width - gw) > 1 or abs(height - gh) > 1:
-                # the side the user dragged decides: fitting both would keep a window whose one
-                # edge is pulled out as it was, so only corners could make it bigger
+                # Keep the first changed axis through the final configure: compositors can leave
+                # the undragged side fixed while our aspect-preserving geometry changes both.
+                axis = w.resize_axis
+                if axis is None:
+                    axis = 0 if abs(width - gw) >= abs(height - gh) else 1
+                    if w.resizing and (width, height) != (gw, gh):
+                        w.resize_axis = axis
                 far = 1 << 30
-                self.zoom = self.fit_zoom(width, far) if abs(width - gw) >= abs(height - gh) else \
+                self.zoom = self.fit_zoom(width, far) if axis == 0 else \
                     self.fit_zoom(far, height)
                 changed = True
+        if not w.resizing:
+            w.resize_axis = None
         if was_resizing and not w.resizing:
             self._report_zoom()
         if changed or was_fs != w.fullscreen:
