@@ -60,6 +60,7 @@ HIGH_WATER = 4 * 1024 * 1024
 FULL_UI_APP_ID = "Waydroid"
 MY_ID_BASE = 0xfe000000      # proxy-created objects in client space (mapped to real ids by Translator)
 FULL_DAMAGE = 0x7fffffff
+GRIP_KINDS = ("grip_left", "grip_bottom")   # our resize strips inside the picture's edges
 ZOOM_MIN, ZOOM_MAX = 0.25, 2.0
 PANEL_ALLOWANCE = 64          # room for a desktop panel when fitting to the screen
 # Clipboard text the HWC reads, in its order of preference
@@ -592,6 +593,7 @@ class Session:
         self.tip_shown = None    # toolbar action whose tooltip is up
         self.tb_scroll = 0       # how far the toolbar's entries are scrolled up (short windows)
         self.cursor_dev = None
+        self.cursor_shown = None  # the shape we last set over our frame
         self.cursor_surface = None  # the HWC's cursor (Android's pointer, drawn turned with its display)
         self.pings = {}           # serial -> time the compositor pinged
         self.ping_stats = {"pings": 0, "pongs": 0, "max_latency": 0.0, "last_latency": 0.0}
@@ -1301,7 +1303,11 @@ class Session:
         elif sized and self.res:
             gx, gy, gw, gh = self.geometry()
             if w.resizing or abs(width - gw) > 1 or abs(height - gh) > 1:
-                self.zoom = self.fit_zoom(width, height)
+                # the side the user dragged decides: fitting both would keep a window whose one
+                # edge is pulled out as it was, so only corners could make it bigger
+                far = 1 << 30
+                self.zoom = self.fit_zoom(width, far) if abs(width - gw) >= abs(height - gh) else \
+                    self.fit_zoom(far, height)
                 changed = True
         if was_resizing and not w.resizing:
             self._report_zoom()
@@ -1609,12 +1615,12 @@ class Session:
             self.to_server(msg(w.own_vp, P.WP_VIEWPORT_DESTROY))
         if w.frame:
             for key in ("tip_sub", "title_sub", "toolbar_sub", "border_sub", "border_vp", "backdrop_sub",
-                        "backdrop_vp"):
+                        "backdrop_vp", "grip_left_sub", "grip_left_vp", "grip_bottom_sub", "grip_bottom_vp"):
                 oid = w.frame.get(key)
                 if oid:
                     op = P.WL_SUBSURFACE_DESTROY if key.endswith("_sub") else P.WP_VIEWPORT_DESTROY
                     self.to_server(msg(oid, op))
-            for key in ("tip", "title", "toolbar", "border", "backdrop"):
+            for key in ("tip", "title", "toolbar", "border", "backdrop") + GRIP_KINDS:
                 oid = w.frame.get(key)
                 if oid:
                     self.to_server(msg(oid, P.WL_SURFACE_DESTROY))
@@ -1704,6 +1710,15 @@ class Session:
         self.to_server(msg(f["backdrop_sub"], P.WL_SUBSURFACE_SET_DESYNC))
         f["backdrop_vp"] = self.new_id("viewport")
         self.to_server(msg(vp, P.WP_VIEWPORTER_GET_VIEWPORT, "no", f["backdrop_vp"], f["backdrop"]))
+        # Resize grips just inside the picture's left and bottom edges (the title bar and toolbar
+        # grip the others), above it: invisible strips, like the border
+        for kind in GRIP_KINDS:
+            f[kind], f[kind + "_sub"] = self.new_id("surface_" + kind), self.new_id("subsurface")
+            self.to_server(msg(comp, P.WL_COMPOSITOR_CREATE_SURFACE, "n", f[kind]))
+            self.to_server(msg(subc, P.WL_SUBCOMPOSITOR_GET_SUBSURFACE, "noo", f[kind + "_sub"], f[kind], w.surface))
+            self.to_server(msg(f[kind + "_sub"], P.WL_SUBSURFACE_SET_DESYNC))
+            f[kind + "_vp"] = self.new_id("viewport")
+            self.to_server(msg(vp, P.WP_VIEWPORTER_GET_VIEWPORT, "no", f[kind + "_vp"], f[kind]))
         # Tooltip: a child of the toolbar (whose commits we control: subsurface positions are
         # parent state), left of it over the picture, with an empty input region so clicks
         # and hover go through to whatever is below
@@ -1717,7 +1732,7 @@ class Session:
         self.to_server(msg(region, P.WL_REGION_DESTROY))
         f["sizes"] = {}
         w.frame = f
-        self.surface_kinds = {f["title"]: "title", f["toolbar"]: "toolbar", f["border"]: "border"}
+        self.surface_kinds = {f[k]: k for k in ("title", "toolbar", "border") + GRIP_KINDS}
 
     def _frame_messages(self):
         """Positions of our subsurfaces (parent state) and fresh buffers when sizes changed."""
@@ -1737,7 +1752,7 @@ class Session:
         b, t, m = fr.TOOLBAR_W, fr.TITLE_H, fr.BORDER
         if hidden:
             self._tip(None)
-            for kind in ("title", "toolbar", "border"):
+            for kind in ("title", "toolbar", "border") + GRIP_KINDS:
                 if f["sizes"].get(kind) != "hidden":
                     out.append(msg(f[kind], P.WL_SURFACE_ATTACH, "oii", 0, 0, 0))
                     out.append(msg(f[kind], P.WL_SURFACE_COMMIT))
@@ -1755,7 +1770,17 @@ class Session:
             self._draw("toolbar")
         if f["sizes"].get("border") != (dw + b + 2 * m, dh + t + 2 * m):
             f["sizes"]["border"] = (dw + b + 2 * m, dh + t + 2 * m)
-            out.extend(self._border_messages(*f["sizes"]["border"]))
+            out.extend(self._clear_messages("border", *f["sizes"]["border"]))
+        g = fr.GRIP
+        for kind, pos, size in (("grip_left", (ox, oy), (g, dh)), ("grip_bottom", (ox, oy + dh - g), (dw, g))):
+            if w.fill_size:                  # maximized/tiled: nothing to grip
+                size = "hidden"
+            else:
+                out.append(msg(f[kind + "_sub"], P.WL_SUBSURFACE_SET_POSITION, "ii", *pos))
+            if f["sizes"].get(kind) != size:
+                f["sizes"][kind] = size
+                out.extend(self._clear_messages(kind, *size) if size != "hidden" else
+                           [msg(f[kind], P.WL_SURFACE_ATTACH, "oii", 0, 0, 0), msg(f[kind], P.WL_SURFACE_COMMIT)])
         return out
 
     def _out_scale(self):
@@ -1849,17 +1874,18 @@ class Session:
             self.to_server(msg(f["tip"], P.WL_SURFACE_COMMIT))
         self.tip_shown = None
 
-    def _border_messages(self, bw, bh):
+    def _clear_messages(self, kind, bw, bh):
+        """An invisible bw x bh surface of ours that takes input (the border, the grips)."""
         f = self.window.frame
         out = []
         pixel = self.my_globals.get("wp_single_pixel_buffer_manager_v1")
         if pixel:
             buf = self.new_id("buffer_pixel")
             out.append(msg(pixel, P.WP_SINGLE_PIXEL_CREATE_U32_RGBA, "nuuuu", buf, 0, 0, 0, 0))
-            out.append(msg(f["border"], P.WL_SURFACE_ATTACH, "oii", buf, 0, 0))
-        out.append(msg(f["border_vp"], P.WP_VIEWPORT_SET_DESTINATION, "ii", bw, bh))
-        out.append(msg(f["border"], P.WL_SURFACE_DAMAGE, "iiii", 0, 0, FULL_DAMAGE, FULL_DAMAGE))
-        out.append(msg(f["border"], P.WL_SURFACE_COMMIT))
+            out.append(msg(f[kind], P.WL_SURFACE_ATTACH, "oii", buf, 0, 0))
+        out.append(msg(f[kind + "_vp"], P.WP_VIEWPORT_SET_DESTINATION, "ii", bw, bh))
+        out.append(msg(f[kind], P.WL_SURFACE_DAMAGE, "iiii", 0, 0, FULL_DAMAGE, FULL_DAMAGE))
+        out.append(msg(f[kind], P.WL_SURFACE_COMMIT))
         return out
 
     def _backdrop_messages(self, size):
@@ -1897,10 +1923,14 @@ class Session:
         size = f["sizes"].get(kind)
         if not size or size == "hidden":
             return None
+        floating = not (self.window.fill_size or self.window.fullscreen)
         if kind == "title":
-            return fr.hit_title(x, y, size[0])
+            return (floating and fr.grip_edge(x, y, *size, ("top", "left", "right"))) or fr.hit_title(x, y, size[0])
         if kind == "toolbar":
-            return fr.hit_toolbar(x, y, size[1], self.tb_scroll)
+            return (floating and fr.grip_edge(x, y, *size, ("right", "bottom"))) or \
+                fr.hit_toolbar(x, y, size[1], self.tb_scroll)
+        if kind in GRIP_KINDS:
+            return fr.grip_edge(x, y, *size, ("left", "bottom"))
         return fr.border_edge(x, y, size[0], size[1])
 
     def _frame_hover(self, sid, x, y, entered=False):
@@ -1908,15 +1938,14 @@ class Session:
         if not kind:
             return
         action = self._hit(kind, x, y)
-        if kind == "border":
-            cursor = P.EDGE_CURSOR.get(action, "default")
-            if entered or self.hover.get(kind) != action:
-                self._set_cursor(cursor)
+        cursor = P.EDGE_CURSOR.get(action, "default")
+        if entered or cursor != self.cursor_shown:
+            self.cursor_shown = cursor
+            self._set_cursor(cursor)
+        if kind not in ("title", "toolbar"):
             self.hover[kind] = action
             return
-        if entered:
-            self._set_cursor("default")
-        if action == "move":
+        if action == "move" or action in P.RESIZE_EDGE:
             action = None
         if self.hover.get(kind) != action:
             self.hover[kind] = action
@@ -1942,7 +1971,7 @@ class Session:
             self._tip(None)
         if kind and self.hover.get(kind):
             self.hover[kind] = None
-            if kind != "border":
+            if kind in ("title", "toolbar"):
                 self._redraw(kind)
         if self.pressed and self.pressed[0] == kind:
             self.pressed = None
@@ -1953,7 +1982,7 @@ class Session:
             return
         action = self._hit(kind, x, y)
         w = self.window
-        if kind == "border":
+        if kind not in ("title", "toolbar") or action in P.RESIZE_EDGE:
             if pressed and action and self.seat:
                 self.to_server(msg(w.toplevel, P.XDG_TOPLEVEL_RESIZE, "oou", self.seat, serial,
                                    P.RESIZE_EDGE[action]))

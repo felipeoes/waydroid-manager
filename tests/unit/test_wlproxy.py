@@ -349,6 +349,55 @@ class FrameTest(unittest.TestCase):
         for fd in h.c2s.fds:
             os.close(fd)
 
+    def test_frame_edges_resize(self):
+        """The title bar's and toolbar's outer edges grip like the border around the window."""
+        h = self.h
+        f = h.s.window.frame
+        shape_dev = lambda: [args(p, "uu")[1] for o, op, p in h.server_out()
+                             if o == h.s.cursor_dev and op == P.WP_CURSOR_SHAPE_DEVICE_SET_SHAPE]
+        h.ev(msg(PTR, P.WL_POINTER_EV_ENTER, "uoff", 9, f["title"], fixed(100.0), fixed(1.0)))
+        self.assertEqual(shape_dev(), [P.CURSOR_SHAPE["n_resize"]])
+        h.ev(msg(PTR, P.WL_POINTER_EV_MOTION, "uff", 1, fixed(100.0), fixed(16.0)))   # into the bar: move
+        self.assertEqual(shape_dev(), [P.CURSOR_SHAPE["default"]])
+        h.ev(msg(PTR, P.WL_POINTER_EV_MOTION, "uff", 2, fixed(100.0), fixed(2.0)),
+             msg(PTR, P.WL_POINTER_EV_BUTTON, "uuuu", 10, 0, P.BTN_LEFT, 1))
+        resizes = [args(p, "oou") for o, op, p in h.server_out() if o == TL and op == P.XDG_TOPLEVEL_RESIZE]
+        self.assertEqual(resizes, [[SEAT, 10, P.RESIZE_EDGE["top"]]])
+        # the toolbar's bottom-right corner, and strips just inside the picture's left and bottom
+        tw, th = f["sizes"]["toolbar"]
+        self.assertEqual(h.s._hit("toolbar", tw - 1, th - 1), "bottom_right")
+        self.assertEqual(f["sizes"]["grip_left"], (wp.fr.GRIP, 360))
+        self.assertEqual(f["sizes"]["grip_bottom"], (640, wp.fr.GRIP))
+        self.assertEqual(h.s._hit("grip_left", 1, 100), "left")
+        self.assertEqual(h.s._hit("grip_left", 1, 355), "bottom_left")
+        self.assertEqual(h.s._hit("grip_bottom", 300, 1), "bottom")
+        # a maximized window doesn't resize
+        h.s.window.fill_size = (1366, 736)
+        self.assertEqual(h.s._hit("title", 100, 1), "move")
+        for fd in h.c2s.fds:
+            os.close(fd)
+
+    def test_pulling_one_edge_out_grows_the_window(self):
+        h = self.h
+        h.ev(msg(TL, P.XDG_TOPLEVEL_EV_CONFIGURE, "iia", 880, 392, struct.pack("=I", P.XDG_TOPLEVEL_STATE_RESIZING)),
+             msg(XS, P.XDG_SURFACE_EV_CONFIGURE, "u", 7))
+        self.assertAlmostEqual(h.s.zoom, (880 - 40) / 1280)          # the width decides, not the height
+        gw, gh = h.s.geometry()[2:]
+        resizing = struct.pack("=I", P.XDG_TOPLEVEL_STATE_RESIZING)
+        h.ev(msg(TL, P.XDG_TOPLEVEL_EV_CONFIGURE, "iia", gw, gh + 100, resizing),
+             msg(XS, P.XDG_SURFACE_EV_CONFIGURE, "u", 8))
+        self.assertAlmostEqual(h.s.zoom, (gh + 100 - 32) / 720)      # pulled down: the height decides
+        for fd in h.c2s.fds:
+            os.close(fd)
+
+    def test_grip_edge(self):
+        title = ("top", "left", "right")
+        self.assertEqual(wp.fr.grip_edge(100, 1, 680, 32, title), "top")
+        self.assertEqual(wp.fr.grip_edge(1, 10, 680, 32, title), "top_left")    # near the corner
+        self.assertEqual(wp.fr.grip_edge(1, 25, 680, 32, title), "left")
+        self.assertEqual(wp.fr.grip_edge(100, 31, 680, 32, title), None)        # its bottom is the picture's
+        self.assertEqual(wp.fr.grip_edge(678, 2, 680, 32, title), "top_right")
+
     def test_toolbar_back_sends_key(self):
         h = self.h
         toolbar = h.s.window.frame["toolbar"]

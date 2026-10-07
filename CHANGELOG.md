@@ -12,6 +12,9 @@ follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions f
   letterboxed, and it turns back when the app closes. The instance's size never changes.
 
 ### Fixed
+- Resizing a window is easier: the invisible border around it is wider, every edge also grips a few
+  pixels inside the window, and pulling out a single edge makes the window bigger (before, only the
+  corners could).
 - The manager's Retry button starts the daemon (it asks for your password) when it is down.
 - Android 11's picture is centred, with black around it, when the window is maximized or fullscreen.
 - The window no longer disappears when a toolbar tooltip shows after the toolbar was scrolled with a
