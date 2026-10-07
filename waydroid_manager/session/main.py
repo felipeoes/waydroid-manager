@@ -85,6 +85,7 @@ class Session:
         env = dict(os.environ)
         env["PYTHONPATH"] = os.path.dirname(paths.PKG_DIR) + os.pathsep + env.get("PYTHONPATH", "")
         inst = self.inst
+        android = self.daemon.get(self.iid)["android"]   # #0 follows stock's images, not its config default
         os.makedirs(paths.user_runtime_dir(self.iid), mode=0o700, exist_ok=True)
         # Android's display rotation reaches the proxy on its stdin, written by the daemon (watch_rotation)
         rot_r, self.rotation_w = os.pipe()
@@ -94,7 +95,7 @@ class Session:
              "--width", inst.get("width"), "--height", inst.get("height"), "--zoom", inst.get("zoom"),
              "--theme", color_scheme(), "--close-action", inst.get("close_action")]
             + (["--cpu-buffers", cpu_buffers] if cpu_buffers else [])
-            + (["--logical-pointer"] if inst.get("android") == "11" else []),
+            + (["--logical-pointer"] if android == "11" else []),
             stdout=subprocess.PIPE, stdin=rot_r, env=env,
             stderr=open(os.path.join(paths.user_runtime_dir(self.iid), "wlproxy.log"), "w")
             if os.environ.get("WDM_PROXY_TRACE") == "1" else None)

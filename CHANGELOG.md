@@ -13,6 +13,7 @@ follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions f
 
 ### Fixed
 - Rotated clicks and touches use each HWC layer's dimensions when subsurface composition is enabled.
+- Stock instance #0 uses its actual Android version for rotated mouse input.
 - Resizing a window is easier: the invisible border around it is wider, every edge also grips a few
   pixels inside the window, and pulling out a single edge makes the window bigger (before, only the
   corners could). Continuous edge drags keep the same axis even when the compositor holds the
