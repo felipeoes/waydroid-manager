@@ -1696,7 +1696,8 @@ class Session:
         text = fr.TOOLTIPS[action]
         w, h = fr.tooltip_size(text)
         scale = self._out_scale()
-        self.to_server(msg(f["tip_sub"], P.WL_SUBSURFACE_SET_POSITION, "ii", -w - 6, (sum(span[0]) - h) // 2))
+        y = int((sum(span[0]) - h) // 2)          # wheel scrolling leaves the toolbar at fractions of a pixel
+        self.to_server(msg(f["tip_sub"], P.WL_SUBSURFACE_SET_POSITION, "ii", -w - 6, y))
         self.to_server(msg(f["toolbar"], P.WL_SURFACE_COMMIT))     # applies the position
         self._attach(f["tip"], *fr.render_tooltip(text, scale), scale)
         self.tip_shown = action

@@ -324,6 +324,10 @@ class FrameTest(unittest.TestCase):
         self.assertEqual(h.s._hit("toolbar", 20, height - 20), "recents")  # the navigation stays put
         h.ev(*[msg(PTR, P.WL_POINTER_EV_AXIS, "uuf", 11, 0, fixed(-15.0))] * 20)
         self.assertEqual(h.s.tb_scroll, 0)
+        # a touchpad scrolls by fractions of a pixel: the tooltip still goes up
+        h.ev(msg(PTR, P.WL_POINTER_EV_AXIS, "uuf", 12, 0, fixed(3.3)))
+        h.s.tip_due = (0, "settings")
+        self.assertTrue(h.s.tick())
         for fd in h.c2s.fds:
             os.close(fd)
 
