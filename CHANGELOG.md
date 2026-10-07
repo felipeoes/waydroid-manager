@@ -19,6 +19,7 @@ follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions f
   pixels inside the window, and pulling out a single edge makes the window bigger (before, only the
   corners could). Continuous edge drags keep the same axis even when the compositor holds the
   other dimension fixed.
+- The inside-edge resize grips stay above Android content created after the window frame.
 - The manager's Retry button starts the daemon (it asks for your password) when it is down.
 - Android 11's picture is centred, with black around it, when the window is maximized or fullscreen.
 - The window no longer disappears when a toolbar tooltip shows after the toolbar was scrolled with a

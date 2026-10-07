@@ -842,6 +842,11 @@ class Session:
                 s.parent, s.sub = parent, new
                 if parent in self.surfaces:
                     self.surfaces[parent].children.append(sid)
+            w = self.window
+            if w and w.frame and parent == w.surface:
+                # New HWC layers start above existing siblings, including our inside-edge grips.
+                return [msg(obj, op, "noo", new, sid, parent)] + [
+                    msg(w.frame[kind + "_sub"], P.WL_SUBSURFACE_PLACE_ABOVE, "o", sid) for kind in GRIP_KINDS]
             return None
         if iface == "wp_viewporter" and op == P.WP_VIEWPORTER_GET_VIEWPORT:
             new, sid = r.n(), r.o()

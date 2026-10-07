@@ -395,6 +395,26 @@ class FrameTest(unittest.TestCase):
         for fd in h.c2s.fds:
             os.close(fd)
 
+    def test_grips_stay_above_late_content_layers(self):
+        h = self.h
+        f = h.s.window.frame
+        # Android 13 creates its content after the first toplevel commit/configure roundtrip.
+        for sid, sub in ((40, 41), (42, 43)):
+            out = h.req(msg(COMP, P.WL_COMPOSITOR_CREATE_SURFACE, "n", sid),
+                        msg(SUBC, P.WL_SUBCOMPOSITOR_GET_SUBSURFACE, "noo", sub, sid, S),
+                        msg(S, P.WL_SURFACE_COMMIT))
+            stacking = [(o, args(p, "o")[0]) for o, op, p in out if op == P.WL_SUBSURFACE_PLACE_ABOVE
+                        and o in (f["grip_left_sub"], f["grip_bottom_sub"])]
+            self.assertEqual(stacking, [(f[kind + "_sub"], sid) for kind in wp.GRIP_KINDS])
+            ops = [(o, op) for o, op, _ in out]
+            for subid, _ in stacking:
+                self.assertLess(ops.index((SUBC, P.WL_SUBCOMPOSITOR_GET_SUBSURFACE)),
+                                ops.index((subid, P.WL_SUBSURFACE_PLACE_ABOVE)))
+                self.assertLess(ops.index((subid, P.WL_SUBSURFACE_PLACE_ABOVE)),
+                                ops.index((S, P.WL_SURFACE_COMMIT)))
+        for fd in h.c2s.fds:
+            os.close(fd)
+
     def test_pulling_one_edge_out_grows_the_window(self):
         h = self.h
         resizing = struct.pack("=I", P.XDG_TOPLEVEL_STATE_RESIZING)
