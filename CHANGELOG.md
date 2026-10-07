@@ -6,6 +6,12 @@ follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions f
 
 ## [Unreleased]
 
+## [1.1.1] - 2026-10-07
+
+### Fixed
+- Starting or showing a stopped instance restores the full Android UI, including its status and
+  navigation bars, even if an earlier individual app launch saved immersive mode.
+
 ## [1.1.0] - 2026-10-07
 
 ### Added
@@ -219,7 +225,8 @@ First release.
 - Root daemon hardened against symlink and race attacks, root-enabling Android properties,
   and misuse of passed file descriptors. Each user sees and controls only their own instances.
 
-[Unreleased]: https://github.com/felipeoes/waydroid-manager/compare/v1.1.0...HEAD
+[Unreleased]: https://github.com/felipeoes/waydroid-manager/compare/v1.1.1...HEAD
+[1.1.1]: https://github.com/felipeoes/waydroid-manager/compare/v1.1.0...v1.1.1
 [1.1.0]: https://github.com/felipeoes/waydroid-manager/compare/v1.0.1...v1.1.0
 [1.0.1]: https://github.com/felipeoes/waydroid-manager/compare/v1.0.0...v1.0.1
 [1.0.0]: https://github.com/felipeoes/waydroid-manager/compare/v0.5.0...v1.0.0

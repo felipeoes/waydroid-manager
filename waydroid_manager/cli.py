@@ -251,6 +251,8 @@ def cmd_start(o):
         return
     print("Starting #{}...".format(o.id))
     ensure_running(d, o.id, background=o.background)
+    if not o.background:
+        show_full_ui(o.id, timeout=o.timeout)
     print("#{} is running (IP {}).".format(o.id, info["ip"]))
     if o.wait:
         cmd_wait(o)
@@ -259,8 +261,7 @@ def cmd_start(o):
 def cmd_show(o):
     d = daemon()
     started = ensure_running(d, o.id)
-    if not started:
-        show_full_ui(o.id)
+    show_full_ui(o.id, timeout=180 if started else 15)
 
 
 def cmd_stop(o):

@@ -68,7 +68,8 @@ Then open **Waydroid Manager** from your app grid.
 ![The manager: your normal Waydroid as #0 under Default, the other instances below with their Android version and disk use, some running](docs/screenshots/manager.png)
 
 - **+ New Instance** creates a device. **▶** starts it, **■** stops it, and **⋮** has Settings,
-  Clone, Install APK and Delete.
+  Clone, Install APK and Delete. Starting it opens the full Android UI with its status and
+  navigation bars, including after an individual app launch.
 - Each device's window has a toolbar: **⚙** Settings, **◁ ○ □** Back / Home / Recents, volume,
   screenshot, Install APK and fullscreen (**F11**). Drop `.apk` files on the window to install them.
 - The window turns with Android: a landscape game in a portrait device turns it to landscape, and
