@@ -214,6 +214,37 @@ class PropsTest(unittest.TestCase):
         self.assertEqual(container.android_of(inst), "16")
 
 
+class StockStopTest(unittest.TestCase):
+    def test_rotation_restored_before_stopping_frozen_stock(self):
+        inst = Instance.new("0", 0, 1000, "", {}, {})
+        for initial in ("RUNNING", "FROZEN", "STOPPED"):
+            state, actions = [initial], []
+
+            def run(cmd, **kwargs):
+                actions.append(cmd[0])
+                if cmd[0] == "lxc-unfreeze":
+                    state[0] = "RUNNING"
+                elif cmd[0] == "lxc-stop":
+                    state[0] = "STOPPED"
+
+            def attach(iid, cmd, **kwargs):
+                self.assertEqual(state[0], "RUNNING")
+                self.assertIn("wm fixed-to-user-rotation default", cmd[-1])
+                actions.append("restore rotation")
+
+            with self.subTest(state=initial), \
+                    mock.patch.object(container, "lxc_state", side_effect=lambda _: state[0]), \
+                    mock.patch.object(container, "run", side_effect=run), \
+                    mock.patch.object(container, "attach", side_effect=attach), \
+                    mock.patch.object(container, "cleanup") as cleanup:
+                container.stop(inst)
+                expected = [] if initial == "STOPPED" else ["restore rotation", "lxc-stop", "lxc-wait"]
+                if initial == "FROZEN":
+                    expected = ["lxc-unfreeze", "lxc-wait"] + expected
+                self.assertEqual(actions, expected)
+                cleanup.assert_called_once_with(inst, False)
+
+
 class GpuTest(unittest.TestCase):
     NV = gpu.Gpu("0000:01:00.0", "GPU 0: NVIDIA GeForce RTX 5060 Ti", "nvidia", "/dev/dri/renderD128")
     AMD = gpu.Gpu("0000:11:00.0", "GPU 1: AMD Radeon Graphics", "amdgpu", "/dev/dri/renderD129")

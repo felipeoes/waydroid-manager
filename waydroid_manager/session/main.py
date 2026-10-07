@@ -85,16 +85,21 @@ class Session:
         env = dict(os.environ)
         env["PYTHONPATH"] = os.path.dirname(paths.PKG_DIR) + os.pathsep + env.get("PYTHONPATH", "")
         inst = self.inst
+        android = self.daemon.get(self.iid)["android"]   # #0 follows stock's images, not its config default
         os.makedirs(paths.user_runtime_dir(self.iid), mode=0o700, exist_ok=True)
+        # Android's display rotation reaches the proxy on its stdin, written by the daemon (watch_rotation)
+        rot_r, self.rotation_w = os.pipe()
         self.proxy = subprocess.Popen(
             [sys.executable, "-m", "waydroid_manager.session.wlproxy", "--listen", listen,
              "--upstream", upstream, "--id", self.iid, "--name", inst.name,
              "--width", inst.get("width"), "--height", inst.get("height"), "--zoom", inst.get("zoom"),
              "--theme", color_scheme(), "--close-action", inst.get("close_action")]
-            + (["--cpu-buffers", cpu_buffers] if cpu_buffers else []),
-            stdout=subprocess.PIPE, stdin=subprocess.DEVNULL, env=env,
+            + (["--cpu-buffers", cpu_buffers] if cpu_buffers else [])
+            + (["--logical-pointer"] if android == "11" else []),
+            stdout=subprocess.PIPE, stdin=rot_r, env=env,
             stderr=open(os.path.join(paths.user_runtime_dir(self.iid), "wlproxy.log"), "w")
             if os.environ.get("WDM_PROXY_TRACE") == "1" else None)
+        os.close(rot_r)
         # Read events with raw non-blocking reads: a buffered readline() under a
         # GLib fd watch can leave complete lines stuck in Python's buffer
         self.proxy_fd = self.proxy.stdout.fileno()
@@ -226,6 +231,10 @@ class Session:
         except dbus.DBusException as e:
             log.warning("%s: %s", method, e)
 
+    def watch_rotation(self):
+        """Have the daemon write Android's display rotation to the proxy, so the window turns with it."""
+        self._async("WatchRotation", self.iid, dbus.types.UnixFd(self.rotation_w))
+
     def _save_zoom(self):
         self._zoom_timer = None
         self._async("SetConfig", self.iid, dbus.Dictionary({"zoom": self.pending_zoom}, signature="ss"))
@@ -349,6 +358,7 @@ class Session:
             try:
                 self.daemon = Daemon(self.bus)
                 self.daemon.start(self.iid, self.session)
+                self.watch_rotation()
             except DaemonError as e:
                 log.error("re-attach failed: %s", e)
                 self.quit()
@@ -439,6 +449,7 @@ class Session:
         log.info("starting instance %s", self.iid)
         self.daemon.start(self.iid, self.session)
         self.started = True
+        self.watch_rotation()
         self.bus.watch_name_owner(paths.DBUS_NAME, self.on_daemon_owner)
         self.register_services()
         log.info("instance %s is running", self.iid)
@@ -514,6 +525,8 @@ class Session:
     def cleanup(self):
         self.stopping = True
         self.stop_renderer()
+        if getattr(self, "rotation_w", None) is not None:
+            os.close(self.rotation_w)
         if getattr(self, "confirm", None) and self.confirm.poll() is None:
             self.confirm.terminate()
         for s in self.services:
