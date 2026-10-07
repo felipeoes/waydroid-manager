@@ -415,6 +415,26 @@ class FrameTest(unittest.TestCase):
         for fd in h.c2s.fds:
             os.close(fd)
 
+    def test_grabbed_edge_decides_axis_despite_initial_rounding(self):
+        h = self.h
+        f = h.s.window.frame
+        resizing = struct.pack("=I", P.XDG_TOPLEVEL_STATE_RESIZING)
+        for kind, x, y, axis in (("title", 100, 1, 1), ("grip_bottom", 100, 1, 1),
+                                 ("grip_left", 1, 100, 0), ("toolbar", 39, 100, 0)):
+            h.s.set_zoom(0.5)
+            h.ev(msg(PTR, P.WL_POINTER_EV_ENTER, "uoff", 9, f[kind], fixed(x), fixed(y)),
+                 msg(PTR, P.WL_POINTER_EV_BUTTON, "uuuu", 10, 0, P.BTN_LEFT, 1))
+            # The first configure rounds the other dimension before the pointer has moved.
+            h.ev(msg(TL, P.XDG_TOPLEVEL_EV_CONFIGURE, "iia", 681 if axis == 1 else 680,
+                     393 if axis == 0 else 392, resizing))
+            for delta in (20, 40, 60):
+                width, height = 680 + (delta if axis == 0 else 0), 392 + (delta if axis == 1 else 0)
+                h.ev(msg(TL, P.XDG_TOPLEVEL_EV_CONFIGURE, "iia", width, height, resizing))
+                self.assertAlmostEqual(h.s.zoom, (width - 40) / 1280 if axis == 0 else (height - 32) / 720)
+            h.ev(msg(TL, P.XDG_TOPLEVEL_EV_CONFIGURE, "iia", width, height, b""))
+        for fd in h.c2s.fds:
+            os.close(fd)
+
     def test_pulling_one_edge_out_grows_the_window(self):
         h = self.h
         resizing = struct.pack("=I", P.XDG_TOPLEVEL_STATE_RESIZING)

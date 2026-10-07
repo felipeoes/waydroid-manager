@@ -2001,6 +2001,8 @@ class Session:
         w = self.window
         if kind not in ("title", "toolbar") or action in P.RESIZE_EDGE:
             if pressed and action and self.seat:
+                # The first configure may only round the undragged side. Our grip knows the axis.
+                w.resize_axis = {"left": 0, "right": 0, "top": 1, "bottom": 1}.get(action)
                 self.to_server(msg(w.toplevel, P.XDG_TOPLEVEL_RESIZE, "oou", self.seat, serial,
                                    P.RESIZE_EDGE[action]))
             return
