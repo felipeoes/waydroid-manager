@@ -632,9 +632,10 @@ def start(inst, net, hosts, session_in, uid, in_use, cpus_busy=list):
 
 
 def stop(inst, keep_stock=False):
-    if inst.index == 0 and lxc_state(inst.id) == "RUNNING":
+    if inst.index == 0 and lxc_state(inst.id) in ("RUNNING", "FROZEN"):
         # stock Waydroid's window doesn't turn with Android: pin its display again (watch_rotation)
         try:
+            unfreeze(inst)   # the restore command must finish before frozen #0 is killed too
             attach(inst.id, ["/system/bin/sh", "-c", "wm fixed-to-user-rotation default 2>/dev/null || "
                              "wm set-fix-to-user-rotation enabled"], check=False, timeout=10,
                    env={"PATH": "/system/bin:/system/xbin:/vendor/bin"})
