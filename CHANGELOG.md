@@ -6,6 +6,10 @@ follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions f
 
 ## [Unreleased]
 
+### Fixed
+- Starting or showing a stopped instance restores the full Android UI, including its status and
+  navigation bars, even if an earlier individual app launch saved immersive mode.
+
 ## [1.1.0] - 2026-10-07
 
 ### Added
