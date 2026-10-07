@@ -9,8 +9,10 @@ import glob
 import os
 import platform
 import pwd
+import select
 import shutil
 import stat
+import subprocess
 import threading
 import time
 
@@ -630,6 +632,14 @@ def start(inst, net, hosts, session_in, uid, in_use, cpus_busy=list):
 
 
 def stop(inst, keep_stock=False):
+    if inst.index == 0 and lxc_state(inst.id) == "RUNNING":
+        # stock Waydroid's window doesn't turn with Android: pin its display again (watch_rotation)
+        try:
+            attach(inst.id, ["/system/bin/sh", "-c", "wm fixed-to-user-rotation default 2>/dev/null || "
+                             "wm set-fix-to-user-rotation enabled"], check=False, timeout=10,
+                   env={"PATH": "/system/bin:/system/xbin:/vendor/bin"})
+        except CommandError as e:
+            log.warning("%s: rotation not pinned for stock Waydroid: %s", inst.id, e)
     if lxc_state(inst.id) != "STOPPED":
         run(["lxc-stop", "-P", paths.LXC_PATH, "-n", inst.container, "-k"], check=False)
         run(["lxc-wait", "-P", paths.LXC_PATH, "-n", inst.container, "-s", "STOPPED", "-t", "15"], check=False)
@@ -676,6 +686,59 @@ def wait_boot(inst, timeout=180):
             return True
         time.sleep(2)
     return False
+
+
+# Waydroid pins the display to the user rotation (no sensors), so apps wanting the other orientation
+# are letterboxed. In the full-UI window (active_apps "Waydroid") let it follow them, like a phone;
+# an app's own window (single- or multi-window mode) doesn't turn, so there it stays pinned. Prints
+# the rotation (Surface.ROTATION_*) every half second. Android 11 names the setting
+# set-fix-to-user-rotation and has no "default" (its own is "enabled").
+ROTATION_LOOP = """
+last=
+while :; do
+  m=default old=enabled
+  [ "$(getprop waydroid.active_apps)" = Waydroid ] && [ "$(getprop persist.waydroid.multi_windows)" != true ] \\
+    && m=disabled old=disabled
+  r=$(dumpsys window displays 2>/dev/null | grep -m1 -o 'mRotation=[0-3]')
+  if [ -n "$r" ] && [ "$m" != "$last" ]; then
+    wm fixed-to-user-rotation $m >/dev/null 2>&1 || wm set-fix-to-user-rotation $old >/dev/null 2>&1
+    wm set-ignore-orientation-request false >/dev/null 2>&1
+    last=$m
+  fi
+  [ -n "$r" ] && echo "${r#mRotation=}"
+  sleep 0.5
+done
+"""
+
+
+def watch_rotation(inst, fd):
+    """Write Android's display rotation to fd (the session's pipe to its proxy), a line every half
+    second, for as long as the pipe has a reader: across Android reboots too. Runs in a thread."""
+    os.set_blocking(fd, False)          # a reader that falls behind loses lines, never blocks us
+    gone = select.poll()
+    gone.register(fd, select.POLLERR)   # a pipe whose reader closed
+    cmd = ["lxc-attach", "-P", paths.LXC_PATH, "-n", inst.container, "--clear-env",
+           "--set-var", "PATH=/system/bin:/system/xbin:/vendor/bin", "--", "/system/bin/sh", "-c", ROTATION_LOOP]
+    try:
+        while not gone.poll(0):
+            if lxc_state(inst.id) in ("RUNNING", "FROZEN"):
+                # its own pipe: lxc-attach chowns/chmods its stdio, never the caller's fd
+                p = subprocess.Popen(cmd, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                                     stderr=subprocess.DEVNULL)
+                try:
+                    for line in p.stdout:
+                        try:
+                            os.write(fd, line)
+                        except BlockingIOError:
+                            pass
+                except OSError:             # EPIPE: the proxy is gone
+                    return
+                finally:
+                    p.kill()
+                    p.wait()
+            time.sleep(2)
+    finally:
+        os.close(fd)
 
 
 def load(iid):

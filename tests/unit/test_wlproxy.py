@@ -227,6 +227,87 @@ class ZoomTest(unittest.TestCase):
         self.assertAlmostEqual(h.s.zoom, (768 - wp.PANEL_ALLOWANCE) / 1920, places=3)
 
 
+class RotationTest(unittest.TestCase):
+    """A portrait instance whose Android turns its display for a landscape app."""
+
+    def setUp(self):
+        h = self.h = Harness(zoom="50", width=720, height=1280)
+        h.setup_globals()
+        h.create_window()
+        h.req(msg(V0, P.WP_VIEWPORT_SET_DESTINATION, "ii", 720, 1280),
+              msg(LV, P.WP_VIEWPORT_SET_SOURCE, "iiii", 0, 0, fixed(720), fixed(1280)),
+              msg(LV, P.WP_VIEWPORT_SET_DESTINATION, "ii", 720, 1280),
+              msg(LSUB, P.WL_SUBSURFACE_SET_POSITION, "ii", 0, 0),
+              msg(XS, P.XDG_SURFACE_SET_WINDOW_GEOMETRY, "iiii", 0, 0, 720, 1280),
+              msg(L, P.WL_SURFACE_COMMIT), msg(S, P.WL_SURFACE_COMMIT))
+
+    def turn(self, rotation):
+        self.h.s.cfg.rotation = rotation
+        self.h.s.rotated()
+        out = self.h.server_out()
+        return {(o, op): p for o, op, p in out}, [(o, op) for o, op, _ in out]
+
+    def test_window_turns_and_back(self):
+        d, order = self.turn(1)
+        self.assertEqual(args(d[XS, P.XDG_SURFACE_SET_WINDOW_GEOMETRY], "iiii"), [0, 0, 640, 360])
+        self.assertEqual(args(d[V0, P.WP_VIEWPORT_SET_DESTINATION], "ii"), [640, 360])
+        self.assertEqual(args(d[LV, P.WP_VIEWPORT_SET_DESTINATION], "ii"), [640, 360])
+        self.assertEqual(args(d[LV, P.WP_VIEWPORT_SET_SOURCE], "iiii"), [0, 0, fixed(1280), fixed(720)])
+        self.assertEqual(args(d[L, P.WL_SURFACE_SET_BUFFER_TRANSFORM], "i"), [3])
+        self.assertEqual(args(d[LSUB, P.WL_SUBSURFACE_SET_POSITION], "ii"), [0, 0])
+        self.assertIn((L, P.WL_SURFACE_COMMIT), order)
+        self.assertIn((S, P.WL_SURFACE_COMMIT), order)
+        # the HWC's next frame is turned too
+        out = self.h.req(msg(L, P.WL_SURFACE_SET_BUFFER_TRANSFORM, "i", 0),
+                         msg(LV, P.WP_VIEWPORT_SET_SOURCE, "iiii", 0, 0, fixed(720), fixed(1280)))
+        self.assertEqual(args(out[0][2], "i"), [3])
+        self.assertEqual(args(out[1][2], "iiii"), [0, 0, fixed(1280), fixed(720)])
+        # the app closed: portrait again, at the same zoom
+        d, _ = self.turn(0)
+        self.assertEqual(args(d[XS, P.XDG_SURFACE_SET_WINDOW_GEOMETRY], "iiii"), [0, 0, 360, 640])
+        self.assertEqual(args(d[L, P.WL_SURFACE_SET_BUFFER_TRANSFORM], "i"), [0])
+        self.assertEqual(args(d[LV, P.WP_VIEWPORT_SET_SOURCE], "iiii"), [0, 0, fixed(720), fixed(1280)])
+        self.assertEqual(self.h.s.zoom, 0.5)
+
+    def test_input_turned_back(self):
+        self.turn(1)
+        out = self.h.ev(msg(PTR, P.WL_POINTER_EV_ENTER, "uoff", 5, L, fixed(100.0), fixed(50.0)))
+        enter = args(out[0][2], "uoff")
+        # (200, 100) of the landscape picture is (620, 200) of Android's portrait screen
+        self.assertEqual((P.fixed_to_float(enter[2]), P.fixed_to_float(enter[3])), (620.0, 200.0))
+
+    def test_android11_pointer_stays_turned(self):
+        """Android 11's mouse takes positions in the turned frame; touches are still turned back."""
+        self.h.s.cfg.logical_pointer = True
+        self.turn(1)
+        out = self.h.ev(msg(PTR, P.WL_POINTER_EV_ENTER, "uoff", 5, L, fixed(100.0), fixed(50.0)))
+        enter = args(out[0][2], "uoff")
+        self.assertEqual((P.fixed_to_float(enter[2]), P.fixed_to_float(enter[3])), (200.0, 100.0))
+        self.h.req(msg(SEAT, P.WL_SEAT_GET_TOUCH, "n", 30))
+        out = self.h.ev(msg(30, P.WL_TOUCH_EV_DOWN, "uuoiff", 6, 0, L, 0, fixed(100.0), fixed(50.0)))
+        down = args(out[0][2], "uuoiff")
+        self.assertEqual((P.fixed_to_float(down[4]), P.fixed_to_float(down[5])), (620.0, 200.0))
+
+    def test_pointer_image_turned_back(self):
+        """Android's pointer reaches the HWC's cursor surface turned with the display."""
+        h = self.h
+        h.req(msg(COMP, P.WL_COMPOSITOR_CREATE_SURFACE, "n", 50),
+              msg(VPR, P.WP_VIEWPORTER_GET_VIEWPORT, "no", 51, 50),
+              msg(PTR, P.WL_POINTER_SET_CURSOR, "uoii", 5, 50, 4, 4))
+        self.turn(1)
+        out = h.req(msg(50, P.WL_SURFACE_SET_BUFFER_TRANSFORM, "i", 1),
+                    msg(51, P.WP_VIEWPORT_SET_SOURCE, "iiii", 0, 0, fixed(32), fixed(48)),
+                    msg(51, P.WP_VIEWPORT_SET_DESTINATION, "ii", 48, 32))
+        self.assertEqual(args(out[0][2], "i"), [0])
+        self.assertEqual(args(out[1][2], "iiii"), [0, 0, fixed(48), fixed(32)])
+        self.assertEqual(args(out[2][2], "ii"), [32, 48])
+
+    def test_rotate_rect(self):
+        # the top band of the portrait screen is the left column of the turned picture
+        self.assertEqual(wp.rotate_rect(0, 0, 720, 100, 720, 1280, 3), (0, 0, 100, 720))
+        self.assertEqual(wp.rotate_rect(0, 0, 720, 100, 720, 1280, 1), (1180, 0, 100, 720))
+
+
 class FrameTest(unittest.TestCase):
     def setUp(self):
         self.h = Harness(zoom="50", frame=True)
@@ -436,6 +517,48 @@ class WindowStateTest(unittest.TestCase):
         from waydroid_manager.session import frame
         data, w, h_, stride = frame.render_toolbar(400, 1, "dark")
         self.assertEqual(len(data), stride * h_)
+
+
+class Android11BackdropTest(unittest.TestCase):
+    def test_black_behind_the_picture_when_maximized(self):
+        """Android 11 draws on the toplevel itself: the rest of a maximized window gets a backdrop."""
+        h = Harness(zoom="50", frame=True)
+        h.setup_globals(frame_globals=True)
+        h.req(msg(COMP, P.WL_COMPOSITOR_CREATE_SURFACE, "n", S),
+              msg(WM, P.XDG_WM_BASE_GET_XDG_SURFACE, "no", XS, S),
+              msg(XS, P.XDG_SURFACE_GET_TOPLEVEL, "n", TL),
+              msg(TL, P.XDG_TOPLEVEL_SET_APP_ID, "s", "Waydroid"),
+              msg(XS, P.XDG_SURFACE_SET_WINDOW_GEOMETRY, "iiii", 0, 0, 1280, 720))
+        h.req(msg(S, P.WL_SURFACE_COMMIT))
+        h.server_out()
+        f = h.s.window.frame
+        h.ev(msg(TL, P.XDG_TOPLEVEL_EV_CONFIGURE, "iia", 1366, 736, struct.pack("=I", P.XDG_TOPLEVEL_STATE_MAXIMIZED)),
+             msg(XS, P.XDG_SURFACE_EV_CONFIGURE, "u", 5))
+        out = h.req(msg(XS, P.XDG_SURFACE_ACK_CONFIGURE, "u", 5))
+        pixel = h.s.my_globals["wp_single_pixel_buffer_manager_v1"]
+        colours = [args(p, "nuuuu")[1:] for o, op, p in out if o == pixel]
+        self.assertIn([0, 0, 0, 0xffffffff], colours)
+        self.assertEqual([args(p, "ii") for o, op, p in out if o == f["backdrop_vp"]], [[1366 - 40, 736 - 32]])
+        # the picture can't move on its surface: the window and frame move around it to centre it
+        cx = (1366 - 40 - int(round(1280 * h.s.zoom))) // 2
+        self.assertGreater(cx, 0)
+        geo = [args(p, "iiii") for o, op, p in out if o == XS and op == P.XDG_SURFACE_SET_WINDOW_GEOMETRY]
+        self.assertEqual(geo[-1], [-cx, -32, 1366, 736])
+        subs = (f["backdrop_sub"], f["title_sub"])
+        pos = {o: args(p, "ii") for o, op, p in out if o in subs and op == P.WL_SUBSURFACE_SET_POSITION}
+        self.assertEqual(pos[f["backdrop_sub"]], [-cx, 0])
+        self.assertEqual(pos[f["title_sub"]], [-cx, -32])
+        # fullscreen: GNOME centres the bare picture on its own black, with no offset or backdrop
+        h.ev(msg(TL, P.XDG_TOPLEVEL_EV_CONFIGURE, "iia", 1366, 768, struct.pack("=I", P.XDG_TOPLEVEL_STATE_FULLSCREEN)),
+             msg(XS, P.XDG_SURFACE_EV_CONFIGURE, "u", 6))
+        out = h.req(msg(XS, P.XDG_SURFACE_ACK_CONFIGURE, "u", 6))
+        geo = [args(p, "iiii") for o, op, p in out if o == XS and op == P.XDG_SURFACE_SET_WINDOW_GEOMETRY]
+        self.assertEqual(geo[-1], [0, 0, 1366, 768])
+        self.assertIn((f["backdrop"], P.WL_SURFACE_ATTACH), [(o, op) for o, op, p in out])
+        self.assertEqual([args(p, "oii") for o, op, p in out if o == f["backdrop"] and op == P.WL_SURFACE_ATTACH],
+                         [[0, 0, 0]])
+        for fd in h.c2s.fds:
+            os.close(fd)
 
 
 class StreamTest(unittest.TestCase):

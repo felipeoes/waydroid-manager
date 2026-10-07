@@ -30,7 +30,8 @@ Run as a separate process (no gbinder here):
   python3 -m waydroid_manager.session.wlproxy --listen SOCK --upstream SOCK --id ID --name NAME \\
       [--width W --height H --zoom auto|PCT --theme dark|light --close-action stop|freeze|none]
 Events are written to stdout, one per line: "ready", "close", "zoom <pct>", "action <name>",
-"install <path>".
+"install <path>". Android's display rotation (0-3) is read from stdin, one per line: the picture
+and the window turn with it (wl_surface.set_buffer_transform), input is turned back.
 """
 import argparse
 import array
@@ -78,6 +79,17 @@ def apk_paths(uri_list):
                 and "\n" not in path and "\r" not in path):
             paths.append(path)
     return paths
+
+
+def rotate(x, y, w, h, t):
+    """Point (x, y) of a w x h frame, in that frame turned t * 90 degrees clockwise: what the
+    compositor does to a buffer with wl_output transform t (0-3)."""
+    return ((x, y), (h - y, x), (w - x, h - y), (y, w - x))[t & 3]
+
+
+def rotate_rect(x, y, rw, rh, w, h, t):
+    (ax, ay), (bx, by) = rotate(x, y, w, h, t), rotate(x + rw, y + rh, w, h, t)
+    return min(ax, bx), min(ay, by), abs(bx - ax), abs(by - ay)
 
 
 def read_string(payload, off):
@@ -466,7 +478,8 @@ class Clip:
 
 
 class Surf:
-    __slots__ = ("id", "viewport", "parent", "sub", "dirty", "req_dest", "req_pos", "children")
+    __slots__ = ("id", "viewport", "parent", "sub", "dirty", "req_dest", "req_pos", "req_transform", "req_src",
+                 "children")
 
     def __init__(self, sid):
         self.id = sid
@@ -476,6 +489,8 @@ class Surf:
         self.dirty = False     # HWC has pending (uncommitted) state on it
         self.req_dest = None   # destination the HWC asked for (unscaled)
         self.req_pos = None    # subsurface position the HWC asked for (unscaled)
+        self.req_transform = 0  # buffer transform the HWC asked for
+        self.req_src = None    # viewport source the HWC asked for (wl_fixed x, y, w, h)
         self.children = []
 
 
@@ -545,7 +560,9 @@ class Session:
         self.keyboard = None
         self.touch = None
         self.outputs = {}        # output id -> {"mode": (w,h), "scale": int}
+        self.comp_version = 0    # of the HWC's wl_compositor (buffer transforms need 2)
         self.surface_output = None
+        self.shown_turn = 0      # the turn the tree's buffer transforms were last set for
         self.window = None
         self.zoom = None         # current zoom factor (float), None until known
         self.res = (cfg.width, cfg.height) if cfg.width and cfg.height else None
@@ -575,6 +592,7 @@ class Session:
         self.tip_shown = None    # toolbar action whose tooltip is up
         self.tb_scroll = 0       # how far the toolbar's entries are scrolled up (short windows)
         self.cursor_dev = None
+        self.cursor_surface = None  # the HWC's cursor (Android's pointer, drawn turned with its display)
         self.pings = {}           # serial -> time the compositor pinged
         self.ping_stats = {"pings": 0, "pongs": 0, "max_latency": 0.0, "last_latency": 0.0}
         self.offers = {}          # wl_data_offer id -> mime types offered
@@ -623,9 +641,42 @@ class Session:
     def frame_extent(self):
         return (fr.TOOLBAR_W, fr.TITLE_H) if self.framed else (0, 0)
 
+    @property
+    def turn(self):
+        """wl_output transform that shows Android's picture upright. Android draws in its
+        display's natural orientation; its ROTATION_90 is the picture turned 90 degrees clockwise
+        there, so the compositor turns it back (transform 3: 270 degrees clockwise)."""
+        return (4 - self.cfg.rotation) % 4 if self.comp_version >= 2 else 0
+
+    def view(self):
+        """Android's resolution as the picture is shown: res, turned with Android's display."""
+        if self.res and self.turn & 1:
+            return self.res[1], self.res[0]
+        return self.res
+
+    def turned_pos(self, s):
+        """Where a subsurface the HWC placed in Android's frame goes in the turned picture."""
+        x, y = s.req_pos
+        if not self.turn or not self.res:
+            return x, y
+        # ponytail: a subsurface without a viewport counts as a point; the HWC's have viewports
+        w, h = s.req_dest or (0, 0)
+        return rotate_rect(x, y, w, h, *self.res, self.turn)[:2]
+
+    def turned_src(self, src):
+        """A viewport source (wl_fixed) in the turned buffer's coordinates."""
+        if self.turn & 1 and src != (-256,) * 4:
+            # ponytail: exact for crops at the origin (the framebuffer target); a compositing
+            # HWC's other crops land on the mirrored region, still inside the buffer
+            return src[1], src[0], src[3], src[2]
+        return src
+
+    def turned_transform(self, t):
+        return (t & 4) | ((t + self.turn) & 3)
+
     def content_size(self):
         z = self.zoom or 1.0
-        rw, rh = self.res or (0, 0)
+        rw, rh = self.view() or (0, 0)
         return max(1, int(round(rw * z))), max(1, int(round(rh * z)))
 
     def area(self):
@@ -641,14 +692,27 @@ class Session:
             return max(1, w.fill_size[0] - b), max(1, w.fill_size[1] - t)
         return None
 
-    def content_offset(self):
+    def centring(self):
+        """How far the picture is from the area's top-left when it is centred in the area."""
         a = self.area()
-        # ponytail: Android 11 draws on the toplevel itself, which can't move: its picture stays
-        # top-left when maximized or fullscreen; centring it needs a subsurface of our own
-        if a and self.res and not self.window.own_vp:
-            dw, dh = self.content_size()
-            return max(0, (a[0] - dw) // 2), max(0, (a[1] - dh) // 2)
-        return 0, 0
+        if not a or not self.res:
+            return 0, 0
+        dw, dh = self.content_size()
+        return max(0, (a[0] - dw) // 2), max(0, (a[1] - dh) // 2)
+
+    def content_offset(self):
+        """Where the HWC's subsurfaces go in the toplevel surface (see area_origin for Android 11)."""
+        return (0, 0) if self.window and self.window.own_vp else self.centring()
+
+    def area_origin(self):
+        """The area's top-left in the toplevel surface. Android 11 draws its picture on the toplevel
+        itself, which can't move: the window (geometry and frame) moves around it instead. Not in
+        fullscreen: GNOME centres a fullscreen window's surfaces on black itself, and would centre
+        our offset backdrop instead of the picture."""
+        if not self.window or not self.window.own_vp or self.window.fullscreen:
+            return 0, 0
+        cx, cy = self.centring()
+        return -cx, -cy
 
     def output_logical(self):
         out = None
@@ -665,7 +729,8 @@ class Session:
         if not self.res:
             return 1.0
         b, t = (fr.TOOLBAR_W, fr.TITLE_H) if (self.cfg.frame and not (self.window and self.window.fullscreen)) else (0, 0)
-        z = min((avail_w - b) / self.res[0], (avail_h - t) / self.res[1])
+        vw, vh = self.view()
+        z = min((avail_w - b) / vw, (avail_h - t) / vh)
         return max(ZOOM_MIN, min(ZOOM_MAX, z))
 
     def initial_zoom(self):
@@ -681,6 +746,8 @@ class Session:
         win = self.window
         if win and sid == win.surface:
             return self.area() or self.content_size()
+        if self.turn & 1:
+            w, h = h, w
         return max(1, int(math.ceil(w * z))), max(1, int(math.ceil(h * z)))
 
     def scaled_pos(self, x, y):
@@ -690,13 +757,14 @@ class Session:
 
     def geometry(self):
         w = self.window
+        ox, oy = self.area_origin()
         if w and w.fullscreen and w.fs_size:
-            return 0, 0, w.fs_size[0], w.fs_size[1]
+            return ox, oy, w.fs_size[0], w.fs_size[1]
         aw, ah = self.area() or self.content_size()
         b, t = self.frame_extent()
-        return 0, -t, aw + b, ah + t
+        return ox, oy - t, aw + b, ah + t
 
-    def unscale_point(self, sid, x_fixed, y_fixed):
+    def unscale_point(self, sid, x_fixed, y_fixed, pointer=False):
         """Compositor surface coords -> what the HWC expects (Android px at scale 1)."""
         z = self.zoom or 1.0
         x, y = P.fixed_to_float(x_fixed), P.fixed_to_float(y_fixed)
@@ -706,7 +774,11 @@ class Session:
             if self.res:
                 dw, dh = self.content_size()
                 x, y = min(max(x, 0.0), dw - 0.01), min(max(y, 0.0), dh - 0.01)
-        return P.float_to_fixed(x / z), P.float_to_fixed(y / z)
+        x, y = x / z, y / z
+        if self.turn and self.res and not (pointer and self.cfg.logical_pointer):
+            # back to Android's natural orientation: its input reader turns touches itself
+            x, y = rotate(x, y, *self.view(), (4 - self.turn) % 4)
+        return P.float_to_fixed(x), P.float_to_fixed(y)
 
     # -- client -> server -------------------------------------------------------------
     def on_request(self, obj, op, payload):
@@ -746,6 +818,8 @@ class Session:
                 self.outputs.setdefault(new, {})
             elif name_iface == "wl_shm":
                 self.shm = new
+            elif name_iface == "wl_compositor":
+                self.comp_version = version
             return None
         if iface == "wl_compositor" and op == P.WL_COMPOSITOR_CREATE_SURFACE:
             sid = r.n()
@@ -791,6 +865,10 @@ class Session:
             return self._xdg_surface_request(obj, op, r)
         if iface == "xdg_toplevel":
             return self._toplevel_request(obj, op, r, payload)
+        if iface == "wl_pointer" and op == P.WL_POINTER_SET_CURSOR:
+            r.u()
+            self.cursor_surface = r.o() or None
+            return None
         if iface == "wl_seat":
             if op in (P.WL_SEAT_GET_POINTER, P.WL_SEAT_GET_KEYBOARD, P.WL_SEAT_GET_TOUCH):
                 new = r.n()
@@ -891,6 +969,12 @@ class Session:
             if copy:
                 self.cfg.gpu.read(*copy)    # the frame Android drew, into the memory the compositor reads
         tree = self.in_tree(sid)
+        if op == P.WL_SURFACE_SET_BUFFER_TRANSFORM:
+            s.req_transform = r.i()
+            if tree or sid == self.cursor_surface:
+                s.dirty = True
+                return [msg(sid, op, "i", self.turned_transform(s.req_transform))]
+            return None
         if op == P.WL_SURFACE_DESTROY:
             self._forget_surface(sid)
             return None
@@ -906,7 +990,7 @@ class Session:
         if not tree:
             return None
         s.dirty = True
-        if op == P.WL_SURFACE_DAMAGE and self.zoom not in (None, 1.0):
+        if op == P.WL_SURFACE_DAMAGE and (self.zoom not in (None, 1.0) or self.turn):
             return [msg(sid, P.WL_SURFACE_DAMAGE, "iiii", 0, 0, FULL_DAMAGE, FULL_DAMAGE)]
         if op == P.WL_SURFACE_SET_OPAQUE_REGION:
             return []   # coordinates would need scaling; it is only an optimisation
@@ -918,11 +1002,19 @@ class Session:
             self.viewports.pop(vid, None)
             if sid in self.surfaces and self.surfaces[sid].viewport == vid:
                 self.surfaces[sid].viewport = None
+                self.surfaces[sid].req_src = None
             return None
+        if op == P.WP_VIEWPORT_SET_SOURCE and sid in self.surfaces:
+            # kept for any surface: one joining the tree later must not turn under an old crop
+            self.surfaces[sid].req_src = (r.i(), r.i(), r.i(), r.i())
+        if sid in self.surfaces and sid == self.cursor_surface:
+            return self._cursor_viewport_request(vid, op, r)
         if not self.in_tree(sid):
             return None
         s = self.surfaces[sid]
         s.dirty = True
+        if op == P.WP_VIEWPORT_SET_SOURCE:
+            return [msg(vid, op, "iiii", *self.turned_src(s.req_src))]
         if op == P.WP_VIEWPORT_SET_DESTINATION:
             w, h = r.i(), r.i()
             if w <= 0 or h <= 0:
@@ -935,6 +1027,15 @@ class Session:
                 self.zoom = self.initial_zoom()
             dw, dh = self.scaled_dest(sid, w, h)
             return [msg(vid, P.WP_VIEWPORT_SET_DESTINATION, "ii", dw, dh)]
+        return None
+
+    def _cursor_viewport_request(self, vid, op, r):
+        """Android's pointer is drawn turned with its display, like the picture: turn it back."""
+        if op == P.WP_VIEWPORT_SET_SOURCE:
+            return [msg(vid, op, "iiii", *self.turned_src(self.surfaces[self.cursor_surface].req_src))]
+        if op == P.WP_VIEWPORT_SET_DESTINATION and self.turn & 1:
+            w, h = r.i(), r.i()
+            return [msg(vid, op, "ii", h, w)]
         return None
 
     def _subsurface_request(self, subid, op, r):
@@ -950,7 +1051,7 @@ class Session:
         x, y = r.i(), r.i()
         s.req_pos = (x, y)
         self.surfaces[self.window.surface].dirty = True
-        px, py = self.scaled_pos(x, y)
+        px, py = self.scaled_pos(*self.turned_pos(s))
         return [msg(subid, P.WL_SUBSURFACE_SET_POSITION, "ii", px, py)]
 
     def _xdg_surface_request(self, xid, op, r):
@@ -1221,7 +1322,7 @@ class Session:
             self.ptr_group_forwarded = True
             if self.in_tree(sid):
                 self.ptr_focus = ("tree", sid)
-                ux, uy = self.unscale_point(sid, x, y)
+                ux, uy = self.unscale_point(sid, x, y, pointer=True)
                 return [msg(pid, op, "uoff", serial, sid, ux, uy)]
             self.ptr_focus = ("other", sid)
             return None
@@ -1264,7 +1365,7 @@ class Session:
             return None
         if op == P.WL_POINTER_EV_MOTION and focus and focus[0] == "tree":
             t, x, y = r.u(), r.f(), r.f()
-            ux, uy = self.unscale_point(focus[1], x, y)
+            ux, uy = self.unscale_point(focus[1], x, y, pointer=True)
             return [msg(pid, op, "uff", t, ux, uy)]
         return None
 
@@ -1412,6 +1513,10 @@ class Session:
         S = self.surfaces.get(w.surface)
         if S is None:
             return []
+        turning = bool(self.turn or self.shown_turn)
+        self.shown_turn = self.turn
+        if turning:
+            out.extend(self._turn_messages(S))
         if S.viewport and S.req_dest:
             out.append(msg(S.viewport, P.WP_VIEWPORT_SET_DESTINATION, "ii", *self.scaled_dest(S.id, *S.req_dest)))
         elif not S.viewport and (w.own_vp or self._own_viewport()):
@@ -1420,18 +1525,35 @@ class Session:
             c = self.surfaces.get(cid)
             if not c or c.parent != S.id:
                 continue
+            if turning:
+                out.extend(self._turn_messages(c))
             if c.sub and c.req_pos is not None:
-                out.append(msg(c.sub, P.WL_SUBSURFACE_SET_POSITION, "ii", *self.scaled_pos(*c.req_pos)))
+                out.append(msg(c.sub, P.WL_SUBSURFACE_SET_POSITION, "ii", *self.scaled_pos(*self.turned_pos(c))))
             if c.viewport and c.req_dest:
                 out.append(msg(c.viewport, P.WP_VIEWPORT_SET_DESTINATION, "ii", *self.scaled_dest(cid, *c.req_dest)))
-                if commit and not c.dirty:
-                    out.append(msg(cid, P.WL_SURFACE_COMMIT))
+            if commit and not c.dirty and (turning or (c.viewport and c.req_dest)):
+                out.append(msg(cid, P.WL_SURFACE_COMMIT))
         if w.req_geometry is not None or w.committed:
             out.append(msg(w.xdg_surface, P.XDG_SURFACE_SET_WINDOW_GEOMETRY, "iiii", *self.geometry()))
         out.extend(self._frame_messages())
         if commit and not S.dirty:
             out.append(msg(S.id, P.WL_SURFACE_COMMIT))
         return out
+
+    def _turn_messages(self, s):
+        """The buffer transform (and viewport source) a tree surface needs for the current turn."""
+        out = [msg(s.id, P.WL_SURFACE_SET_BUFFER_TRANSFORM, "i", self.turned_transform(s.req_transform))]
+        if s.viewport and s.req_src:
+            out.append(msg(s.viewport, P.WP_VIEWPORT_SET_SOURCE, "iiii", *self.turned_src(s.req_src)))
+        return out
+
+    def rotated(self):
+        """Android turned its display (cfg.rotation): turn the picture and the window with it. A
+        window the compositor sizes refits; a floating one keeps its zoom."""
+        w = self.window
+        if w and (w.fs_size or w.fill_size):
+            self.zoom = self.fit_zoom(*(w.fs_size or w.fill_size))
+        self.request_apply()
 
     def _own_viewport(self):
         """Android 11's HWC draws on its toplevel's surface and scales nothing: the zoom needs a
@@ -1486,12 +1608,13 @@ class Session:
         if w.own_vp:
             self.to_server(msg(w.own_vp, P.WP_VIEWPORT_DESTROY))
         if w.frame:
-            for key in ("tip_sub", "title_sub", "toolbar_sub", "border_sub", "border_vp"):
+            for key in ("tip_sub", "title_sub", "toolbar_sub", "border_sub", "border_vp", "backdrop_sub",
+                        "backdrop_vp"):
                 oid = w.frame.get(key)
                 if oid:
                     op = P.WL_SUBSURFACE_DESTROY if key.endswith("_sub") else P.WP_VIEWPORT_DESTROY
                     self.to_server(msg(oid, op))
-            for key in ("tip", "title", "toolbar", "border"):
+            for key in ("tip", "title", "toolbar", "border", "backdrop"):
                 oid = w.frame.get(key)
                 if oid:
                     self.to_server(msg(oid, P.WL_SURFACE_DESTROY))
@@ -1571,6 +1694,16 @@ class Session:
         self.to_server(msg(f["border_sub"], P.WL_SUBSURFACE_SET_DESYNC))
         f["border_vp"] = self.new_id("viewport")
         self.to_server(msg(vp, P.WP_VIEWPORTER_GET_VIEWPORT, "no", f["border_vp"], f["border"]))
+        # Android 11 draws on the toplevel itself, which has nothing behind its picture: black there
+        # when the window is bigger than the picture (maximized, fullscreen; a turned picture)
+        f["backdrop"], f["backdrop_sub"] = self.new_id("surface_backdrop"), self.new_id("subsurface")
+        self.to_server(msg(comp, P.WL_COMPOSITOR_CREATE_SURFACE, "n", f["backdrop"]))
+        self.to_server(msg(subc, P.WL_SUBCOMPOSITOR_GET_SUBSURFACE, "noo", f["backdrop_sub"], f["backdrop"],
+                           w.surface))
+        self.to_server(msg(f["backdrop_sub"], P.WL_SUBSURFACE_PLACE_BELOW, "o", w.surface))
+        self.to_server(msg(f["backdrop_sub"], P.WL_SUBSURFACE_SET_DESYNC))
+        f["backdrop_vp"] = self.new_id("viewport")
+        self.to_server(msg(vp, P.WP_VIEWPORTER_GET_VIEWPORT, "no", f["backdrop_vp"], f["backdrop"]))
         # Tooltip: a child of the toolbar (whose commits we control: subsurface positions are
         # parent state), left of it over the picture, with an empty input region so clicks
         # and hover go through to whatever is below
@@ -1594,6 +1727,12 @@ class Session:
         f = w.frame
         out = []
         dw, dh = self.content_size()
+        ox, oy = self.area_origin()
+        backdrop = self.area() if w.own_vp and not w.fullscreen else None
+        if f["sizes"].get("backdrop") != backdrop:
+            f["sizes"]["backdrop"] = backdrop
+            out.extend(self._backdrop_messages(backdrop))
+        out.append(msg(f["backdrop_sub"], P.WL_SUBSURFACE_SET_POSITION, "ii", ox, oy))
         hidden = w.fullscreen or not self.cfg.frame
         b, t, m = fr.TOOLBAR_W, fr.TITLE_H, fr.BORDER
         if hidden:
@@ -1605,9 +1744,9 @@ class Session:
                     f["sizes"][kind] = "hidden"
             return out
         dw, dh = self.area() or (dw, dh)     # maximized/tiled: frame hugs the window, content centred
-        out.append(msg(f["title_sub"], P.WL_SUBSURFACE_SET_POSITION, "ii", 0, -t))
-        out.append(msg(f["toolbar_sub"], P.WL_SUBSURFACE_SET_POSITION, "ii", dw, 0))
-        out.append(msg(f["border_sub"], P.WL_SUBSURFACE_SET_POSITION, "ii", -m, -t - m))
+        out.append(msg(f["title_sub"], P.WL_SUBSURFACE_SET_POSITION, "ii", ox, oy - t))
+        out.append(msg(f["toolbar_sub"], P.WL_SUBSURFACE_SET_POSITION, "ii", ox + dw, oy))
+        out.append(msg(f["border_sub"], P.WL_SUBSURFACE_SET_POSITION, "ii", ox - m, oy - t - m))
         if f["sizes"].get("title") != (dw + b, t):
             f["sizes"]["title"] = (dw + b, t)
             self._draw("title")
@@ -1722,6 +1861,18 @@ class Session:
         out.append(msg(f["border"], P.WL_SURFACE_DAMAGE, "iiii", 0, 0, FULL_DAMAGE, FULL_DAMAGE))
         out.append(msg(f["border"], P.WL_SURFACE_COMMIT))
         return out
+
+    def _backdrop_messages(self, size):
+        f = self.window.frame
+        pixel = self.my_globals.get("wp_single_pixel_buffer_manager_v1")
+        if not size or not pixel:
+            return [msg(f["backdrop"], P.WL_SURFACE_ATTACH, "oii", 0, 0, 0), msg(f["backdrop"], P.WL_SURFACE_COMMIT)]
+        buf = self.new_id("buffer_pixel")
+        return [msg(pixel, P.WP_SINGLE_PIXEL_CREATE_U32_RGBA, "nuuuu", buf, 0, 0, 0, 0xffffffff),
+                msg(f["backdrop"], P.WL_SURFACE_ATTACH, "oii", buf, 0, 0),
+                msg(f["backdrop_vp"], P.WP_VIEWPORT_SET_DESTINATION, "ii", *size),
+                msg(f["backdrop"], P.WL_SURFACE_DAMAGE, "iiii", 0, 0, FULL_DAMAGE, FULL_DAMAGE),
+                msg(f["backdrop"], P.WL_SURFACE_COMMIT)]
 
     def _redraw(self, kind):
         if not self.window or not self.window.frame or self.window.frame["sizes"].get(kind) in (None, "hidden"):
@@ -2032,6 +2183,9 @@ class Config:
         self.frame = frame
         self.theme = theme
         self.close_action = close_action
+        self.rotation = 0          # Android's display rotation (Surface.ROTATION_*), from stdin
+        # Android 11's mouse isn't orientation-aware: it takes positions in the turned frame
+        self.logical_pointer = False
         # the compositor can't import Android's dmabufs: show them as shm ("shared", or the render
         # node of the GPU to copy them through; Session._dmabuf_request)
         self.cpu_buffers = cpu_buffers
@@ -2047,6 +2201,34 @@ class Proxy:
         self.sel = selectors.DefaultSelector()
         self.server = None
         self.conns = []
+
+    def watch_rotation(self, fd):
+        """Android's display rotation arrives on fd, a digit per line (session/main.py)."""
+        os.set_blocking(fd, False)
+        self.rot_fd, self.rot_buf = fd, b""
+        self.sel.register(fd, selectors.EVENT_READ, self)
+
+    def on_event(self, _fileobj, _mask):
+        try:
+            data = os.read(self.rot_fd, 4096)
+        except BlockingIOError:
+            return
+        except OSError:
+            data = b""
+        if not data:
+            self.sel.unregister(self.rot_fd)
+            return
+        *lines, self.rot_buf = (self.rot_buf + data).split(b"\n")
+        last = lines[-1].strip() if lines else b""
+        if last not in (b"0", b"1", b"2", b"3") or int(last) == self.cfg.rotation:
+            return
+        self.cfg.rotation = int(last)
+        for c in self.conns:
+            try:
+                c.session.rotated()
+            except Exception:  # noqa: BLE001
+                log_error("error turning the window")
+            c.pump()
 
     def emit(self, ev):
         try:
@@ -2094,8 +2276,9 @@ class Proxy:
         for i, c in enumerate(self.conns):
             se = c.session
             w = se.window
-            lines.append("connection {}: zoom={} res={} window={} fullscreen={} fill={} frame={}".format(
-                i, se.zoom, se.res, bool(w), w and w.fullscreen, w and w.fill_size, bool(w and w.frame)))
+            lines.append("connection {}: zoom={} res={} rotation={} window={} fullscreen={} fill={} frame={} "
+                         "geometry={}".format(i, se.zoom, se.res, self.cfg.rotation, bool(w), w and w.fullscreen,
+                                              w and w.fill_size, bool(w and w.frame), w and se.geometry()))
             lines.append("  pings={pings} pongs={pongs} last_latency={last_latency:.3f}s "
                          "max_latency={max_latency:.3f}s outstanding={n}".format(n=len(se.pings), **se.ping_stats))
             lines.append("  clipboard answered={answered} late={late}".format(**se.clip_stats))
@@ -2137,8 +2320,10 @@ def main(argv=None):
     p.add_argument("--theme", default="dark", choices=("dark", "light"))
     p.add_argument("--close-action", default="stop", choices=("stop", "freeze", "none"))
     p.add_argument("--cpu-buffers", help='"shared" or a render node (Config)')
+    p.add_argument("--logical-pointer", action="store_true", help="Android 11: pointer positions stay turned")
     o = p.parse_args(argv)
     cfg = Config(o.id, o.name, o.width, o.height, o.zoom, True, o.theme, o.close_action, o.cpu_buffers)
+    cfg.logical_pointer = o.logical_pointer
     global LOG_PATH
     cache = os.environ.get("XDG_CACHE_HOME") or os.path.expanduser("~/.cache")
     os.makedirs(os.path.join(cache, "waydroid-manager"), exist_ok=True)
@@ -2149,6 +2334,7 @@ def main(argv=None):
     signal.signal(signal.SIGTERM, on_term)
     signal.signal(signal.SIGPIPE, signal.SIG_IGN)
     proxy = Proxy(o.listen, o.upstream, cfg)
+    proxy.watch_rotation(sys.stdin.fileno())
     signal.signal(signal.SIGUSR1, lambda *_: proxy.dump_state())   # waydroid-manager log <id> --window
     try:
         proxy.run()
