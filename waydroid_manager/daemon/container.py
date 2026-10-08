@@ -56,14 +56,32 @@ APPARMOR_PROFILE = "lxc-waydroid-manager"   # lxc-start may only switch to lxc-*
 APPARMOR_FILE = os.path.join(paths.RUN_DIR, "apparmor-profile")
 # ponytail: only inspected x86_64 builds before upstream bb49e333f3ab; inspect new builds before adding pins.
 # SHA-256 -> call's file offset.
+HWC_NVIDIA_SHA = "2bac9ae23e4536a1e2a5ea36be25e07d3430e64cfe53668c3ffa5124ec715d24"
 HWC_THREADPOOL_CALLS = {
     "7b84d9fafffd52eae8b3f5432edaeeca751effdbca0fe02dc6c860c7826502da": 0x3b56d,  # 11
     "34a0ab934e0fb83ed1f7b290dd52c0a1073e6458c408f1f8463cbfa477005a51": 0x42a3d,  # 13
-    "2bac9ae23e4536a1e2a5ea36be25e07d3430e64cfe53668c3ffa5124ec715d24": 0x4e010,  # 13 NVIDIA
+    HWC_NVIDIA_SHA: 0x4e010,  # 11/13 NVIDIA
     "bf39b3fcec73945909c4057aa44dbed0340a7a106b50182f1a114295cf646152": 0x3feae,  # 14
     "4109935a746069db0eee6268ec9ed2e87688a29647b4a9bc4f4a582102c3dc64": 0x3d37d,  # 15
     "9908498c71cbe8e52ec4bc4b532ebebcd6f55c0342590ecb63358c240757b931": 0x3d57d,  # 16
 }
+
+
+# Private sync queue for the pinned Android 11/13 NVIDIA HWC (scripts/patches/hwc-roundtrip.S).
+HWC_NVIDIA_ROUNDTRIP = bytes.fromhex(
+    "48 89 f3 49 89 fe c7 45 d4 00 00 00 00 e8 6d ef ff ff 49 89"
+    "c4 48 85 c0 0f 84 bb 00 00 00 4c 89 f7 e8 e9 01 00 00 49 89"
+    "c5 48 85 c0 0f 84 9f 00 00 00 48 89 c7 4c 89 e6 e8 72 02 00"
+    "00 4c 89 ef 31 f6 48 8d 15 0e 92 03 00 b9 01 00 00 00 45 31"
+    "c0 45 31 c9 31 c0 e8 a4 f6 ff ff 48 89 45 c0 4c 89 ef e8 c8"
+    "02 00 00 4c 8b 6d c0 41 bf ff ff ff ff 4d 85 ed 74 37 4c 89"
+    "ef 48 8d 35 47 a1 03 00 48 8d 55 d4 e8 b6 f2 ff ff 85 c0 78"
+    "18 4c 89 f7 4c 89 e6 e8 07 03 00 00 41 89 c7 83 7d d4 00 75"
+    "0c 85 c0 79 e8 4c 89 ef e8 92 f0 ff ff 4c 89 e7 e8 6a ed ff"
+    "ff 45 85 ff 0f 88 1d 01 00 00 4c 89 f7 48 89 de e8 d6 0d 00"
+    "00 41 89 c7 e9 0a 01 00 00 4c 89 e7 e8 46 ed ff ff 41 bf ff"
+    "ff ff ff e9 f7 00 00 00"
+)
 
 
 def _stock_stopped():
@@ -401,8 +419,8 @@ def sync_root(inst):
         magisk.remove(inst)
 
 
-def fix_hwc_threadpool(inst):
-    """Backport the HWC's threadpool fix to the known broken binary, for this mount only."""
+def fix_hwc(inst):
+    """Backport startup fixes to known HWC binaries, for this mount only."""
     rel = "vendor/lib64/hw/hwcomposer.waydroid.so"
     try:
         fd = open_beneath(inst.rootfs, rel, os.O_RDONLY | os.O_NONBLOCK)
@@ -412,13 +430,16 @@ def fix_hwc_threadpool(inst):
         if not stat.S_ISREG(os.fstat(src.fileno()).st_mode):
             raise RuntimeError("hwcomposer is not a regular file")
         data = src.read(1 << 20)   # all known binaries are smaller; bound reads of guest files
-        offset = HWC_THREADPOOL_CALLS.get(hashlib.sha256(data).hexdigest())
+        sha = hashlib.sha256(data).hexdigest()
+        offset = HWC_THREADPOOL_CALLS.get(sha)
         if offset is None:
             return
         # NOP the call to configureRpcThreadpool(1, true) in hwc_binder_thread. The composer
         # service already configured four threads; shrinking its pool races startup and aborts.
         # https://github.com/WayDroid-ATV/android_hardware_waydroid/commit/bb49e333f3abb604f0eccba20168337117b754e8
         data = data[:offset] + b"\x90" * 5 + data[offset + 5:]
+        if sha == HWC_NVIDIA_SHA:
+            data = data[:0x61131] + HWC_NVIDIA_ROUNDTRIP + data[0x61131 + len(HWC_NVIDIA_ROUNDTRIP):]
         copy = os.path.join(inst.dir, "hwcomposer.waydroid.so")
         with open(copy + ".tmp", "wb") as patched:
             patched.write(data)
@@ -428,7 +449,7 @@ def fix_hwc_threadpool(inst):
             # Mount through the checked fds: writable guest overlays may contain hostile links.
             # Keep the copy linked: Android's HAL loader requires realpath() to resolve it.
             bind_mount("/proc/self/fd/{}".format(patched.fileno()), "/proc/self/fd/{}".format(src.fileno()))
-        log.info("%s: applied display threadpool fix", inst.id)
+        log.info("%s: applied display startup fixes", inst.id)
 
 
 def mount_rootfs(inst, images_dir, gpu_layers=()):
@@ -456,7 +477,7 @@ def mount_rootfs(inst, images_dir, gpu_layers=()):
     mount_overlay(vlowers + [rootfs + "/vendor"], rootfs + "/vendor",
                   os.path.join(inst.dir, "overlay_rw/vendor"), os.path.join(inst.dir, "overlay_work/vendor"),
                   writable=inst.getbool("system_writable"))
-    fix_hwc_threadpool(inst)
+    fix_hwc(inst)
     for egl_path in ("/vendor/lib/egl", "/vendor/lib64/egl"):
         if os.path.isdir(egl_path):
             bind(egl_path, rootfs + egl_path)
