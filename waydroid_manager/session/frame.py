@@ -17,6 +17,7 @@ GRIP = 4              # resize grip inside the window, on the title bar's and to
 TITLE_BUTTONS = [("minimize", "window-minimize-symbolic"), ("close", "window-close-symbolic")]
 TOOLBAR = [
     ("settings", "emblem-system-symbolic"),
+    ("restart", "system-reboot-symbolic"),
     None,
     ("volume_up", "audio-volume-high-symbolic"),
     ("volume_down", "audio-volume-low-symbolic"),
@@ -26,7 +27,7 @@ TOOLBAR = [
     ("fullscreen", "view-fullscreen-symbolic"),
 ]
 NAV = ["back", "home", "recents"]   # at the toolbar's bottom, like Android's navigation bar
-TOOLTIPS = {"settings": "Settings", "back": "Back", "home": "Home", "recents": "Recent apps",
+TOOLTIPS = {"settings": "Settings", "restart": "Restart", "back": "Back", "home": "Home", "recents": "Recent apps",
             "volume_up": "Volume up", "volume_down": "Volume down", "screenshot": "Screenshot",
             "install": "Install APK", "fullscreen": "Fullscreen (F11)"}
 SEPARATOR_H = 9

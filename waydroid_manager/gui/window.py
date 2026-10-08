@@ -60,7 +60,7 @@ def _flat_button(icon, tooltip, cb):
 
 
 class BaseRow(Adw.ActionRow):
-    """Spinner, start/show and stop buttons, and a ⋮ menu built on demand; the state dot is in the subtitle."""
+    """Instance controls and a ⋮ menu built on demand; the state dot is in the subtitle."""
 
     def __init__(self, win, info, check=False):
         super().__init__()
@@ -81,6 +81,8 @@ class BaseRow(Adw.ActionRow):
         self.add_suffix(self.play)
         self.stop = _flat_button("media-playback-stop-symbolic", "Stop", lambda: win.stop(self.info))
         self.add_suffix(self.stop)
+        self.restart = _flat_button("system-reboot-symbolic", "Restart", lambda: win.restart(self.info))
+        self.add_suffix(self.restart)
         # Disk space used, next to ⋮ so it lines up across rows; filled in by update() (instances only: the daemon measures it)
         self.disk = Gtk.Box(spacing=4, valign=Gtk.Align.CENTER, visible=False, css_classes=["dim-label"],
                             tooltip_text="Disk space used by this instance")
@@ -114,6 +116,7 @@ class BaseRow(Adw.ActionRow):
         self.spinner.set_visible(busy)
         self.play.set_visible(not busy)
         self.stop.set_visible(st in ACTIVE and not busy)
+        self.restart.set_visible(st in ACTIVE and not busy)
         if st in ACTIVE:
             self.play.set_icon_name("view-reveal-symbolic")
             self.play.set_tooltip_text("Show window")
@@ -417,6 +420,19 @@ class MainWindow(Adw.ApplicationWindow):
     def stop(self, info):
         self._cli(info["id"], ["stop", info["id"]], "Failed to stop " + info["name"])
 
+    def restart(self, info):
+        iid = info["id"]
+        if iid in self.busy:
+            return
+        self.set_busy(iid, True)
+
+        def done(ok, out):
+            self.set_busy(iid, False)
+            if not ok:
+                self.toast(out.splitlines()[-1] if out else "Failed to restart " + info["name"])
+            self.refresh()
+        self.backend.restart(iid, done)
+
     def start_all(self):
         for i in self.instances:
             # not #0: starting it closes a plain Waydroid session the user may have open
@@ -484,9 +500,7 @@ class MainWindow(Adw.ApplicationWindow):
             info = next((i for i in self.instances if i["id"] == iid), {})
             self.refresh()
             if restart and info.get("state") in ACTIVE:
-                restart_dialog(info["name"], lambda: self._cli(
-                    iid, ["stop", iid], "Failed to stop " + info["name"],
-                    then=lambda ok: ok and self.start_or_show(info))).present(self)
+                restart_dialog(info["name"], lambda: self.restart(info)).present(self)
             else:
                 self.toast("Saved")
         save_settings(self.backend, before, values, ok, self.toast)

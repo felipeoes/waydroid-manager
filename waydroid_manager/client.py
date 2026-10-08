@@ -209,19 +209,22 @@ def start_session(iid, background=False):
 SETTINGS_NAME = "io.github.waydroidmanager.Settings"     # gui/settings.py's application id
 
 
-def open_settings(iid):
-    """The instance window's Settings button. Once gui/settings.py runs, the click reaches it over
-    D-Bus and the window opens at once. It starts in a unit of its own, not as a child of the session:
-    Restart Now stops the session's unit, which kills everything in it."""
+def open_settings(iid, restart=False):
+    """Handle the instance window's Settings or Restart button in gui/settings.py.
+
+    It runs in its own unit: restarting stops the session's unit and everything in it.
+    """
     def start(*_):
         run_unit("settings-" + iid, "waydroid-manager settings for " + iid,
-                 [sys.executable, "-m", "waydroid_manager.gui.settings", iid])
+                 [sys.executable, "-m", "waydroid_manager.gui.settings"]
+                 + (["--restart"] if restart else []) + [iid])
     try:
         bus = dbus.SessionBus()
         if bus.name_has_owner(SETTINGS_NAME):
             # it may be quitting just now: then start it again
             bus.call_async(SETTINGS_NAME, "/" + SETTINGS_NAME.replace(".", "/"), "org.freedesktop.Application",
-                           "ActivateAction", "sava{sv}", ("open", [iid], {}), lambda: None, start, timeout=5)
+                           "ActivateAction", "sava{sv}", ("restart" if restart else "open", [iid], {}),
+                           lambda: None, start, timeout=5)
             return
     except dbus.DBusException:
         pass
