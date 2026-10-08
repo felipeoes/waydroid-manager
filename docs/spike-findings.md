@@ -34,9 +34,9 @@ The window labelling proxy from this spike became `waydroid_manager/session/wlpr
 - Older vendor HWC builds race their composer service's threadpool setup, aborting with
   "Binder threadpool cannot be shrunk after starting" and repeatedly closing the window during boot.
   [Upstream fixed it](https://github.com/WayDroid-ATV/android_hardware_waydroid/commit/bb49e333f3abb604f0eccba20168337117b754e8)
-  after the Android 16 20260717 image was released. `container.fix_hwc_threadpool` removes the same
+  after the Android 16 20260717 image was released. `container.fix_hwc` removes the same
   redundant call from per-instance bind-mounted copies of the SHA-256-pinned x86_64 binaries in
-  our Android 11–16 images and Android 13 NVIDIA layer. File offsets account for each ELF's load
+  our Android 11–16 images and Android 11/13 NVIDIA layer. File offsets account for each ELF's load
   segments; Android 17's current HWC already has the fix. Images and instance overlays stay
   unchanged; other binaries, including future fixed images, are left alone.
 - The HWC can also abort in `dmabuf_modifiers` with a Scudo double-free during startup (seen on
@@ -45,6 +45,14 @@ The window labelling proxy from this spike became `waydroid_manager/session/wlpr
   The proxy announces initial outputs after the other globals, before the roundtrip's `done`.
   The HWC's nested output roundtrip now drains the modifiers before it starts that second thread.
   Later output hotplug events pass through normally; no formats or modifiers are filtered out.
+- The pinned NVIDIA HWC can also hang in `window::create`: its event thread consumes the sync
+  callback while the window thread is blocked in `wl_display_roundtrip_queue`. The server sent
+  the reply, but the window thread waits for another event indefinitely. `container.fix_hwc`
+  gives the sync callback a private queue, then drains pending events from the requested queue.
+  The 228-byte replacement preserves the original function's stack layout, unwind metadata and
+  callback listener. Its assembly and link addresses are in `scripts/patches/hwc-roundtrip.*`.
+  A real-libwayland test runs 2,000 waits with a concurrent default dispatcher; the original
+  implementation hangs in the same test. The patch only applies to the SHA-pinned NVIDIA binary.
 
 ## UX observations
 - Full-UI windows have **no title bar on GNOME** (no server-side decorations; Waydroid's HWC
@@ -81,6 +89,47 @@ quinovax/waydroid-nvidia v0.1.2 (sha256 checked against its SHA256SUMS).
 - **Android 14–17 need only** the A13-built `vulkan.virtio.so` (x86 + x86_64) and
   `libgbm_mesa_wrapper.so`. Their own ANGLE and hwcomposer work; the A13 ANGLE breaks 14 ("no suitable
   EGLConfig"). Android 13 uses the full set (Venus, ANGLE, wrapper, hwcomposer).
+
+### Android 11 NVIDIA (2026-10-08)
+
+The same pinned `full13` layer also runs on Android 11 with two version-specific properties:
+
+- `service.sf.present_timestamp=0` breaks a startup deadlock. Android 11's
+  [Vulkan loader](https://android.googlesource.com/platform/frameworks/native/+/refs/heads/android11-release/vulkan/libvulkan/driver.cpp)
+  waits for this property while ANGLE initializes SurfaceFlinger, which hasn't published it yet.
+  Seed it before startup; SurfaceFlinger can then publish its actual value.
+- `ro.hardware.gralloc=minigbm_gbm_mesa` uses the allocator already in the image. Its older `gbm`
+  allocator reports `DRM_FORMAT_MOD_INVALID` for NVIDIA buffers, so Venus returns
+  `VK_ERROR_FORMAT_NOT_SUPPORTED` and UI apps abort. Minigbm exposes the buffer layout through
+  the CrOS gralloc API.
+
+On the RTX 5060 Ti with driver 595.99.02: fresh boot, manager and toolbar restart actions, Settings
+scrolling and screenshots passed; SurfaceFlinger reported NVIDIA/Venus, with no display crashes
+or kernel Xids. These tests exercise the runtime actions without physical mouse clicks.
+Switching the same instance from software to NVIDIA and back also preserved its Android ID.
+
+### Graphics restart matrix (2026-10-08)
+
+On this host, initial boot and both restart actions completed on every supported combination:
+
+| Android | NVIDIA RTX 5060 Ti | AMD integrated GPU | Software |
+|---|---|---|---|
+| 11 | passed | passed | passed |
+| 13 | passed | passed | passed |
+| 14 | passed | passed | passed (vkms) |
+| 15 | passed | passed | unsupported; rejected before starting |
+| 16 | passed | passed | passed |
+| 17 | passed | passed | passed (vkms) |
+
+The renderer was checked in SurfaceFlinger to rule out fallback. Settings opened and scrolled,
+screenshots contained rendered content, and the final restart runs had no HWC/SurfaceFlinger
+crashes. Android 11/13 NVIDIA were rerun with the private-queue fix above; the other graphics
+paths are unchanged. Three consecutive integration smoke runs passed with that fix.
+
+Two separate Android framework failures appeared earlier: a recovered SystemUI KeyguardService
+NullPointerException on Android 13/AMD's first boot, and a system_server Binder SIGSEGV when
+switching Android 11 back to software. Neither recurred in the subsequent restart/switch checks;
+their causes remain unverified. These checks do not cover games or long-duration workloads.
 
 ## Android images
 

@@ -20,7 +20,7 @@ in a container, not an emulator.
 
 | Android | Build | Google Play | NVIDIA | Download |
 |---|---|---|---|---|
-| 11 | official Waydroid (LineageOS 18.1) | in the image | – | 1.1 GB |
+| 11 | official Waydroid (LineageOS 18.1) | in the image | ✓ | 1.1 GB |
 | 13 | official Waydroid (LineageOS 20) | in the image | ✓ | 1.4 GB, nothing when your Waydroid has the same build |
 | 14 | [WayDroid-ATV](https://github.com/WayDroid-ATV) (LineageOS 21) | MindTheGapps | ✓ | 1.1 GB + 0.2 GB |
 | 15 *(experimental)* | [minhmc2007](https://huggingface.co/datasets/Minhmc2077/My_Binary_Build) (LineageOS 22.2) | MindTheGapps | ✓ | 1.2 GB + 0.2 GB |

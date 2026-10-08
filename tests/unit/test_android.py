@@ -261,8 +261,7 @@ class GpuTest(unittest.TestCase):
     def test_desktop_on_nvidia(self):
         self.assertEqual(self.modes("13", True, True), [("nvidia", None), ("software", None)])
         self.assertEqual(self.modes("17", True, True), [("nvidia", None), ("vkms", None)])
-        # no NVIDIA build for 11: never the iGPU, whose buffers the desktop can't show
-        self.assertEqual(self.modes("11", True, True)[0], ("software", None))
+        self.assertEqual(self.modes("11", True, True), [("nvidia", None), ("software", None)])
 
     def test_desktop_on_another_gpu_or_none(self):
         self.assertEqual(self.modes("16", False, True)[0], ("gpu", None))       # stock Waydroid's pick

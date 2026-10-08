@@ -8,7 +8,7 @@ quinovax/waydroid-nvidia's (docs/spike-findings.md):
 - host: virgl_test_server, virgl_render_server, libvirglrenderer.so.1
 - guest "venus": vulkan.virtio.so (x86, x86_64) and libgbm_mesa_wrapper.so, for 14 to 17,
   whose own ANGLE and hwcomposer work
-- guest "full13": also their ANGLE and hwcomposer, for 13
+- guest "full13": also their ANGLE and hwcomposer, for 11 and 13
 """
 import os
 import tarfile

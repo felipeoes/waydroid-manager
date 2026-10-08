@@ -6,6 +6,13 @@ follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions f
 
 ## [Unreleased]
 
+### Added
+- NVIDIA acceleration for Android 11, including Automatic graphics on an NVIDIA desktop.
+
+### Fixed
+- Prevent intermittent boot hangs in Android 11 and 13 with NVIDIA graphics when the display
+  driver's event thread consumes another thread's startup reply.
+
 ## [1.2.1] - 2026-10-08
 
 ### Fixed
