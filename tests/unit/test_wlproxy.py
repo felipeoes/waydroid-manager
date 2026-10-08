@@ -48,13 +48,14 @@ class Harness:
         return out
 
     def setup_globals(self, frame_globals=False):
-        self.req(msg(1, P.WL_DISPLAY_GET_REGISTRY, "n", REG))
+        self.req(msg(1, P.WL_DISPLAY_GET_REGISTRY, "n", REG), msg(1, P.WL_DISPLAY_SYNC, "n", 30))
         globs = [(1, "wl_compositor", 6), (2, "wl_subcompositor", 1), (3, "wp_viewporter", 1),
                  (4, "xdg_wm_base", 7), (5, "wl_seat", 9), (6, "wl_output", 4), (7, "wl_shm", 1),
                  (8, "wp_fractional_scale_manager_v1", 1)]
         if frame_globals:
             globs += [(9, "wp_single_pixel_buffer_manager_v1", 1), (10, "wp_cursor_shape_manager_v1", 2)]
         self.ev(*[msg(REG, P.WL_REGISTRY_EV_GLOBAL, "usu", n, i, v) for n, i, v in globs])
+        self.ev(msg(30, P.WL_CALLBACK_EV_DONE, "u", 1), msg(1, P.WL_DISPLAY_EV_DELETE_ID, "u", 30))
         binds = [(1, "wl_compositor", 5, COMP), (2, "wl_subcompositor", 1, SUBC), (3, "wp_viewporter", 1, VPR),
                  (4, "xdg_wm_base", 1, WM), (5, "wl_seat", 5, SEAT), (6, "wl_output", 3, OUT),
                  (8, "wp_fractional_scale_manager_v1", 1, FRAC_MGR)]
@@ -80,6 +81,37 @@ class Harness:
 def args(payload, sig):
     r = Reader(payload)
     return [getattr(r, k)() for k in sig]
+
+
+class RegistryStartupTest(unittest.TestCase):
+    def test_gpu_globals_precede_outputs_and_hotplug_is_not_delayed(self):
+        for dmabuf in (True, False):
+            with self.subTest(dmabuf=dmabuf):
+                h = Harness()
+                h.req(msg(1, P.WL_DISPLAY_GET_REGISTRY, "n", REG), msg(1, P.WL_DISPLAY_SYNC, "n", 30))
+                output = msg(REG, P.WL_REGISTRY_EV_GLOBAL, "usu", 1, "wl_output", 3)
+                self.assertEqual(h.ev(output), [])
+                if dmabuf:
+                    gpu = msg(REG, P.WL_REGISTRY_EV_GLOBAL, "usu", 2, "zwp_linux_dmabuf_v1", 3)
+                    self.assertEqual(h.ev(gpu), parse(gpu))
+                done = msg(30, P.WL_CALLBACK_EV_DONE, "u", 1)
+                self.assertEqual(h.ev(done), parse(output + done))
+                hotplug = msg(REG, P.WL_REGISTRY_EV_GLOBAL, "usu", 3, "wl_output", 3)
+                self.assertEqual(h.ev(hotplug), parse(hotplug))
+
+    def test_initial_output_removal_and_no_outputs(self):
+        for outputs in (0, 2):
+            with self.subTest(outputs=outputs):
+                h = Harness()
+                h.req(msg(1, P.WL_DISPLAY_GET_REGISTRY, "n", REG), msg(1, P.WL_DISPLAY_SYNC, "n", 30))
+                events = b"".join(msg(REG, P.WL_REGISTRY_EV_GLOBAL, "usu", n, "wl_output", 3)
+                                  for n in range(1, outputs + 1))
+                if outputs:
+                    events += msg(REG, P.WL_REGISTRY_EV_GLOBAL_REMOVE, "u", 1)
+                self.assertEqual(h.ev(events), [])
+                done = msg(30, P.WL_CALLBACK_EV_DONE, "u", 1)
+                self.assertEqual(h.ev(done), parse(events + done))
+                self.assertNotIn(1, h.s.globals)
 
 
 class LabelTest(unittest.TestCase):
