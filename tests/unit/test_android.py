@@ -33,6 +33,11 @@ class CatalogTest(unittest.TestCase):
         self.assertIn("android", CREATE_ONLY)
         self.assertEqual(Instance.new("5", 5, 1000, "", {}, {}).get("android"), catalog.DEFAULT)
 
+    def test_normal_adb_for_images_without_a_default(self):
+        for key in ("15", "16"):
+            with self.subTest(android=key):
+                self.assertEqual(catalog.get(key, "props")["persist.sys.usb.config"], "adb")
+
     def test_a_version_we_dont_offer(self):
         # #0's before its first sync (None, '' over D-Bus) or stock on Android 10: defaults, no KeyError
         self.assertTrue(catalog.get(None, "software", True))

@@ -77,7 +77,8 @@ Then open **Waydroid Manager** from your app grid.
   Known display startup crashes in Android 11–16 are fixed automatically.
 - The window turns with Android: a landscape game in a portrait device turns it to landscape, and
   it turns back when the game closes.
-- Running devices show up in `adb devices` as `waydroid-<name>:5555`.
+- Running devices show up in `adb devices` as `waydroid-<name>:5555`. ADB is enabled by default
+  on every supported Android version and stays available after Android setup and restarts.
 - **Root** (Magisk Delta): turn it on in Settings, then install the Magisk app with
   `waydroid-manager app install N /var/lib/waydroid-manager/magisk-delta.apk`. Root in Android is
   close to root on your PC: only use it on machines you trust.
