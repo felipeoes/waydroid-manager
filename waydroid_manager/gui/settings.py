@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
-"""Settings windows for the instance windows' Settings button, all from one background process.
+"""Settings windows and full restarts from the instance toolbar, in one background process.
 
 The first click starts it, in a unit of its own (client.open_settings). Later clicks reach it over
 D-Bus, so their window opens at once instead of after a new GTK process's ~0.3 s start. It quits
@@ -27,18 +27,23 @@ class SettingsApp(Adw.Application):
         super().__init__(application_id=APP_ID, flags=Gio.ApplicationFlags.HANDLES_COMMAND_LINE)
         self.windows = {}       # instance id -> its InstanceDialog; None while its info is on the way
         self.busy = 0           # saves, restarts and error messages under way
+        self.restarting = set()
+        self.add_main_option("restart", 0, GLib.OptionFlags.NONE, GLib.OptionArg.NONE,
+                             "Restart the instance", None)
 
     def do_startup(self):
         Adw.Application.do_startup(self)
         self.hold()             # runs on without a window, until quit_if_idle
         self.backend = Backend(self.quit_if_idle)       # called when an instance starts or stops
-        a = Gio.SimpleAction.new("open", GLib.VariantType.new("s"))
-        a.connect("activate", lambda _a, iid: self.open(iid.get_string()))
-        self.add_action(a)
+        for name, cb in (("open", self.open), ("restart", self.restart)):
+            a = Gio.SimpleAction.new(name, GLib.VariantType.new("s"))
+            a.connect("activate", lambda _a, iid, cb=cb: cb(iid.get_string()))
+            self.add_action(a)
 
     def do_command_line(self, cmd):
+        action = self.restart if cmd.get_options_dict().contains("restart") else self.open
         for iid in cmd.get_arguments()[1:]:
-            self.open(iid)
+            action(iid)
         return 0
 
     def open(self, iid):
@@ -90,7 +95,7 @@ class SettingsApp(Adw.Application):
     def saved(self, iid, needs_restart):
         def got(info):          # its state now, and its new name
             if info["state"] in ACTIVE:
-                restart_dialog(info["name"], lambda: self.restart(info), self.done).present(None)
+                restart_dialog(info["name"], lambda: (self.restart(iid), self.done()), self.done).present(None)
             else:
                 self.done()
         if needs_restart:
@@ -98,15 +103,23 @@ class SettingsApp(Adw.Application):
         else:
             self.done()
 
-    def restart(self, info):
-        iid, name = info["id"], info["name"]
+    def restart(self, iid):
+        if iid in self.restarting:
+            return
+        self.restarting.add(iid)
+        self.busy += 1
 
-        def stopped(ok, out):
+        def done(ok, out):
+            self.restarting.discard(iid)
             if not ok:
-                return self.alert("Could not stop “{}”".format(name), out, self.done)
-            self.backend.run_cli(["start", iid], lambda ok, out: self.done() if ok else
-                                 self.alert("Could not start “{}”".format(name), out, self.done))
-        self.backend.run_cli(["stop", iid], stopped)
+                self.alert("Could not restart #{}".format(iid), out)
+            self.done()
+
+        def got(info):
+            if info["state"] not in ACTIVE:
+                return done(False, "The instance is no longer running.")
+            self.backend.restart(iid, done)
+        self.backend.call("Get", iid, ok=got, fail=lambda msg: done(False, msg), timeout=30)
 
 
 def main(argv=None):

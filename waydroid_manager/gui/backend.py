@@ -80,6 +80,15 @@ class Backend:
             return {str(k): str(x) for k, x in v.items()}
         return str(v)
 
+    def restart(self, iid, done):
+        """Stop the session, then start it with saved settings; done(ok, output)."""
+        def stopped(ok, out):
+            if ok:
+                self.run_cli(["start", iid], done)
+            else:
+                done(False, out)
+        self.run_cli(["stop", iid], stopped)
+
     def run_cli(self, args, done=None):
         """Run 'waydroid-manager <args>' without blocking; done(ok, output)."""
         launcher = Gio.SubprocessLauncher.new(Gio.SubprocessFlags.STDOUT_PIPE | Gio.SubprocessFlags.STDERR_MERGE)

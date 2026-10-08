@@ -158,6 +158,8 @@ class Session:
             self.pick_apk()
         elif ev == "action settings":
             open_settings(self.iid)
+        elif ev == "action restart":
+            open_settings(self.iid, restart=True)
         elif ev.startswith("install "):           # an APK dropped on the window
             self.install_apk(ev[len("install "):])
         elif ev.startswith("action key "):
