@@ -6,6 +6,10 @@ follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions f
 
 ## [Unreleased]
 
+### Fixed
+- Prevent display service crash loops during startup and restart in affected Android 11–16
+  builds, including Android 13 with NVIDIA graphics.
+
 ## [1.2.0] - 2026-10-08
 
 ### Added

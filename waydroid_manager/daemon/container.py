@@ -6,6 +6,7 @@ paths. Callers hold the instance lock.
 """
 import configparser
 import glob
+import hashlib
 import os
 import platform
 import pwd
@@ -20,7 +21,7 @@ from .. import catalog, devices, gpu, lxcconfig, paths, stock, stockctl
 from ..instance import PROTECTED_PROP_RE, Instance
 from . import armtrans, binder, images, magisk, nvidia, storage
 from .util import (CommandError, apparmor_profile_loaded, attach, bind, bind_file, bind_mount, chown_tree_top,
-                   is_mount, log, lxc_state, mount_image, mount_overlay, run, stage_dir, stage_socket,
+                   is_mount, log, lxc_state, mount_image, mount_overlay, open_beneath, run, stage_dir, stage_socket,
                    umount_tree)
 
 DEVICE_NODES = [
@@ -53,6 +54,16 @@ DEVICE_DENY = "lxc.cgroup2.devices.allow = a\nlxc.cgroup2.devices.deny = c 10:23
 GRAPHICS_PROPS = ("ro.hardware.gralloc", "ro.hardware.egl", "ro.hardware.vulkan")
 APPARMOR_PROFILE = "lxc-waydroid-manager"   # lxc-start may only switch to lxc-* profiles
 APPARMOR_FILE = os.path.join(paths.RUN_DIR, "apparmor-profile")
+# ponytail: only inspected x86_64 builds before upstream bb49e333f3ab; inspect new builds before adding pins.
+# SHA-256 -> call's file offset.
+HWC_THREADPOOL_CALLS = {
+    "7b84d9fafffd52eae8b3f5432edaeeca751effdbca0fe02dc6c860c7826502da": 0x3b56d,  # 11
+    "34a0ab934e0fb83ed1f7b290dd52c0a1073e6458c408f1f8463cbfa477005a51": 0x42a3d,  # 13
+    "2bac9ae23e4536a1e2a5ea36be25e07d3430e64cfe53668c3ffa5124ec715d24": 0x4e010,  # 13 NVIDIA
+    "bf39b3fcec73945909c4057aa44dbed0340a7a106b50182f1a114295cf646152": 0x3feae,  # 14
+    "4109935a746069db0eee6268ec9ed2e87688a29647b4a9bc4f4a582102c3dc64": 0x3d37d,  # 15
+    "9908498c71cbe8e52ec4bc4b532ebebcd6f55c0342590ecb63358c240757b931": 0x3d57d,  # 16
+}
 
 
 def _stock_stopped():
@@ -390,6 +401,36 @@ def sync_root(inst):
         magisk.remove(inst)
 
 
+def fix_hwc_threadpool(inst):
+    """Backport the HWC's threadpool fix to the known broken binary, for this mount only."""
+    rel = "vendor/lib64/hw/hwcomposer.waydroid.so"
+    try:
+        fd = open_beneath(inst.rootfs, rel, os.O_RDONLY | os.O_NONBLOCK)
+    except FileNotFoundError:
+        return
+    with os.fdopen(fd, "rb") as src:
+        if not stat.S_ISREG(os.fstat(src.fileno()).st_mode):
+            raise RuntimeError("hwcomposer is not a regular file")
+        data = src.read(1 << 20)   # all known binaries are smaller; bound reads of guest files
+        offset = HWC_THREADPOOL_CALLS.get(hashlib.sha256(data).hexdigest())
+        if offset is None:
+            return
+        # NOP the call to configureRpcThreadpool(1, true) in hwc_binder_thread. The composer
+        # service already configured four threads; shrinking its pool races startup and aborts.
+        # https://github.com/WayDroid-ATV/android_hardware_waydroid/commit/bb49e333f3abb604f0eccba20168337117b754e8
+        data = data[:offset] + b"\x90" * 5 + data[offset + 5:]
+        copy = os.path.join(inst.dir, "hwcomposer.waydroid.so")
+        with open(copy + ".tmp", "wb") as patched:
+            patched.write(data)
+            patched.flush()
+            os.fchmod(patched.fileno(), 0o644)
+            os.replace(copy + ".tmp", copy)
+            # Mount through the checked fds: writable guest overlays may contain hostile links.
+            # Keep the copy linked: Android's HAL loader requires realpath() to resolve it.
+            bind_mount("/proc/self/fd/{}".format(patched.fileno()), "/proc/self/fd/{}".format(src.fileno()))
+        log.info("%s: applied display threadpool fix", inst.id)
+
+
 def mount_rootfs(inst, images_dir, gpu_layers=()):
     """system.img + overlays, vendor.img + overlays, like stock mount_rootfs. Below the instance's
     own layer come the shared ones: GPU (NVIDIA's guest build), ARM translation, Google Play,
@@ -415,6 +456,7 @@ def mount_rootfs(inst, images_dir, gpu_layers=()):
     mount_overlay(vlowers + [rootfs + "/vendor"], rootfs + "/vendor",
                   os.path.join(inst.dir, "overlay_rw/vendor"), os.path.join(inst.dir, "overlay_work/vendor"),
                   writable=inst.getbool("system_writable"))
+    fix_hwc_threadpool(inst)
     for egl_path in ("/vendor/lib/egl", "/vendor/lib64/egl"):
         if os.path.isdir(egl_path):
             bind(egl_path, rootfs + egl_path)
