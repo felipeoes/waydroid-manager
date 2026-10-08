@@ -6,6 +6,14 @@ follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions f
 
 ## [Unreleased]
 
+### Added
+- Restart buttons in the manager and each instance's toolbar. They stop and start the instance,
+  apply saved settings and reopen its window.
+
+### Fixed
+- Toolbar tooltips stay above Android's display, reappear after scrolling, and cancel when the
+  pointer leaves before they open.
+
 ## [1.1.1] - 2026-10-07
 
 ### Fixed

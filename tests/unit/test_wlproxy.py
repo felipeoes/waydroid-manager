@@ -395,7 +395,7 @@ class FrameTest(unittest.TestCase):
         for fd in h.c2s.fds:
             os.close(fd)
 
-    def test_grips_stay_above_late_content_layers(self):
+    def test_tooltips_and_grips_stay_above_late_content_layers(self):
         h = self.h
         f = h.s.window.frame
         # Android 13 creates its content after the first toplevel commit/configure roundtrip.
@@ -403,9 +403,10 @@ class FrameTest(unittest.TestCase):
             out = h.req(msg(COMP, P.WL_COMPOSITOR_CREATE_SURFACE, "n", sid),
                         msg(SUBC, P.WL_SUBCOMPOSITOR_GET_SUBSURFACE, "noo", sub, sid, S),
                         msg(S, P.WL_SURFACE_COMMIT))
+            overlays = [f[kind + "_sub"] for kind in ("toolbar",) + wp.GRIP_KINDS]
             stacking = [(o, args(p, "o")[0]) for o, op, p in out if op == P.WL_SUBSURFACE_PLACE_ABOVE
-                        and o in (f["grip_left_sub"], f["grip_bottom_sub"])]
-            self.assertEqual(stacking, [(f[kind + "_sub"], sid) for kind in wp.GRIP_KINDS])
+                        and o in overlays]
+            self.assertEqual(stacking, [(subid, sid) for subid in overlays])
             ops = [(o, op) for o, op, _ in out]
             for subid, _ in stacking:
                 self.assertLess(ops.index((SUBC, P.WL_SUBCOMPOSITOR_GET_SUBSURFACE)),
@@ -487,22 +488,57 @@ class FrameTest(unittest.TestCase):
         f = h.s.window.frame
         # the tooltip never takes input: it gets an (empty) input region at creation
         self.assertIn(P.WL_SURFACE_SET_INPUT_REGION, [op for o, op, _ in self.out if o == f["tip"]])
-        y0, y1 = [(a, b) for x, a, b in wp.fr.toolbar_layout(720) if x == "install"][0]
-        out = h.ev(msg(PTR, P.WL_POINTER_EV_ENTER, "uoff", 9, f["toolbar"], fixed(20.0), fixed((y0 + y1) / 2)))
-        self.assertEqual(out, [])
-        h.server_out()
-        self.assertFalse(h.s.tick())                             # not before the delay
-        h.s.tip_due = (0, h.s.tip_due[1])
-        self.assertTrue(h.s.tick())
-        out = h.server_out()
-        w, th = wp.fr.tooltip_size("Install APK")
-        pos = [args(p, "ii") for o, op, p in out if o == f["tip_sub"] and op == P.WL_SUBSURFACE_SET_POSITION]
-        self.assertEqual(pos, [[-w - 6, (y0 + y1 - th) // 2]])  # left of the button, centred on it
-        self.assertIn((f["toolbar"], P.WL_SURFACE_COMMIT), [(o, op) for o, op, _ in out])
-        h.ev(msg(PTR, P.WL_POINTER_EV_LEAVE, "uo", 12, f["toolbar"]))
-        attach = [args(p, "oii") for o, op, p in h.server_out() if o == f["tip"] and op == P.WL_SURFACE_ATTACH]
-        self.assertEqual(attach, [[0, 0, 0]])                   # hidden
+        h.s.set_zoom(1)                                        # all buttons fit, including navigation
+        for action, y0, y1 in wp.fr.toolbar_layout(f["sizes"]["toolbar"][1]):
+            if action is None:
+                continue
+            with self.subTest(action=action):
+                out = h.ev(msg(PTR, P.WL_POINTER_EV_ENTER, "uoff", 9, f["toolbar"], fixed(20.0),
+                               fixed((y0 + y1) / 2)))
+                self.assertEqual(out, [])
+                h.server_out()
+                self.assertFalse(h.s.tick())                    # not before the delay
+                self.assertEqual(h.s.tip_due[1], action)
+                h.s.tip_due = (0, action)
+                self.assertTrue(h.s.tick())
+                out = h.server_out()
+                w, th = wp.fr.tooltip_size(wp.fr.TOOLTIPS[action])
+                pos = [args(p, "ii") for o, op, p in out
+                       if o == f["tip_sub"] and op == P.WL_SUBSURFACE_SET_POSITION]
+                self.assertEqual(pos, [[-w - 6, (y0 + y1 - th) // 2]])   # left of the button, centred
+                self.assertIn((f["toolbar"], P.WL_SURFACE_COMMIT), [(o, op) for o, op, _ in out])
+                h.ev(msg(PTR, P.WL_POINTER_EV_LEAVE, "uo", 12, f["toolbar"]))
+                attach = [args(p, "oii") for o, op, p in h.server_out()
+                          if o == f["tip"] and op == P.WL_SURFACE_ATTACH]
+                self.assertEqual(attach, [[0, 0, 0]])            # hidden
+                self.assertIsNone(h.s.tip_due)
+        for fd in h.c2s.fds:
+            os.close(fd)
+
+    def test_leaving_toolbar_cancels_pending_tooltip(self):
+        h = self.h
+        toolbar = h.s.window.frame["toolbar"]
+        h.ev(msg(PTR, P.WL_POINTER_EV_ENTER, "uoff", 9, toolbar, fixed(20), fixed(20)))
+        self.assertIsNotNone(h.s.tip_due)
+        h.ev(msg(PTR, P.WL_POINTER_EV_LEAVE, "uo", 10, toolbar))
         self.assertIsNone(h.s.tip_due)
+        self.assertFalse(h.s.tick())
+        for fd in h.c2s.fds:
+            os.close(fd)
+
+    def test_scroll_rearms_tooltip_for_button_under_pointer(self):
+        h = self.h
+        h.s.set_zoom(0.25)
+        toolbar = h.s.window.frame["toolbar"]
+        h.ev(msg(PTR, P.WL_POINTER_EV_ENTER, "uoff", 9, toolbar, fixed(20), fixed(20)))
+        h.s.tip_due = (0, "settings")
+        self.assertTrue(h.s.tick())
+        h.ev(msg(PTR, P.WL_POINTER_EV_AXIS, "uuf", 10, 0, fixed(40.5)))
+        self.assertIsNone(h.s.tip_shown)
+        self.assertEqual(h.s.tip_due[1], "restart")
+        h.s.tip_due = (0, "restart")
+        self.assertTrue(h.s.tick())
+        self.assertEqual(h.s.tip_shown, "restart")
         for fd in h.c2s.fds:
             os.close(fd)
 
@@ -528,17 +564,19 @@ class FrameTest(unittest.TestCase):
         for fd in h.c2s.fds:
             os.close(fd)
 
-    def test_toolbar_settings_asks_session(self):
+    def test_toolbar_settings_and_restart_ask_session(self):
         h = self.h
         layout = wp.fr.toolbar_layout(h.s.window.frame["sizes"]["toolbar"][1])
         self.assertEqual(layout[0][0], "settings")               # first, so a short window keeps it
-        y0, y1 = layout[0][1:]
-        out = h.ev(msg(PTR, P.WL_POINTER_EV_ENTER, "uoff", 9, h.s.window.frame["toolbar"], fixed(20.0),
-                       fixed((y0 + y1) / 2)),
-                   msg(PTR, P.WL_POINTER_EV_BUTTON, "uuuu", 10, 0, P.BTN_LEFT, 1),
-                   msg(PTR, P.WL_POINTER_EV_BUTTON, "uuuu", 11, 0, P.BTN_LEFT, 0))
-        self.assertEqual(out, [])
-        self.assertIn("action settings", h.events)
+        self.assertEqual(layout[1][0], "restart")
+        for action, y0, y1 in layout[:2]:
+            with self.subTest(action=action):
+                out = h.ev(msg(PTR, P.WL_POINTER_EV_ENTER, "uoff", 9, h.s.window.frame["toolbar"], fixed(20.0),
+                               fixed((y0 + y1) / 2)),
+                           msg(PTR, P.WL_POINTER_EV_BUTTON, "uuuu", 10, 0, P.BTN_LEFT, 1),
+                           msg(PTR, P.WL_POINTER_EV_BUTTON, "uuuu", 11, 0, P.BTN_LEFT, 0))
+                self.assertEqual(out, [])
+                self.assertEqual(h.events.count("action " + action), 1)
         for fd in h.c2s.fds:
             os.close(fd)
 

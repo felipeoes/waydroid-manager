@@ -11,7 +11,7 @@ It gives every instance window an identity and a frame:
   to 1 (``wl_output.scale`` and fractional scale are rewritten), and configure
   sizes are hidden from it (any real size triggers an Android display hotplug).
 * **Frame** (full-UI window only): a title bar (move, minimize, close), an
-  attached side toolbar (Settings, Back, Home, Recents, volume, screenshot,
+  attached side toolbar (Settings, Restart, Back, Home, Recents, volume, screenshot,
   Install APK, fullscreen) with tooltips, and an invisible resize border. These are proxy-owned
   subsurfaces; events for them are never forwarded to the HWC, which aborts on
   unknown object ids.
@@ -844,9 +844,10 @@ class Session:
                     self.surfaces[parent].children.append(sid)
             w = self.window
             if w and w.frame and parent == w.surface:
-                # New HWC layers start above existing siblings, including our inside-edge grips.
+                # New HWC layers would cover the toolbar's tooltip and our inside-edge grips.
                 return [msg(obj, op, "noo", new, sid, parent)] + [
-                    msg(w.frame[kind + "_sub"], P.WL_SUBSURFACE_PLACE_ABOVE, "o", sid) for kind in GRIP_KINDS]
+                    msg(w.frame[kind + "_sub"], P.WL_SUBSURFACE_PLACE_ABOVE, "o", sid)
+                    for kind in ("toolbar",) + GRIP_KINDS]
             return None
         if iface == "wp_viewporter" and op == P.WP_VIEWPORTER_GET_VIEWPORT:
             new, sid = r.n(), r.o()
@@ -1848,7 +1849,7 @@ class Session:
     def _tip(self, action):
         """Hovered toolbar button changed: tooltip after a short delay, or at once when one is
         already up (moving along the toolbar), like GTK."""
-        if action == self.tip_shown:
+        if action == self.tip_shown and self.tip_due is None:
             return
         showing = self.tip_shown
         if showing:
@@ -1981,6 +1982,7 @@ class Session:
             self._tip(None)
             self.hover["toolbar"] = self._hit("toolbar", *self.ptr_pos)
             self._redraw("toolbar")
+            self._tip(self.hover["toolbar"])
 
     def _frame_leave(self, sid):
         kind = getattr(self, "surface_kinds", {}).get(sid)
@@ -2060,7 +2062,7 @@ class Session:
             # KEYCODE_APP_SWITCH (580) is dropped by the hwcomposer: the session
             # asks the daemon to write it into Android's keyboard input instead
             self.emit("action key 580")
-        elif action in ("screenshot", "install", "settings"):
+        elif action in ("screenshot", "install", "settings", "restart"):
             self.emit("action " + action)
         elif action == "fullscreen":
             self.toggle_fullscreen()

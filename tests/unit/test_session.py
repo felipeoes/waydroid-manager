@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
-"""Session startup uses the daemon's effective Android version."""
+"""Session startup and toolbar action delegation."""
 import os
 import tempfile
 import unittest
@@ -10,6 +10,13 @@ from waydroid_manager.session import main
 
 
 class ProxyStartupTest(unittest.TestCase):
+    def test_restart_delegates_to_the_independent_settings_app(self):
+        session = main.Session.__new__(main.Session)
+        session.iid = "1"
+        with mock.patch.object(main, "open_settings") as settings:
+            session.handle_proxy_event("action restart")
+            settings.assert_called_once_with("1", restart=True)
+
     def test_stock_pointer_mode_follows_its_images(self):
         session = main.Session.__new__(main.Session)
         session.iid = "0"
