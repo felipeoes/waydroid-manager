@@ -169,6 +169,26 @@ Notes:
 - An overlay layer must contain `system/…`. Mounting a layer's `system/` at the image root hides the
   `/product` and `/system_ext` symlinks, and boot hangs.
 
+### ADB defaults through setup and restart (2026-10-08)
+
+Fresh instances of every offered version were checked before setup, after setting both
+`device_provisioned` and `user_setup_complete`, and after a stop/start. On the 1.3.0 package:
+
+| Android | Normal ADB default | After setup and restart |
+|---|---|---|
+| 11, 13, 14, 17 | `persist.sys.usb.config=adb`, `adb_enabled=1` | Connected; shell works |
+| 15 | `persist.sys.usb.config=none`, `adb_enabled=0` | Shell works because its init script starts adbd at boot |
+| 16 | `persist.sys.usb.config=none`; temporary trade-in ADB during setup | adbd stops, `adb_enabled=0`; no connection |
+
+16's temporary connection can appear in `adb devices` while rejecting ordinary shell commands.
+`TradeInModeService` stops it when setup finishes and saves `persist.adb.tradeinmode=-1`.
+The session only authorizes the host key and connects; it does not enable Android debugging.
+
+The 15/16 catalog properties now set `persist.sys.usb.config=adb` before Android starts. This
+selects normal ADB before trade-in mode can activate; `ro.adb.secure=1` and the existing host-key
+authorization remain in effect. `tests/integration/adb.sh` exercises fresh setup and restart
+on all six versions, checking shell access, the debugging setting, and secure normal ADB.
+
 ### 14 and 15 bugs and workarounds
 - **14 + AMD:** `allocator@4.0-service.minigbm_amdgpu: Failed to initialize driver`, fixed by the props
   above. On this host GNOME (on NVIDIA) then rejects the AMD dmabufs (mutter#3930, the same as 13 on the

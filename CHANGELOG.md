@@ -6,6 +6,10 @@ follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions f
 
 ## [Unreleased]
 
+### Fixed
+- Enable normal ADB by default on Android 15 and 16. Android 16 no longer disappears from
+  `adb devices` when initial setup finishes or the instance restarts.
+
 ## [1.3.0] - 2026-10-08
 
 ### Added
