@@ -74,6 +74,7 @@ Then open **Waydroid Manager** from your app grid.
   screenshot, Install APK and fullscreen (**F11**). Hover over a button to see its label.
   Drop `.apk` files on the window to install them.
 - Restart immediately stops and starts the device, applies saved settings and reopens the full Android UI.
+  Known display startup crashes in Android 11–16 are fixed automatically.
 - The window turns with Android: a landscape game in a portrait device turns it to landscape, and
   it turns back when the game closes.
 - Running devices show up in `adb devices` as `waydroid-<name>:5555`.

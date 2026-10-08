@@ -31,8 +31,20 @@ The window labelling proxy from this spike became `waydroid_manager/session/wlpr
 - LXC `script.up` for veth gets `$1=name $2=net $3=up $4=veth $5=<link/bridge> $6=<host veth>`.
 - `lxc-attach` changes the mode of its stdout file → pipe its output.
 - `abx2xml`, `pm`, etc. need the full Android environment (`ANDROID_ENV` + generated classpath).
-- One boot showed a composer abort "Binder threadpool cannot be shrunk after starting" (vendor HWC
-  race, observed with `cpuset=0-3`); the HAL restarted itself and the window came up.
+- Older vendor HWC builds race their composer service's threadpool setup, aborting with
+  "Binder threadpool cannot be shrunk after starting" and repeatedly closing the window during boot.
+  [Upstream fixed it](https://github.com/WayDroid-ATV/android_hardware_waydroid/commit/bb49e333f3abb604f0eccba20168337117b754e8)
+  after the Android 16 20260717 image was released. `container.fix_hwc_threadpool` removes the same
+  redundant call from per-instance bind-mounted copies of the SHA-256-pinned x86_64 binaries in
+  our Android 11–16 images and Android 13 NVIDIA layer. File offsets account for each ELF's load
+  segments; Android 17's current HWC already has the fix. Images and instance overlays stay
+  unchanged; other binaries, including future fixed images, are left alone.
+- The HWC can also abort in `dmabuf_modifiers` with a Scudo double-free during startup (seen on
+  Android 13 NVIDIA and 15). Its initial registry roundtrip starts a dispatch thread before all
+  modifier events arrive; window creation then dispatches the same callbacks on another thread.
+  The proxy announces initial outputs after the other globals, before the roundtrip's `done`.
+  The HWC's nested output roundtrip now drains the modifiers before it starts that second thread.
+  Later output hotplug events pass through normally; no formats or modifiers are filtered out.
 
 ## UX observations
 - Full-UI windows have **no title bar on GNOME** (no server-side decorations; Waydroid's HWC

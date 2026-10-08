@@ -552,6 +552,8 @@ class Session:
         self.objs = {}           # client object id -> interface name
         self.registries = set()
         self.globals = {}        # name -> (interface, version)
+        self.initial_sync = None
+        self.pending_outputs = []  # announce outputs last during the initial registry roundtrip
         self.surfaces = {}       # id -> Surf
         self.viewports = {}      # viewport id -> surface id
         self.subsurfaces = {}    # subsurface id -> surface id
@@ -808,6 +810,8 @@ class Session:
                 rid = r.n()
                 self.objs[rid] = "wl_registry"
                 self.registries.add(rid)
+            elif op == P.WL_DISPLAY_SYNC and self.initial_sync is None and self.pending_outputs is not None:
+                self.initial_sync = r.n()
             return None
         if iface is None:
             return None
@@ -1159,6 +1163,10 @@ class Session:
         if obj in self.mine:
             self._my_event(obj, op, payload)
             return []
+        if obj == self.initial_sync and op == P.WL_CALLBACK_EV_DONE:
+            pending, self.pending_outputs = self.pending_outputs, None
+            self.initial_sync = None
+            return pending + [build_message(obj, op, payload)] if pending else None
         iface = self.objs.get(obj)
         r = Reader(payload)
         if obj == 1:
@@ -1178,8 +1186,15 @@ class Session:
                 gi = r.s()
                 ver = r.u()
                 self.globals[name] = (gi, ver)
+                if gi == "wl_output" and self.pending_outputs is not None:
+                    # Let the HWC's output roundtrip drain dmabuf modifiers before starting its dispatch thread.
+                    self.pending_outputs.append(build_message(obj, op, payload))
+                    return []
             elif op == P.WL_REGISTRY_EV_GLOBAL_REMOVE:
                 self.globals.pop(r.u(), None)
+                if self.pending_outputs is not None:
+                    self.pending_outputs.append(build_message(obj, op, payload))
+                    return []
             return None
         if iface == "wl_shm" and op == P.WL_SHM_EV_FORMAT:
             self.shm_formats.add(r.u())
