@@ -37,7 +37,9 @@ MTG14 = ("https://github.com/s1204IT/MindTheGappsBuilder/releases/download/20250
 #   videodev     ueventd needs /sys/class/video4linux on the host
 #   experimental shown as such: a single maintainer's build or a pre-release
 VERSIONS = {
-    "11": dict(sdk=30, ota=_OFFICIAL + ("18.1",), gb=1.1),
+    # 11 needs minigbm's buffer modifiers and the timestamp property before ANGLE initializes.
+    "11": dict(sdk=30, ota=_OFFICIAL + ("18.1",), gb=1.1, nvidia="full13",
+               nvidia_props={"service.sf.present_timestamp": "0", "ro.hardware.gralloc": "minigbm_gbm_mesa"}),
     "13": dict(sdk=33, ota=_OFFICIAL + ("20.0",), gb=1.4, nvidia="full13"),
     "14": dict(sdk=34, gb=1.1, gapps="mtg14", provision=True, software="vkms", nvidia="venus", loop=True,
                zip=("https://github.com/WayDroid-ATV/waydroid-builds/releases/download/20260125/"
