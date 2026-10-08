@@ -47,13 +47,16 @@ VERSIONS = {
                     "68019da4e0629d9cb1ba5abb0ec385091a2172e441aec78768f7e473d6f581eb", "20260125"),
                props={"gralloc.override": "0", "ro.hardware.gralloc": "minigbm_gbm_mesa"},
                software_props={"ro.hardware.gralloc": "minigbm_generic"}),
+    # 15/16 omit normal ADB; 16's temporary trade-in ADB stops when setup finishes.
     "15": dict(sdk=35, gb=1.2, gapps="mtg14", software=False, nvidia="venus", experimental=True, loop=True,
                zip=("https://huggingface.co/datasets/Minhmc2077/My_Binary_Build/resolve/main/"
                     "LineageOS-22.2-WayDroidx86_64-Vanilla.zip",
                     "3febfdb12f7a930315272df102b9907ffc65fc21570e5b6d005bbd4de7f6685c", "20261005"),
-               props={"ro.gralloc.override": "0", "ro.hardware.gralloc": "minigbm_gbm_mesa", "qemu.hw.mainkeys": "1"}),
+               props={"ro.gralloc.override": "0", "ro.hardware.gralloc": "minigbm_gbm_mesa", "qemu.hw.mainkeys": "1",
+                      "persist.sys.usb.config": "adb"}),
     "16": dict(sdk=36, ota=_atv("a16-qpr2") + ("23.2",), gb=1.6, nvidia="venus", loop=True,
-               props={"qemu.hw.mainkeys": "1"}, nvidia_props={"ro.waydroid.override_props": "0"}),
+               props={"qemu.hw.mainkeys": "1", "persist.sys.usb.config": "adb"},
+               nvidia_props={"ro.waydroid.override_props": "0"}),
     "17": dict(sdk=37, ota=_atv("a17") + ("24.0",), gb=1.7, nvidia="venus", experimental=True,
                gapps="gms_apex", loop=True, videodev=True, software="vkms",
                props={"qemu.hw.mainkeys": "1"},

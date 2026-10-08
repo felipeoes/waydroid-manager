@@ -294,6 +294,7 @@ also uses librsvg and PangoCairo through GObject introspection, for icons and te
 python3 -m unittest discover -s tests/unit -t .     # unit tests (no root, no Waydroid needed)
 sudo scripts/install.sh                             # install and restart the daemon
 tests/integration/smoke.sh [some.apk]               # end-to-end test on a real host
+tests/integration/adb.sh [11 13 14 15 16 17]         # ADB through setup/restart on each version
 ```
 
 `smoke.sh` creates instances named "Smoke …", checks booting, networking, isolation,
