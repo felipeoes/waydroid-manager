@@ -521,10 +521,11 @@ def host_timezone():
 
 
 def stock_props(inst, arm, mode):
-    """Stock Waydroid's [properties] a start keeps (arm, mode: see write_props)."""
+    """Stock Waydroid's [properties] a start keeps, over our defaults (arm, mode: see write_props)."""
     kind = inst.get("arm_translation")
     stock_way = runs_stock_android(inst)
-    out = {}
+    # Clicks reach apps as touches, as on a phone: touch-only apps (most games) ignore mouse input
+    out = {"persist.waydroid.fake_touch": "*"}
     for k, v in stock.load_stock_cfg()["properties"].items():
         # stock's graphics choice holds while #0 renders as stock does; elsewhere ours follow
         # the Graphics setting
