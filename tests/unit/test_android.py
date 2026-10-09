@@ -357,6 +357,11 @@ class StockPropsTest(unittest.TestCase):
         self.assertNotIn("ro.dalvik.vm.native.bridge", self.props(3, "13", arm_translation="none"))
         self.assertEqual(self.props(3, "14")["persist.waydroid.multi_windows"], "true")
 
+    def test_clicks_are_touches_unless_stock_says_otherwise(self):
+        self.assertEqual(self.props(3, "13")["persist.waydroid.fake_touch"], "*")
+        self.STOCK = dict(self.STOCK, **{"persist.waydroid.fake_touch": "com.example.game"})
+        self.assertEqual(self.props(3, "13")["persist.waydroid.fake_touch"], "com.example.game")
+
     def test_stock_graphics_choice_only_for_0_as_stock_renders(self):
         self.assertIn("ro.hardware.gralloc", self.props(0, "13"))
         self.assertNotIn("ro.hardware.gralloc", self.props(0, "13", mode="nvidia"))

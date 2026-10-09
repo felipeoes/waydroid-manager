@@ -6,6 +6,11 @@ follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions f
 
 ## [Unreleased]
 
+### Fixed
+- Mouse clicks reach touch-only apps, such as most games: clicks are delivered to apps as touches
+  by default. Opt out per device with
+  `waydroid-manager config N prop persist.waydroid.fake_touch none`.
+
 ## [1.3.1] - 2026-10-08
 
 ### Fixed
