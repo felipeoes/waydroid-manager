@@ -25,6 +25,9 @@ BUILDS = {
                        "87089b896ce6fed313dd5c2dd1bf22db857621c27e04471aadda69a1a2795fa1"),
     ("libndk", "33"): (_NDK + "68734c52556d3d7a6db34c603dd9276915c29f2f.zip",
                        "a142d1586c9eafb5edf62277110f2128bc03066179a6783bcaa33ee322e1cbd0"),
+    # This build also runs on Android 14; the newer Android 15 build needs a newer host libc++.
+    ("libndk", "34"): (_NDK + "68734c52556d3d7a6db34c603dd9276915c29f2f.zip",
+                       "a142d1586c9eafb5edf62277110f2128bc03066179a6783bcaa33ee322e1cbd0"),
 }
 _ABIS = {
     "ro.product.cpu.abilist": "x86_64,x86,arm64-v8a,armeabi-v7a,armeabi",
