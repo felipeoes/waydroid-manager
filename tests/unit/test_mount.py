@@ -45,6 +45,9 @@ class ArmTranslationTest(unittest.TestCase):
         self.assertIsNone(armtrans.layer("none", "33"))
         self.assertIsNone(armtrans.layer("houdini", "28"))
 
+    def test_android_14_houdini_is_the_android_13_build(self):
+        self.assertEqual(armtrans.BUILDS["houdini", "34"], armtrans.BUILDS["houdini", "33"])
+
     def test_every_build_has_props(self):
         for kind, sdk in armtrans.BUILDS:
             self.assertIn("arm64-v8a", armtrans.PROPS[kind]["ro.product.cpu.abilist"])
