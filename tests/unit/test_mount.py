@@ -3,6 +3,7 @@ import os
 import tempfile
 import types
 import unittest
+from unittest import mock
 
 from waydroid_manager.daemon import armtrans, magisk
 
@@ -40,6 +41,13 @@ class OverlayOptsTest(unittest.TestCase):
 
 
 class ArmTranslationTest(unittest.TestCase):
+    def test_android_14_libndk_selects_a_layer(self):
+        with mock.patch.object(armtrans.platform, "machine", return_value="x86_64"), \
+                mock.patch.object(armtrans.layers, "layer", return_value="/libndk") as build:
+            self.assertEqual(armtrans.layer("libndk", "34"), "/libndk")
+        build.assert_called_once()
+        self.assertEqual(build.call_args.args[1:3], armtrans.BUILDS["libndk", "34"])
+
     def test_no_layer_without_a_build(self):
         # neither may download anything
         self.assertIsNone(armtrans.layer("none", "33"))

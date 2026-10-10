@@ -6,6 +6,10 @@ follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions f
 
 ## [Unreleased]
 
+### Fixed
+- Android 14 with libndk runs ARM apps with libndk: it gets the Android 13 libndk build, instead
+  of falling back to the older Houdini in its image, which aborted in pairip-protected apps.
+
 ## [1.3.4] - 2026-10-10
 
 ### Fixed
