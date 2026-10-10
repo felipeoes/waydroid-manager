@@ -6,6 +6,8 @@ follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions f
 
 ## [Unreleased]
 
+## [1.3.3] - 2026-10-10
+
 ### Fixed
 - Apps protected by Google's pairip, such as Tower War, no longer crash right after launch. Apps
   now start without `no_new_privs`, as on Android: stock Waydroid's LXC config set it on every
@@ -268,7 +270,8 @@ First release.
 - Root daemon hardened against symlink and race attacks, root-enabling Android properties,
   and misuse of passed file descriptors. Each user sees and controls only their own instances.
 
-[Unreleased]: https://github.com/felipeoes/waydroid-manager/compare/v1.3.2...HEAD
+[Unreleased]: https://github.com/felipeoes/waydroid-manager/compare/v1.3.3...HEAD
+[1.3.3]: https://github.com/felipeoes/waydroid-manager/compare/v1.3.2...v1.3.3
 [1.3.2]: https://github.com/felipeoes/waydroid-manager/compare/v1.3.1...v1.3.2
 [1.3.1]: https://github.com/felipeoes/waydroid-manager/compare/v1.3.0...v1.3.1
 [1.3.0]: https://github.com/felipeoes/waydroid-manager/compare/v1.2.1...v1.3.0
