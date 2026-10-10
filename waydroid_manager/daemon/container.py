@@ -54,6 +54,8 @@ DEVICE_DENY = "lxc.cgroup2.devices.allow = a\nlxc.cgroup2.devices.deny = c 10:23
 GRAPHICS_PROPS = ("ro.hardware.gralloc", "ro.hardware.egl", "ro.hardware.vulkan")
 APPARMOR_PROFILE = "lxc-waydroid-manager"   # lxc-start may only switch to lxc-* profiles
 APPARMOR_FILE = os.path.join(paths.RUN_DIR, "apparmor-profile")
+# mov edi, PR_SET_NO_NEW_PRIVS; mov esi, 1 (x86_64), in Waydroid's first-stage init on Android 16+
+INIT_NNP = bytes.fromhex("bf26000000be01000000")
 # ponytail: only inspected x86_64 builds before upstream bb49e333f3ab; inspect new builds before adding pins.
 # SHA-256 -> call's file offset.
 HWC_NVIDIA_SHA = "2bac9ae23e4536a1e2a5ea36be25e07d3430e64cfe53668c3ffa5124ec715d24"
@@ -440,16 +442,48 @@ def fix_hwc(inst):
         data = data[:offset] + b"\x90" * 5 + data[offset + 5:]
         if sha == HWC_NVIDIA_SHA:
             data = data[:0x61131] + HWC_NVIDIA_ROUNDTRIP + data[0x61131 + len(HWC_NVIDIA_ROUNDTRIP):]
-        copy = os.path.join(inst.dir, "hwcomposer.waydroid.so")
-        with open(copy + ".tmp", "wb") as patched:
-            patched.write(data)
-            patched.flush()
-            os.fchmod(patched.fileno(), 0o644)
-            os.replace(copy + ".tmp", copy)
-            # Mount through the checked fds: writable guest overlays may contain hostile links.
-            # Keep the copy linked: Android's HAL loader requires realpath() to resolve it.
-            bind_mount("/proc/self/fd/{}".format(patched.fileno()), "/proc/self/fd/{}".format(src.fileno()))
+        bind_patched(inst, src, data, "hwcomposer.waydroid.so", 0o644)
         log.info("%s: applied display startup fixes", inst.id)
+
+
+def init_without_nnp(data):
+    """init with its prctl(PR_SET_NO_NEW_PRIVS, 1) turned into prctl(0, 1), an EINVAL init does
+    not check; None unless the call is there exactly once."""
+    i = data.find(INIT_NNP)
+    if i < 0 or data.find(INIT_NNP, i + 1) >= 0:
+        return None
+    return data[:i + 1] + b"\0" + data[i + 2:]
+
+
+def fix_init(inst):
+    """Waydroid's first-stage init on Android 16 and newer sets no_new_privs, which every app
+    inherits; Android never does, and pairip-protected apps crash on purpose when they see it.
+    Older images leave it to LXC (lxcconfig turns that off). For this mount only."""
+    try:
+        fd = open_beneath(inst.rootfs, "system/bin/init", os.O_RDONLY | os.O_NONBLOCK)
+    except FileNotFoundError:
+        return
+    with os.fdopen(fd, "rb") as src:
+        if not stat.S_ISREG(os.fstat(src.fileno()).st_mode):
+            raise RuntimeError("init is not a regular file")
+        data = init_without_nnp(src.read(16 << 20))   # known builds are ~3 MB; bound reads of guest files
+        if data is None:
+            return
+        bind_patched(inst, src, data, "init", 0o755)
+        log.info("%s: init no longer sets no_new_privs", inst.id)
+
+
+def bind_patched(inst, src, data, name, mode):
+    """Mount a copy of the guest file open as src, with data, over it."""
+    copy = os.path.join(inst.dir, name)
+    with open(copy + ".tmp", "wb") as patched:
+        patched.write(data)
+        patched.flush()
+        os.fchmod(patched.fileno(), mode)
+        os.replace(copy + ".tmp", copy)
+        # Mount through the checked fds: writable guest overlays may contain hostile links.
+        # Keep the copy linked: Android's HAL loader requires realpath() to resolve it.
+        bind_mount("/proc/self/fd/{}".format(patched.fileno()), "/proc/self/fd/{}".format(src.fileno()))
 
 
 def mount_rootfs(inst, images_dir, gpu_layers=()):
@@ -478,6 +512,7 @@ def mount_rootfs(inst, images_dir, gpu_layers=()):
                   os.path.join(inst.dir, "overlay_rw/vendor"), os.path.join(inst.dir, "overlay_work/vendor"),
                   writable=inst.getbool("system_writable"))
     fix_hwc(inst)
+    fix_init(inst)
     for egl_path in ("/vendor/lib/egl", "/vendor/lib64/egl"):
         if os.path.isdir(egl_path):
             bind(egl_path, rootfs + egl_path)

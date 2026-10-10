@@ -6,6 +6,11 @@ follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions f
 
 ## [Unreleased]
 
+### Fixed
+- Apps protected by Google's pairip, such as Tower War, no longer crash right after launch. Apps
+  now start without `no_new_privs`, as on Android: stock Waydroid's LXC config set it on every
+  Android version, and Android 16 and 17 images set it again in their first-stage init.
+
 ## [1.3.2] - 2026-10-09
 
 ### Fixed

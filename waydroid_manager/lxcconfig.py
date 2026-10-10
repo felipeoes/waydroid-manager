@@ -57,6 +57,10 @@ def build_config(snippets, *, rootfs, lxc_dir, bridge, mac, veth, uts_name, arch
             line = key + " = " + (apparmor_profile or "unconfined")
         elif key == "lxc.hook.post-stop":
             line = key + " = " + (poststop_hook or "/dev/null")
+        elif key == "lxc.no_new_privs":
+            # Android never runs with no_new_privs; pairip-protected apps read it from
+            # /proc/self/status and crash on purpose when it is set
+            line = key + " = 0"
         line = line.replace("LXCARCH", arch)
         out.append(line)
 

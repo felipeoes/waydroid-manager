@@ -65,6 +65,7 @@ class LxcConfigTest(unittest.TestCase):
         self.assertEqual(values(text, "lxc.arch"), ["x86_64"])
         self.assertEqual(values(text, "lxc.apparmor.profile"), ["lxc-waydroid"])
         self.assertEqual(values(text, "lxc.hook.post-stop"), ["/x/poststop.sh"])
+        self.assertEqual(values(text, "lxc.no_new_privs"), ["0"])
         self.assertIn("lxc.cgroup2.memory.high = 4G", text)
         self.assertNotIn("/var/lib/waydroid/", text)
         self.assertNotIn("waydroid0", text)
