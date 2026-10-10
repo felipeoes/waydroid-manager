@@ -6,6 +6,8 @@ follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions f
 
 ## [Unreleased]
 
+## [1.3.5] - 2026-10-10
+
 ### Fixed
 - Android 14 with libndk runs ARM apps with libndk: it gets the Android 13 libndk build, instead
   of falling back to the older Houdini in its image, which aborted in pairip-protected apps.
@@ -281,7 +283,8 @@ First release.
 - Root daemon hardened against symlink and race attacks, root-enabling Android properties,
   and misuse of passed file descriptors. Each user sees and controls only their own instances.
 
-[Unreleased]: https://github.com/felipeoes/waydroid-manager/compare/v1.3.4...HEAD
+[Unreleased]: https://github.com/felipeoes/waydroid-manager/compare/v1.3.5...HEAD
+[1.3.5]: https://github.com/felipeoes/waydroid-manager/compare/v1.3.4...v1.3.5
 [1.3.4]: https://github.com/felipeoes/waydroid-manager/compare/v1.3.3...v1.3.4
 [1.3.3]: https://github.com/felipeoes/waydroid-manager/compare/v1.3.2...v1.3.3
 [1.3.2]: https://github.com/felipeoes/waydroid-manager/compare/v1.3.1...v1.3.2
