@@ -6,6 +6,11 @@ follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions f
 
 ## [Unreleased]
 
+### Fixed
+- Apps protected by Google's pairip, such as Tower War, run on Android 14 with Houdini: Android 14
+  now gets the same Houdini build as Android 13 instead of the older one in its image, which
+  aborted in them.
+
 ## [1.3.3] - 2026-10-10
 
 ### Fixed
