@@ -17,6 +17,10 @@ BUILDS = {
                         "c46fce463ca55eefa66965119e70d80255ca2f5f26ea31ce7ca010b7829440ed"),
     ("houdini", "33"): (_HOUDINI + "2f8f088671182e17e67321e098e8411a3972a628.zip",
                         "2e82cdc88ddc4d418f7fb861aeebb7c49c83a91b97f57da10510b5e1146a4ed5"),
+    # Android 14's image ships an older Houdini (GoogleGame_com1.2) without its ARM libraries;
+    # pairip-protected apps abort in it. The Android 13 build runs them on 14.
+    ("houdini", "34"): (_HOUDINI + "2f8f088671182e17e67321e098e8411a3972a628.zip",
+                        "2e82cdc88ddc4d418f7fb861aeebb7c49c83a91b97f57da10510b5e1146a4ed5"),
     ("libndk", "30"): (_NDK + "9324a8914b649b885dad6f2bfd14a67e5d1520bf.zip",
                        "87089b896ce6fed313dd5c2dd1bf22db857621c27e04471aadda69a1a2795fa1"),
     ("libndk", "33"): (_NDK + "68734c52556d3d7a6db34c603dd9276915c29f2f.zip",
