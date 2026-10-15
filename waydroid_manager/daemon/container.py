@@ -594,8 +594,11 @@ def write_props(inst, session, arm, render=("gpu", None)):
         eff["properties"].update(catalog.get(key, "props", {}))
     if catalog.get(key, "webview64") and os.path.isdir(os.path.join(images.image_dir(inst.image_id), "webview")):
         # Android keeps a package's ABI until the build fingerprints change: this one (there's no
-        # oem partition) makes a device made before the 64-bit WebView re-derive it, once
-        eff["properties"]["ro.oem.build.fingerprint"] = "waydroid-manager:webview64"
+        # oem partition) makes a device made before the 64-bit WebView re-derive it, once. It
+        # repeats the build's own fingerprint, like the other partitions' do
+        fp = (inst.cfg["properties"].get("ro.build.fingerprint")
+              or stock.read_prop_file(inst.rootfs + "/system/build.prop", "ro.build.fingerprint"))
+        eff["properties"]["ro.oem.build.fingerprint"] = fp or "waydroid-manager:webview64"
     if mode == "gpu" and node:
         eff["waydroid"]["drm_device"] = node        # stock's props follow the picked GPU
     if mode == "vkms":

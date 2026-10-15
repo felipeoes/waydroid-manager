@@ -370,7 +370,8 @@ in syscall nr=0x175`, then "Render process ...'s crash wasn't handled by all ass
   and PackageManager accepts a system app's new signer ("signature changed; retaining data").
 - PackageManager keeps a package's stored ABI until the fingerprint digest changes, so devices
   made before the layer stay 32-bit. `ro.oem.build.fingerprint` is part of that digest, and
-  there's no oem partition: setting it once re-derives the ABI (x86_64, with x86 secondary).
+  there's no oem partition: setting it (to the build's own fingerprint, as the other partitions
+  have) re-derives the ABI once (x86_64, with x86 secondary).
 
 ## Measuring
 - `dumpsys SurfaceFlinger --latency` is empty on 16 and newer. `dumpsys SurfaceFlinger --timestats
