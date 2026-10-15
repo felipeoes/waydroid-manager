@@ -6,6 +6,8 @@ follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions f
 
 ## [Unreleased]
 
+## [1.3.6] - 2026-10-14
+
 ### Fixed
 - Apps that show web content, such as Smashing Four, no longer crash after a few seconds to a
   couple of minutes on Android 16 and 17. Their WebView now runs 64-bit: its 32-bit renderers
@@ -289,7 +291,8 @@ First release.
 - Root daemon hardened against symlink and race attacks, root-enabling Android properties,
   and misuse of passed file descriptors. Each user sees and controls only their own instances.
 
-[Unreleased]: https://github.com/felipeoes/waydroid-manager/compare/v1.3.5...HEAD
+[Unreleased]: https://github.com/felipeoes/waydroid-manager/compare/v1.3.6...HEAD
+[1.3.6]: https://github.com/felipeoes/waydroid-manager/compare/v1.3.5...v1.3.6
 [1.3.5]: https://github.com/felipeoes/waydroid-manager/compare/v1.3.4...v1.3.5
 [1.3.4]: https://github.com/felipeoes/waydroid-manager/compare/v1.3.3...v1.3.4
 [1.3.3]: https://github.com/felipeoes/waydroid-manager/compare/v1.3.2...v1.3.3
