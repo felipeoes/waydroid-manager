@@ -31,7 +31,7 @@ D="$DESTDIR"
 if [ -z "$DESTDIR" ]; then
     [ "$(id -u)" = 0 ] || { echo "run as root: sudo $0" >&2; exit 1; }
     command -v waydroid >/dev/null || { echo "stock Waydroid must be installed first" >&2; exit 1; }
-    for dep in lxc-start dnsmasq ip; do
+    for dep in lxc-start dnsmasq ip openssl; do
         command -v "$dep" >/dev/null || { echo "missing dependency: $dep" >&2; exit 1; }
     done
     python3 -c "import dbus, gi, gbinder" 2>/dev/null || {

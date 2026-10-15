@@ -35,6 +35,8 @@ MTG14 = ("https://github.com/s1204IT/MindTheGappsBuilder/releases/download/20250
 #                software_props on the vkms path
 #   loop         apexd needs loop devices in the container
 #   videodev     ueventd needs /sys/class/video4linux on the host
+#   webview64    the image's 32-bit-preferred WebView runs 64-bit (daemon/webview.py): its 32-bit
+#                renderers die on this Android's bionic
 #   experimental shown as such: a single maintainer's build or a pre-release
 VERSIONS = {
     # 11 needs minigbm's buffer modifiers and the timestamp property before ANGLE initializes.
@@ -54,11 +56,11 @@ VERSIONS = {
                     "3febfdb12f7a930315272df102b9907ffc65fc21570e5b6d005bbd4de7f6685c", "20261005"),
                props={"ro.gralloc.override": "0", "ro.hardware.gralloc": "minigbm_gbm_mesa", "qemu.hw.mainkeys": "1",
                       "persist.sys.usb.config": "adb"}),
-    "16": dict(sdk=36, ota=_atv("a16-qpr2") + ("23.2",), gb=1.6, nvidia="venus", loop=True,
+    "16": dict(sdk=36, ota=_atv("a16-qpr2") + ("23.2",), gb=1.6, nvidia="venus", loop=True, webview64=True,
                props={"qemu.hw.mainkeys": "1", "persist.sys.usb.config": "adb"},
                nvidia_props={"ro.waydroid.override_props": "0"}),
     "17": dict(sdk=37, ota=_atv("a17") + ("24.0",), gb=1.7, nvidia="venus", experimental=True,
-               gapps="gms_apex", loop=True, videodev=True, software="vkms",
+               gapps="gms_apex", loop=True, videodev=True, software="vkms", webview64=True,
                props={"qemu.hw.mainkeys": "1"},
                nvidia_props={"ro.waydroid.override_props": "0", "debug.hwui.renderer": "skiavk"}),
 }
