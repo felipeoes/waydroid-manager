@@ -108,7 +108,8 @@ entry it first loaded.
   unused sets are garbage-collected.
 - **Shared layers** (`daemon/layers.py`): pinned downloads unpacked once into read-only overlay
   layers that every device mounts below its own: ARM translation (`armtrans.py`), Google Play
-  (`gapps.py`), NVIDIA's Android drivers (`nvidia.py`).
+  (`gapps.py`), NVIDIA's Android drivers (`nvidia.py`), and on 16 and 17 the image's WebView
+  re-signed to run 64-bit (`webview.py`).
 - **Graphics** (`gpu.py`): the `gpu` setting resolves to a mode at each start (`gpu.mode`):
   - `nvidia`: Android's Venus Vulkan driver talks over a unix socket to a renderer the session
     runs as the user (`daemon/nvidia.py`); ANGLE runs GLES on it.
@@ -140,7 +141,7 @@ entry it first loaded.
 | `waydroid_manager/registry.py` | instance number allocation |
 | `waydroid_manager/stock.py`, `stockctl.py` | stock Waydroid import shim; stock state without `waydroid status` |
 | `waydroid_manager/client.py`, `cli.py` | D-Bus client and the `waydroid-manager` command |
-| `waydroid_manager/daemon/` | root daemon: `main.py` (D-Bus API), `container.py`, `storage.py` (clone, identity reset, APK, screenshot), `images.py`, `layers.py`, `armtrans.py`, `gapps.py`, `nvidia.py`, `magisk.py`, `network.py`, `binder.py`, `util.py` (mounts, safe opens), `hwhelper.py` |
+| `waydroid_manager/daemon/` | root daemon: `main.py` (D-Bus API), `container.py`, `storage.py` (clone, identity reset, APK, screenshot), `images.py`, `layers.py`, `armtrans.py`, `gapps.py`, `webview.py`, `nvidia.py`, `magisk.py`, `network.py`, `binder.py`, `util.py` (mounts, safe opens), `hwhelper.py` |
 | `waydroid_manager/session/` | user session, Wayland proxy, frame drawing, desktop launchers; `gbm.py` reads another GPU's buffers |
 | `waydroid_manager/session/protocols/` | vendored Wayland protocol XML (MIT, see its README) |
 | `waydroid_manager/gui/` | GTK4/libadwaita manager app; `confirm.py` is the close confirmation, `settings.py` the instance windows' Settings (one background process, reached over D-Bus) |

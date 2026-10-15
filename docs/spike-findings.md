@@ -354,6 +354,25 @@ Tested on each version: Magisk's daemon runs, an ungranted uid is refused, and u
 - Android caps a property value at 91 characters, and Android drops a longer
   `debug.angle.feature_overrides_disabled` silently.
 
+## WebView renderers on 16 and 17 (2026-10-14)
+Apps with a WebView (Smashing Four's ads) died 20 s to 2 min in: `cr_seccomp: seccomp-bpf failure
+in syscall nr=0x175`, then "Render process ...'s crash wasn't handled by all associated webviews".
+- Every image's WebView (11 to 17, Google's on 13 too) has `use32bitAbi=true`: `webview_zygote`
+  runs under the 32-bit zygote and renderers are i386.
+- From 16, 32-bit bionic's `shutdown()` is the direct syscall 373 (`0x175`); 11 to 15 go
+  through `socketcall(SYS_SHUTDOWN)`. Chromium's renderer policy (`syscall_sets.cc`) allows
+  `__NR_shutdown` on every architecture but i386, still on main, so the renderer gets SIGSYS.
+- `pm install --abi x86_64` is ignored for multiArch apps. There's no 64-bit-preferred
+  `com.android.webview` to download (Lineage and Cromite publish none), and `ro.debuggable=0`
+  rules out WebView command-line flags.
+- Fix (daemon/webview.py): the image's own APK with the flag cleared, signed v2 with a throwaway
+  key. The images' `config_webview_packages.xml` names no signature for `com.android.webview`,
+  and PackageManager accepts a system app's new signer ("signature changed; retaining data").
+- PackageManager keeps a package's stored ABI until the fingerprint digest changes, so devices
+  made before the layer stay 32-bit. `ro.oem.build.fingerprint` is part of that digest, and
+  there's no oem partition: setting it (to the build's own fingerprint, as the other partitions
+  have) re-derives the ABI once (x86_64, with x86 secondary).
+
 ## Measuring
 - `dumpsys SurfaceFlinger --latency` is empty on 16 and newer. `dumpsys SurfaceFlinger --timestats
   -enable`, then `-dump`, gives per-layer fps on every version.
