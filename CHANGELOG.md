@@ -6,6 +6,12 @@ follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions f
 
 ## [Unreleased]
 
+### Fixed
+- Apps that show web content, such as Smashing Four, no longer crash after a few seconds to a
+  couple of minutes on Android 16 and 17. Their WebView now runs 64-bit: its 32-bit renderers
+  were killed by Chromium's sandbox, which rejects how these Androids' 32-bit system library shuts
+  down a socket. The image's own WebView is re-signed for this, so `openssl` is a new dependency.
+
 ## [1.3.5] - 2026-10-10
 
 ### Fixed

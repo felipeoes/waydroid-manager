@@ -480,6 +480,8 @@ def cmd_doctor(o):
           "(run packaging/build-libgbinder.sh, then scripts/install.sh)")
     check(shutil.which("lxc-start"), "LXC installed", "LXC not installed")
     check(shutil.which("dnsmasq"), "dnsmasq installed", "dnsmasq not installed")
+    check(shutil.which("openssl"), "openssl installed",
+          "openssl missing: apps with web content can crash on Android 16 and 17")
     check(shutil.which("wl-copy"), "wl-clipboard installed", "wl-clipboard missing: no clipboard sharing")
     check(os.environ.get("WAYLAND_DISPLAY"), "Wayland session", "WAYLAND_DISPLAY not set")
     from ctypes.util import find_library
