@@ -45,6 +45,7 @@ ip1=$(field "$n1" ip)
 ip2=$(field "$n2" ip)
 [ -n "$ip1" ] && [ "$ip1" != "$ip2" ] && pass "distinct fixed IPs $ip1 $ip2" || fail "IPs"
 [ "$(sh_in "$n1" /system/bin/getprop sys.boot_completed)" = "1" ] && pass "#$n1 boot_completed" || fail "#$n1 boot_completed"
+sh_in "$n1" /system/bin/ping -c1 -W2 "waydroid-$n1" | grep -q "($ip1)" && pass "#$n1 own hostname" || fail "#$n1 own hostname"
 sh_in "$n1" /system/bin/ping -c1 -W3 1.1.1.1 | grep -q " 0% packet loss" && pass "#$n1 internet" || fail "#$n1 internet"
 sh_in "$n1" /system/bin/ping -c1 -W2 "$ip2" | grep -q " 0% packet loss" && fail "#$n1 can reach #$n2" || pass "#$n1 cannot reach #$n2"
 [ "$(sh_in "$n1" /system/bin/wm size | grep -o '[0-9]*x[0-9]*')" = "800x450" ] && pass "#$n1 screen 800x450" || fail "#$n1 screen"
@@ -71,6 +72,8 @@ n3=$($W clone "$n1" --name "Smoke Three" --no-launcher | num)
 CREATED="$CREATED $n3"
 [ -n "$n3" ] && pass "cloned #$n1 into #$n3" || fail "clone"
 $W start "$n3" --wait >/dev/null && pass "#$n3 booted" || fail "#$n3 boot"
+ip3=$(field "$n3" ip)
+sh_in "$n3" /system/bin/ping -c1 -W2 "waydroid-$n3" | grep -q "($ip3)" && pass "clone own hostname" || fail "clone own hostname"
 for _ in $(seq 1 30); do
     [ "$(field "$n3" pending_id_reset)" = "false" ] && break
     sleep 2

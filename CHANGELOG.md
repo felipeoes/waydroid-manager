@@ -6,6 +6,10 @@ follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions f
 
 ## [Unreleased]
 
+### Fixed
+- Games such as Merge Cruise no longer pause for DNS timeouts when resolving the device's
+  own hostname. Each instance maps its hostname to its own address in Android's hosts file.
+
 ## [1.3.6] - 2026-10-14
 
 ### Fixed
