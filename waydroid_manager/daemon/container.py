@@ -411,6 +411,22 @@ def ensure_videodev():
         raise RuntimeError("Android 17 needs the kernel's videodev module (/sys/class/video4linux)")
 
 
+OVERCOMMIT = "/proc/sys/vm/overcommit_memory"
+
+
+def ensure_overcommit():
+    """Android's init.rc sets overcommit_memory to 1, but the container can't write /proc/sys and
+    the setting is host-wide. Under the host's heuristic 0, Unreal Engine's 48 GB mmap at load
+    fails and the game aborts. A strict 2 is the admin's choice and stays."""
+    try:
+        if _read(OVERCOMMIT).strip() == "0":
+            with open(OVERCOMMIT, "w") as f:
+                f.write("1")
+            log.info("vm.overcommit_memory set to 1, as Android's init does")
+    except OSError as e:
+        log.warning("vm.overcommit_memory left as is: %s", e)
+
+
 def sync_root(inst):
     """Root switch: Magisk Delta in the instance's own lower layer (removed when off)."""
     if inst.getbool("root") and not android_of(inst):
@@ -697,6 +713,7 @@ def start(inst, net, hosts, session_in, uid, in_use, cpus_busy=list):
         write_lxc_config(inst, net, cpus_busy(), render)
     net.ensure_up(hosts)
     set_device_permissions()
+    ensure_overcommit()
 
     # Sockets: validate the caller's and bind them at root-owned paths
     stage = paths.staging_dir(inst.id)

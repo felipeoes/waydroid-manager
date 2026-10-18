@@ -9,6 +9,10 @@ follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions f
 ### Fixed
 - Games such as Merge Cruise no longer pause for DNS timeouts when resolving the device's
   own hostname. Each instance maps its hostname to its own address in Android's hosts file.
+- Unreal Engine games, such as Goodville, no longer abort at launch on hosts with less RAM plus
+  swap than the 48 GB their allocator reserves. Starting an instance sets the host's
+  `vm.overcommit_memory` from the kernel's heuristic default (0) to 1, as Android's own init does
+  but can't from inside the container. The setting is host-wide; a strict 2 is left alone.
 
 ## [1.3.6] - 2026-10-14
 
