@@ -486,6 +486,19 @@ def bind_patched(inst, src, data, name, mode):
         bind_mount("/proc/self/fd/{}".format(patched.fileno()), "/proc/self/fd/{}".format(src.fileno()))
 
 
+def write_hosts(inst, ip):
+    """Resolve the UTS hostname locally: Unity games can look it up on their main thread."""
+    fd = open_beneath(inst.rootfs, "system/etc/hosts", os.O_RDONLY | os.O_NONBLOCK)
+    with os.fdopen(fd, "rb") as src:
+        if not stat.S_ISREG(os.fstat(src.fileno()).st_mode):
+            raise ValueError("hosts is not a regular file")
+        data = src.read((16 << 20) + 1)
+        if len(data) > 16 << 20:
+            raise ValueError("hosts file is too large")
+        entry = "{} waydroid-{}\n".format(ip, inst.id.replace("_", "-")).encode()
+        bind_patched(inst, src, entry + data, "hosts", 0o644)
+
+
 def mount_rootfs(inst, images_dir, gpu_layers=()):
     """system.img + overlays, vendor.img + overlays, like stock mount_rootfs. Below the instance's
     own layer come the shared ones: GPU (NVIDIA's guest build), ARM translation, Google Play,
@@ -718,6 +731,7 @@ def start(inst, net, hosts, session_in, uid, in_use, cpus_busy=list):
             inst.save()
         guest = nvidia.guest_layers(catalog.get(android_of(inst), "nvidia")) if render[0] == "nvidia" else []
         arm = mount_rootfs(inst, images_dir, guest)
+        write_hosts(inst, net.ip_for(inst))
         detect_protocols(inst)
         session = {
             "user_name": pw.pw_name, "user_id": str(uid), "group_id": str(pw.pw_gid),
