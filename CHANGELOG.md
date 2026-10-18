@@ -13,6 +13,10 @@ follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions f
   swap than the 48 GB their allocator reserves. Starting an instance sets the host's
   `vm.overcommit_memory` from the kernel's heuristic default (0) to 1, as Android's own init does
   but can't from inside the container. The setting is host-wide; a strict 2 is left alone.
+- Unreal Engine games on NVIDIA GPUs, such as Goodville, no longer quit when they start playing a
+  video on Android 15, 16 and 17. Seeing an NVIDIA renderer, the engine names the video texture
+  extension the way NVIDIA's drivers accept but ANGLE did not; the image's ANGLE is patched to
+  accept it too (64-bit apps; Android 11, 13 and 14 aren't covered yet).
 
 ## [1.3.6] - 2026-10-14
 

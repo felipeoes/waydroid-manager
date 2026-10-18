@@ -85,6 +85,35 @@ HWC_NVIDIA_ROUNDTRIP = bytes.fromhex(
     "ff ff ff e9 f7 00 00 00"
 )
 
+# ANGLE's shader translator accepts GL_OES_EGL_image_external in ESSL 3.x shaders, as NVIDIA's
+# drivers do; Unreal Engine on an NVIDIA renderer writes it (scripts/patches/angle-image-external.S).
+# Edits per build: version table entry (where needed), cave, jmp to it, executable segment size.
+# ponytail: 64-bit 15/16/17 only; 14's build is laid out differently, 11/13 use full13's ANGLE
+# (vendor/lib64/egl, no symbols), 32-bit ANGLE (system/lib) is untouched; pin those when needed.
+# SHA-256 -> ((file offset, new bytes), ...).
+ANGLE_PATCHES = {
+    "793f6b782801ab59590c3a0ae7948be3bbfa5297c7cb8bc43a0a3a385d6077e9": (  # 15
+        (0xd9560, "d7d44000"),
+        (0x59d180, "4588651a41807d19277537498b4e10488b71084883c1084889ca4885f67414807e192872084889f2488b36eb"
+                   "ed488b7608ebe74839ca740a807a192875044488621a488b7dc8e9199ff4ff"),
+        (0x4e70dc, "e99f600b000f1f00"),
+        (0xd0, "cb51420000000000cb51420000000000"),
+    ),
+    "84163a53e8fd8c58a96351aa96d2d9b959868c219fcafc7211ef021951a410d8": (  # 16
+        (0xd94f8, "37ef3e00"),
+        (0x580990, "4588751a41807d19297538498b4c2410488b71084883c1084889ca4885f67414807e192a72084889f2488b36"
+                   "ebed488b7608ebe74839ca740a807a192a75044488721a488b5dd0e98a80f4ff"),
+        (0x4c8a5e, "e92d7f0b000f1f00"),
+        (0xd0, "dc99400000000000dc99400000000000"),
+    ),
+    "e306d4cbdcafc0ea087124a46a710c030af813042f0f31a4051f27eed963d52e": (  # 17
+        (0x590630, "44886b1a807b19287537498b4e10488b71084883c1084889ca4885f67414807e192972084889f2488b36ebed"
+                   "488b7608ebe74839ca740a807a1929750444886a1a488b5dc8e95d8ef5ff"),
+        (0x4e94cf, "e95c710a000f1f00"),
+        (0xd0, "7a664100000000007a66410000000000"),
+    ),
+}
+
 
 def _stock_stopped():
     if stockctl.container_state() != "STOPPED":
@@ -489,6 +518,28 @@ def fix_init(inst):
         log.info("%s: init no longer sets no_new_privs", inst.id)
 
 
+def fix_angle(inst):
+    """Unreal Engine games on an NVIDIA renderer use the ESSL 1 name of the video texture
+    extension in ESSL 3 shaders; ANGLE rejects them and the game quits when a video starts.
+    Patch known ANGLE builds to accept it, for this mount only."""
+    try:
+        fd = open_beneath(inst.rootfs, "system/lib64/libGLESv2_angle.so", os.O_RDONLY | os.O_NONBLOCK)
+    except FileNotFoundError:
+        return
+    with os.fdopen(fd, "rb") as src:
+        if not stat.S_ISREG(os.fstat(src.fileno()).st_mode):
+            raise RuntimeError("libGLESv2_angle.so is not a regular file")
+        data = bytearray(src.read(16 << 20))   # known builds are under 9 MB; bound reads of guest files
+        edits = ANGLE_PATCHES.get(hashlib.sha256(data).hexdigest())
+        if edits is None:
+            return
+        for offset, new in edits:
+            new = bytes.fromhex(new)
+            data[offset:offset + len(new)] = new
+        bind_patched(inst, src, bytes(data), "libGLESv2_angle.so", 0o644)
+        log.info("%s: ANGLE accepts Unreal Engine's video shaders", inst.id)
+
+
 def bind_patched(inst, src, data, name, mode):
     """Mount a copy of the guest file open as src, with data, over it."""
     copy = os.path.join(inst.dir, name)
@@ -544,6 +595,8 @@ def mount_rootfs(inst, images_dir, gpu_layers=()):
                   writable=inst.getbool("system_writable"))
     fix_hwc(inst)
     fix_init(inst)
+    if gpu_layers:
+        fix_angle(inst)
     for egl_path in ("/vendor/lib/egl", "/vendor/lib64/egl"):
         if os.path.isdir(egl_path):
             bind(egl_path, rootfs + egl_path)
