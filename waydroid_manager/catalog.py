@@ -19,6 +19,13 @@ MTG14 = ("https://github.com/s1204IT/MindTheGappsBuilder/releases/download/20250
          "MindTheGapps-14.0.0-x86_64-20250330.zip",
          "ea6738b4908c1290447f610f365e84d46ca894c9a65eef90b83030d769990d7f")
 
+# Google-signed Play services 26.11.36 (minSdk 35), split by the image maintainer for GitHub.
+GMS16 = ("https://raw.githubusercontent.com/WayDroid-ATV/android_vendor_gapps/"
+         "74fba8f15987263635734e366db45683f534f72f/x86_64/proprietary/product/apex/"
+         "com.google.android.gmssystem.prodvic.apex.",
+         ("9204dfbdb593e072c19d52d3077420f88ad609a77554a7add2c0ae3957f0ad9f",
+          "e6ae55457363cd0641c4090e22992dbc0fdc4293d12f7c2485e6688ce189ce8c"))
+
 # key -> settings of that version:
 #   sdk          API level both images must report
 #   ota          (system channel, vendor channel, version): newest build of that version

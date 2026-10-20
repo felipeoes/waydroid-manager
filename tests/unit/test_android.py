@@ -3,10 +3,12 @@ import hashlib
 import io
 import json
 import os
+import shutil
 import sqlite3
 import tarfile
 import tempfile
 import unittest
+import xml.etree.ElementTree as ET
 import zipfile
 from unittest import mock
 
@@ -149,8 +151,78 @@ class ImageStoreTest(unittest.TestCase):
             self.make_set("cc", android="15")
             self.assertEqual(images.gapps_layer("cc"), "/mtg")
 
+    def test_play_services_repair_only_for_affected_system_build(self):
+        with mock.patch.object(gapps, "gms16_layer", return_value="/gms16", create=True):
+            for sid, android, built, expected in (
+                    ("old", "16", "1784256682", "/gms16"),
+                    ("new", "16", "1790000000", None),
+                    ("other", "13", "1784256682", None)):
+                self.make_set(sid, android=android, built=built)
+                self.assertEqual(images.gapps_layer(sid), expected)
+
 
 class LayerTest(unittest.TestCase):
+    def test_play_services_replaces_factory_apk_with_matching_permissions(self):
+        with tempfile.TemporaryDirectory() as d:
+            apk = io.BytesIO()
+            with zipfile.ZipFile(apk, "w") as z:
+                z.writestr("lib/x86_64/libgms.so", b"native library")
+            apex = io.BytesIO()
+            with zipfile.ZipFile(apex, "w") as z:
+                z.writestr("apex_payload.img", b"payload")
+            parts = []
+            for n, data in enumerate((apex.getvalue()[:20], apex.getvalue()[20:])):
+                part = os.path.join(d, str(n))
+                with open(part, "wb") as f:
+                    f.write(data)
+                parts.append(part)
+
+            def mount(payload, mnt):
+                with open(payload, "rb") as f:
+                    self.assertEqual(f.read(), b"payload")
+                app = os.path.join(mnt, "priv-app/PrebuiltGmsCoreVic@261136038")
+                os.makedirs(app)
+                with open(os.path.join(app, "PrebuiltGmsCoreVic.apk"), "wb") as f:
+                    f.write(apk.getvalue())
+                os.makedirs(os.path.join(mnt, "etc/permissions"))
+                with open(os.path.join(mnt, "etc/permissions/gms.xml"), "w") as f:
+                    f.write('<permissions><privapp-permissions package="com.google.android.gms">'
+                            '<permission name="android.permission.GET_ROLE_HOLDERS"/>'
+                            '</privapp-permissions></permissions>')
+
+            def unmount(mnt):
+                shutil.rmtree(mnt)
+                os.mkdir(mnt)
+
+            with mock.patch.object(gapps.paths, "STATE_DIR", d), \
+                    mock.patch.object(gapps, "download", side_effect=parts, create=True), \
+                    mock.patch.object(gapps, "mount_image", side_effect=mount), \
+                    mock.patch.object(gapps, "umount_tree", side_effect=unmount), \
+                    mock.patch.object(layers, "whiteout",
+                                      side_effect=lambda p: os.makedirs(os.path.dirname(p))), \
+                    mock.patch.object(layers, "set_modes"):
+                layer = gapps.gms16_layer()
+                self.assertEqual(gapps.gms16_layer(), layer)   # reuse without downloading or mounting
+            product = os.path.join(layer, "system/product")
+            self.assertEqual(os.listdir(os.path.join(product, "priv-app")), ["GmsCore"])
+            app = os.path.join(product, "priv-app/GmsCore")
+            with open(os.path.join(app, "GmsCore.apk"), "rb") as f:
+                self.assertEqual(f.read(), apk.getvalue())       # preserve Google's signed APK bytes
+            with open(os.path.join(app, "lib/x86_64/libgms.so"), "rb") as f:
+                self.assertEqual(f.read(), b"native library")
+            perms = ET.parse(os.path.join(product, "etc/permissions/gms.xml"))
+            self.assertEqual(perms.find("privapp-permissions").get("package"), "com.google.android.gms")
+            self.assertEqual(perms.find(".//permission").get("name"), "android.permission.GET_ROLE_HOLDERS")
+            self.assertFalse(os.path.exists(os.path.join(product, "apex")))
+            self.assertFalse(os.path.exists(layer + ".tmp"))
+
+    def test_play_services_download_failure_does_not_publish_layer(self):
+        with tempfile.TemporaryDirectory() as d, mock.patch.object(gapps.paths, "STATE_DIR", d), \
+                mock.patch.object(gapps, "download", side_effect=util.CommandError("bad checksum"), create=True):
+            with self.assertRaisesRegex(util.CommandError, "bad checksum"):
+                gapps.gms16_layer()
+            self.assertEqual(os.listdir(os.path.join(d, "gapps")), [])
+
     def test_mindthegapps_without_setupwizard_and_libs_extracted(self):
         with tempfile.TemporaryDirectory() as d:
             apk = io.BytesIO()

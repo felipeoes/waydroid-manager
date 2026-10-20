@@ -7,6 +7,9 @@ follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions f
 ## [Unreleased]
 
 ### Fixed
+- Google Play Games sign-in on Android 16's 2026-07-17 image: supply newer Google-signed Play
+  services and its system permissions in a shared layer. Works for existing and new instances
+  without enabling root or a writable system, and preserves accounts and app data.
 - Games such as Merge Cruise no longer pause for DNS timeouts when resolving the device's
   own hostname. Each instance maps its hostname to its own address in Android's hosts file.
 - Unreal Engine games, such as Goodville, no longer abort at launch on hosts with less RAM plus
