@@ -1,18 +1,55 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 """Google Play for images that don't include it in a form the container can use: MindTheGapps
-as a shared layer (14, 15), or the image's own GMS APEX unpacked into a layer (17: a signed
-APEX needs device-mapper, which the container doesn't have)."""
+as a shared layer (14, 15), newer Play services for 16's stale factory APK, or the image's
+GMS APEX unpacked into a layer (17: a signed APEX needs device-mapper, which we don't expose)."""
 import os
 import shutil
+import threading
 import zipfile
 
 from .. import catalog, paths
 from . import layers
-from .util import mount_image, umount_tree
+from .util import download, mount_image, umount_tree
 
 # MindTheGapps' SetupWizard crashes on Waydroid ("WifiService: Permission denied") and, as the
 # device is never marked set up, blocks the GSF check-in Play needs
 _MTG_SKIP = ("system/system_ext/priv-app/SetupWizard/",)
+_gms_lock = threading.Lock()
+
+
+def gms16_layer():
+    """Replace 16's factory GmsCore and its permission list without touching instance data."""
+    url, hashes = catalog.GMS16
+    d = os.path.join(paths.STATE_DIR, "gapps", "gms16-" + "-".join(sha[:12] for sha in hashes))
+    with _gms_lock:
+        if os.path.isdir(d):
+            return d
+        tmp = d + ".tmp"
+        parts = []
+        shutil.rmtree(tmp, ignore_errors=True)
+        try:
+            source = os.path.join(tmp, "source")
+            apex_dir = os.path.join(source, "system/product/apex")
+            os.makedirs(apex_dir)
+            with open(os.path.join(apex_dir, "com.google.android.gms.apex"), "wb") as out:
+                for n, sha in enumerate(hashes):
+                    part = download(url + "{:02}".format(n), sha, d + ".{}.download".format(n), "Play services")
+                    parts.append(part)
+                    with open(part, "rb") as src:
+                        shutil.copyfileobj(src, out)
+            layer = flatten_gms_apex(source, os.path.join(tmp, "layer"))
+            product = os.path.join(layer, "system/product")
+            app = os.path.join(product, "priv-app/PrebuiltGmsCoreVic")
+            # Replace the existing path: two factory copies of one package make scanning ambiguous.
+            os.rename(os.path.join(app, "PrebuiltGmsCoreVic.apk"), os.path.join(app, "GmsCore.apk"))
+            os.rename(app, os.path.join(product, "priv-app/GmsCore"))
+            shutil.rmtree(os.path.join(product, "apex"))
+            os.rename(layer, d)
+            for part in parts:
+                os.unlink(part)
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
+        return d
 
 
 def mtg_layer():
