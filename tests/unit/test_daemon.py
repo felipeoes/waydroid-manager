@@ -112,8 +112,16 @@ class WatcherTest(unittest.TestCase):
             self.m._watch_tick(11)
             self.assertEqual(im["ensure_synced"].call_count, 1)
             im["stock_image_id"].return_value = "2-2"
+            im["ensure_synced"].side_effect = None
             self.m._watch_tick(21)
             self.assertEqual(im["ensure_synced"].call_count, 2)
+            self.assertIsNone(self.m.sync_failed)
+
+    def test_deleted_instance_is_ignored_by_on_observed(self):
+        with mock.patch.object(main, "list_ids", return_value=[]):
+            self.m._on_observed("1", "STOPPED")
+        self.assertNotIn("1", self.m.known)
+        self.m.StateChanged.assert_not_called()
 
 
 class SessionTest(unittest.TestCase):

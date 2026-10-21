@@ -1015,6 +1015,7 @@ class Manager(dbus.service.Object):
                 if stock_id != self.sync_failed and images.stock_is_newer() and not images.stock_busy():
                     log.info("stock Waydroid images changed, syncing the image store")
                     images.ensure_synced(self.images_in_use)
+                    self.sync_failed = None
                     log.info("image store now at %s", images.current_id())
             except Exception as e:  # noqa: BLE001 - the watcher must keep running
                 self.sync_failed = stock_id
@@ -1038,6 +1039,9 @@ class Manager(dbus.service.Object):
             log.exception("state watcher")
 
     def _on_observed(self, iid, st):
+        if iid not in list_ids():
+            self.known.pop(iid, None)
+            return False
         prev = self.known.get(iid)
         self.known[iid] = st
         if st == "STOPPED" and prev in ACTIVE and iid not in self.transient and self._rebooted(iid):

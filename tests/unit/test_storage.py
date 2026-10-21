@@ -51,6 +51,19 @@ class XapkInstallTest(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "not an XAPK"):
             storage._install_xapk(types.SimpleNamespace(id="1"), io.BytesIO(b"nope"))
 
+    def test_pm_kills_and_reaps_child_when_source_fails(self):
+        proc = mock.Mock()
+        proc.stdout.read.return_value = b""
+        proc.stderr.read.return_value = b""
+        src = mock.Mock()
+        src.read.side_effect = zipfile.BadZipFile("corrupt member")
+        with mock.patch("waydroid_manager.daemon.util.android_attach_env", return_value={}), \
+                mock.patch("subprocess.Popen", return_value=proc):
+            with self.assertRaises(zipfile.BadZipFile):
+                storage._pm(types.SimpleNamespace(id="1", container="wdm-1"), ["install"], src=src)
+        proc.kill.assert_called_once()
+        proc.wait.assert_called_once()
+
 
 class ShaderCacheTest(unittest.TestCase):
     def test_apps_shader_caches_go_and_nothing_through_a_symlink(self):

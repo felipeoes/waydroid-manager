@@ -233,19 +233,26 @@ def _pm(inst, args, src=None, check=True):
     killer.daemon = True
     killer.start()
     try:
-        if src is not None:
-            shutil.copyfileobj(src, p.stdin, 1024 * 1024)
-    except (BrokenPipeError, OSError):
-        pass  # pm exited early; its output says why
-    finally:
         try:
-            p.stdin.close()
-        except OSError:
-            pass
-    p.wait()
-    killer.cancel()
-    for t in readers:
-        t.join(5)
+            if src is not None:
+                shutil.copyfileobj(src, p.stdin, 1024 * 1024)
+        except (BrokenPipeError, OSError):
+            pass  # pm exited early; its output says why
+        finally:
+            try:
+                p.stdin.close()
+            except OSError:
+                pass
+    except BaseException:
+        p.kill()
+        raise
+    finally:
+        p.wait()
+        killer.cancel()
+        for t in readers:
+            t.join(5)
+        p.stdout.close()
+        p.stderr.close()
     out = (chunks["out"] + chunks["err"]).decode("utf-8", "replace").strip()
     if check and (p.returncode != 0 or "Success" not in out):
         raise RuntimeError("install failed: " + out[-500:])
