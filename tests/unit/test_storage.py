@@ -1,7 +1,9 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 import io
 import os
+import subprocess
 import tempfile
+import time
 import types
 import unittest
 import zipfile
@@ -51,18 +53,37 @@ class XapkInstallTest(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "not an XAPK"):
             storage._install_xapk(types.SimpleNamespace(id="1"), io.BytesIO(b"nope"))
 
+    def pm(self, script, src):
+        """_pm with lxc-attach replaced by sh -c script; the child is always reaped."""
+        procs = []
+        popen = subprocess.Popen
+
+        def fake(cmd, **kw):
+            procs.append(popen(["sh", "-c", script], **kw))
+            return procs[-1]
+        with mock.patch("waydroid_manager.daemon.util.android_attach_env", return_value={}), \
+                mock.patch("subprocess.Popen", fake):
+            try:
+                return storage._pm(types.SimpleNamespace(id="1", container="wdm-1"), ["install"], src=src)
+            finally:
+                self.assertIsNotNone(procs[0].returncode)
+
+    def test_pm_streams_its_source_and_returns_the_output(self):
+        out = self.pm("wc -c; echo Success >&2", io.BytesIO(b"x" * (3 << 20)))
+        self.assertEqual(out.split(), [str(3 << 20), "Success"])
+
     def test_pm_kills_and_reaps_child_when_source_fails(self):
-        proc = mock.Mock()
-        proc.stdout.read.return_value = b""
-        proc.stderr.read.return_value = b""
         src = mock.Mock()
         src.read.side_effect = zipfile.BadZipFile("corrupt member")
-        with mock.patch("waydroid_manager.daemon.util.android_attach_env", return_value={}), \
-                mock.patch("subprocess.Popen", return_value=proc):
-            with self.assertRaises(zipfile.BadZipFile):
-                storage._pm(types.SimpleNamespace(id="1", container="wdm-1"), ["install"], src=src)
-        proc.kill.assert_called_once()
-        proc.wait.assert_called_once()
+        with self.assertRaises(zipfile.BadZipFile):
+            self.pm("exec sleep 30", src)
+
+    def test_hung_pm_frees_the_caller_although_its_pipes_stay_open(self):
+        # like lxc-attach: what holds the pipes (sleep) outlives the process _pm kills (sh)
+        t = time.monotonic()
+        with mock.patch.object(storage, "PM_TIMEOUT", 0.5), self.assertRaises(RuntimeError):
+            self.pm("exec 3<&0; sleep 5 <&3 & wait", io.BytesIO(b"x" * (8 << 20)))
+        self.assertLess(time.monotonic() - t, 3)
 
 
 class ShaderCacheTest(unittest.TestCase):

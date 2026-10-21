@@ -28,6 +28,9 @@ follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions f
   accept it too (64-bit apps; Android 11, 13 and 14 aren't covered yet).
 - The manager no longer freezes for every instance while one of them starts or installs an APK
   and its window is resized: saving the window size waited for that instance's operation.
+- An APK install or screenshot that hangs inside Android no longer blocks its instance until the
+  manager restarts. It fails after 15 minutes (a screenshot after one), and Stop, Start and
+  settings work again.
 - An Android reboot is no longer sometimes taken for a shutdown, and an instance that stops on
   its own is always cleaned up. Before, a check landing mid-stop, or any error while checking,
   could miss it, the latter until the manager restarted.
