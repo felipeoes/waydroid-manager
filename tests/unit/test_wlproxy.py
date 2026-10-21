@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 import array
+import io
 import os
 import socket
 import struct
@@ -7,6 +8,7 @@ import tempfile
 import threading
 import time
 import unittest
+from unittest import mock
 
 from waydroid_manager.session import wlproto as P
 from waydroid_manager.session import wlproxy as wp
@@ -202,6 +204,27 @@ class ZoomTest(unittest.TestCase):
         self.assertEqual((P.fixed_to_float(enter[2]), P.fixed_to_float(enter[3])), (640.0, 361.0))
         motion = args(out[1][2], "uff")
         self.assertEqual((P.fixed_to_float(motion[1]), P.fixed_to_float(motion[2])), (20.0, 40.0))
+
+    def test_touch_cancel_ends_every_point(self):
+        h = self.h
+        h.req(msg(SEAT, P.WL_SEAT_GET_TOUCH, "n", 17))
+        h.ev(msg(17, P.WL_TOUCH_EV_DOWN, "uuoiff", 5, 1, L, 0, fixed(10.0), fixed(10.0)), msg(17, P.WL_TOUCH_EV_FRAME))
+        out = h.ev(msg(17, P.WL_TOUCH_EV_CANCEL))
+        self.assertEqual([(o, op) for o, op, _ in out], [(17, P.WL_TOUCH_EV_CANCEL)])    # the HWC had a point
+        self.assertEqual(h.s.touches, {})
+
+    def test_destroyed_subsurface_leaves_the_tree(self):
+        h = self.h
+        h.req(msg(LSUB, P.WL_SUBSURFACE_DESTROY))
+        self.assertIsNone(h.s.surfaces[L].parent)
+        self.assertFalse(h.s.in_tree(L))
+        h.req(msg(SUBC, P.WL_SUBCOMPOSITOR_GET_SUBSURFACE, "noo", 17, L, S))   # no duplicate child
+        self.assertEqual(h.s.surfaces[S].children, [L])
+
+    def test_destroyed_input_objects_are_forgotten(self):
+        h = self.h
+        h.ev(msg(1, P.WL_DISPLAY_EV_DELETE_ID, "u", PTR), msg(1, P.WL_DISPLAY_EV_DELETE_ID, "u", SEAT))
+        self.assertEqual((h.s.pointer, h.s.seat, h.s.keyboard), (None, None, KBD))
 
     def test_configure_hidden_and_resize_rezooms(self):
         h = self.h
@@ -905,31 +928,52 @@ class CpuBufferTest(unittest.TestCase):
         self.assertEqual(len(fds), 1)
 
     def test_gpu_buffer_is_copied_into_our_memory_on_attach(self):
-        h, calls = self.h, []
+        # Our rows are spaced as Mesa maps the buffer's (one copy per frame), or as the dmabuf's
+        # when it can't be mapped
+        for mapped, stride in ((320, 320), (0, 256)):
+            with self.subTest(mapped=mapped):
+                self.setUp()
+                h, calls = self.h, []
 
-        class Gpu:
-            def import_buffer(self, *a):
-                calls.append(a[1:])
-                return "bo"
+                class Gpu:
+                    def import_buffer(self, *a):
+                        calls.append(a[1:])
+                        return "bo"
 
-            def read(self, bo, width, height, mem, stride):
-                calls.append(("read", bo, width, height, stride))
-                mem[:5] = b"frame"
+                    def map_stride(self, bo, width, height):
+                        return mapped
 
-            def free(self, bo):
-                calls.append(("free", bo))
-        h.s.cfg.gpu = Gpu()
-        tiled = 1 << 56 | 4                 # any layout the GPU reads
-        ops, (create, _), fds = self.create(modifier=tiled)
-        self.assertEqual(calls, [(64, 32, self.AB24, 0, 256, tiled)])
-        self.assertEqual(ops[2], (self.SHM, P.WL_SHM_CREATE_POOL))
-        self.assertEqual(args(create[2], "niiiiu"), [self.BUF, 0, 64, 32, 256, self.AB24])
-        self.assertNotEqual(os.fstat(fds[1]).st_ino, os.fstat(self.fd).st_ino)
-        h.req(msg(COMP, P.WL_COMPOSITOR_CREATE_SURFACE, "n", S), msg(S, P.WL_SURFACE_ATTACH, "oii", self.BUF, 0, 0))
-        self.assertEqual(calls[-1], ("read", "bo", 64, 32, 256))
-        self.assertEqual(os.pread(fds[1], 5, 0), b"frame")
-        h.ev(msg(1, P.WL_DISPLAY_EV_DELETE_ID, "u", self.BUF))
-        self.assertEqual(calls[-1], ("free", "bo"))
+                    def read(self, bo, width, height, mem, stride):
+                        calls.append(("read", bo, width, height, stride))
+                        mem[:5] = b"frame"
+
+                    def free(self, bo):
+                        calls.append(("free", bo))
+                h.s.cfg.gpu = Gpu()
+                tiled = 1 << 56 | 4                 # any layout the GPU reads
+                ops, (create, _), fds = self.create(modifier=tiled)
+                self.assertEqual(calls, [(64, 32, self.AB24, 0, 256, tiled)])
+                self.assertEqual(ops[2], (self.SHM, P.WL_SHM_CREATE_POOL))
+                self.assertEqual(args(create[2], "niiiiu"),
+                                 [self.BUF, 0, 64, 32, stride, self.AB24])
+                self.assertEqual(os.fstat(fds[1]).st_size, stride * 32)
+                self.assertNotEqual(os.fstat(fds[1]).st_ino, os.fstat(self.fd).st_ino)
+                h.req(msg(COMP, P.WL_COMPOSITOR_CREATE_SURFACE, "n", S),
+                      msg(S, P.WL_SURFACE_ATTACH, "oii", self.BUF, 0, 0))
+                self.assertEqual(calls[-1], ("read", "bo", 64, 32, stride))
+                self.assertEqual(os.pread(fds[1], 5, 0), b"frame")
+                h.ev(msg(1, P.WL_DISPLAY_EV_DELETE_ID, "u", self.BUF))
+                self.assertEqual(calls[-1], ("free", "bo"))
+
+    def test_params_fds_are_closed_with_the_connection(self):
+        h = self.h
+        h.req(msg(self.DMABUF, P.ZWP_LINUX_DMABUF_CREATE_PARAMS, "n", self.PARAMS),
+              msg(self.PARAMS, P.ZWP_LINUX_BUFFER_PARAMS_ADD, "uuuuu", 0, 0, 256, 0, 0), fds=[self.fd])
+        (kept,) = [plane[0] for plane in h.s.dmabuf_planes[self.PARAMS]]
+        os.fstat(kept)
+        h.s.close()
+        with self.assertRaises(OSError):
+            os.fstat(kept)
 
 
 class FileDropTest(unittest.TestCase):
@@ -1004,6 +1048,19 @@ class TranslatorTest(unittest.TestCase):
         self.assertEqual(args(p, "n"), [5])
         self.assertEqual(tr.c2s[4], 5)
         self.assertEqual(tr.c2s[wp.MY_ID_BASE], 4)
+
+    def test_dropped_request_takes_no_compositor_id(self):
+        tr = self.tr
+        self.req(msg(1, P.WL_DISPLAY_GET_REGISTRY, "n", 2))
+        self.req(msg(2, P.WL_REGISTRY_BIND, "usun", 1, "wl_subcompositor", 1, 3))
+        self.req(msg(2, P.WL_REGISTRY_BIND, "usun", 2, "wl_compositor", 4, 4))
+        top = tr.top
+        # its surface is unknown to the compositor: the request goes, and its new id with it
+        self.assertIsNone(self.req(msg(3, P.WL_SUBCOMPOSITOR_GET_SUBSURFACE, "noo", 5, 99, 98)))
+        self.assertEqual(tr.top, top)
+        self.assertNotIn(5, tr.c2s)
+        o, op, p = self.req(msg(4, P.WL_COMPOSITOR_CREATE_SURFACE, "n", 5))
+        self.assertEqual(args(p, "n"), [top])
 
     def test_events_translated_back_and_delete_id_frees(self):
         tr = self.tr
@@ -1095,6 +1152,33 @@ class ProxyIntegrationTest(unittest.TestCase):
         client.close()
         server.close()
         comp.close()
+
+    def test_a_failing_handler_does_not_end_the_proxy(self):
+        tmp = tempfile.mkdtemp()
+        upstream_path, listen_path = os.path.join(tmp, "compositor"), os.path.join(tmp, "wayland-0")
+        comp = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        comp.bind(upstream_path)
+        comp.listen(1)
+        ticks = []
+
+        def tick(session):
+            ticks.append(1)
+            if len(ticks) == 1:
+                raise RuntimeError("a tooltip bug")
+            return False
+        proxy = wp.Proxy(listen_path, upstream_path, wp.Config("9", "Nine", frame=False), io.StringIO())
+        proxy.bind()
+        with mock.patch.object(wp.Session, "tick", tick), mock.patch.object(wp.sys, "stderr", io.StringIO()):
+            threading.Thread(target=proxy.run, daemon=True).start()
+            client = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+            client.connect(listen_path)
+            server, _ = comp.accept()
+            server.settimeout(5)
+            client.sendall(msg(1, 1, "n", 2))
+            self.assertEqual(parse(server.recv(4096)), [(1, 1, struct.pack("=I", 2))])
+            self.assertTrue(ticks)
+        for s in (client, server, comp):
+            s.close()
 
 
 if __name__ == "__main__":
