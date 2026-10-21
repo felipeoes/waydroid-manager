@@ -10,6 +10,7 @@ instead doesn't work: GNOME Shell's app grid keeps launching the old one.) Per-a
 ("waydroid-manager.<id>.<pkg>.desktop") so they never collide with the stock
 instance's "waydroid.<pkg>.desktop" files.
 """
+import functools
 import os
 import shlex
 import shutil
@@ -18,6 +19,7 @@ import sys
 from .. import paths
 
 
+@functools.lru_cache(maxsize=None)      # a PATH search per app entry otherwise
 def _exec_prefix():
     exe = shutil.which("waydroid-manager")
     if exe:
@@ -116,8 +118,10 @@ def remove_launcher(iid):
 def app_entries(iid):
     d = paths.user_applications_dir()
     prefix = "waydroid-manager.{}.".format(iid)
+    own = os.path.basename(launcher_path(iid))      # matches the prefix too, but isn't an app's
     try:
-        return [os.path.join(d, f) for f in os.listdir(d) if f.startswith(prefix) and f.endswith(".desktop")]
+        return [os.path.join(d, f) for f in os.listdir(d)
+                if f.startswith(prefix) and f.endswith(".desktop") and f != own]
     except FileNotFoundError:
         return []
 
@@ -139,8 +143,17 @@ def write_app_entry(iid, inst_name, app, icons_dir):
         "StartupWMClass=waydroid-manager.{}.{}".format(iid, pkg),
         "",
     ])
-    with open(p, "w") as f:
+    # Every write makes the app grid reload: skip unchanged entries, and never show a half-written one
+    try:
+        with open(p) as f:
+            if f.read() == text:
+                return
+    except FileNotFoundError:
+        pass
+    tmp = p + ".tmp"
+    with open(tmp, "w") as f:
         f.write(text)
+    os.replace(tmp, p)
 
 
 def remove_app_entry(iid, pkg):

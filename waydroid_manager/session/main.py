@@ -130,6 +130,12 @@ class Session:
             code = self.proxy.poll() if self.proxy else None
             log.warning("Wayland proxy exited (code %s); see ~/.cache/waydroid-manager/wlproxy-%s.log",
                         code, self.iid)
+            if not self.stopping:
+                # Without its proxy the instance has no window, and starting it again can't
+                # give it one: stop it, so it can be started afresh
+                notify("{} stopped".format(Instance.load(self.iid).name),
+                       "Its window closed unexpectedly.", "dialog-error-symbolic")
+                self.on_signal()
             return False
         self.proxy_buf += chunk
         self._proxy_lines()
@@ -382,23 +388,41 @@ class Session:
         log.info("Android user %s is ready", uid)
         if shutil.which("adb") and self.adb_key is None:
             threading.Thread(target=self.adb_prepare, daemon=True, name="adb").start()
-        if Instance.load(self.iid).getbool("desktop_apps"):
-            GLib.idle_add(self.sync_app_entries)
+        self.unlocked = True
+        GLib.idle_add(self.queue_app_sync)      # also removes entries left from when the setting was on
 
     def on_package(self, mode, pkg, uid):
         if Instance.load(self.iid).getbool("desktop_apps"):
-            GLib.idle_add(self.sync_app_entries)
+            GLib.idle_add(self.queue_app_sync)
+
+    def on_config(self, iid):
+        """App entries follow their setting and the instance's name while it runs."""
+        if str(iid) != self.iid or not getattr(self, "unlocked", False):
+            return
+        inst = Instance.load(self.iid)
+        if (inst.getbool("desktop_apps"), inst.name) != getattr(self, "apps_state", None):
+            self.queue_app_sync()
+
+    def queue_app_sync(self):
+        # One sync once things settle: a Play Store update changes dozens of packages in a row,
+        # and each sync blocks this loop while it asks Android
+        if not getattr(self, "_apps_timer", None):
+            self._apps_timer = GLib.timeout_add_seconds(2, self.sync_app_entries)
+        return False
 
     def sync_app_entries(self):
+        self._apps_timer = None
+        inst = Instance.load(self.iid)
+        self.apps_state = (inst.getbool("desktop_apps"), inst.name)
         try:
-            from ..client import platform_service
-            p = platform_service(self.iid, timeout=10)
-            apps = p.getAppsInfo() or []
-            icons = os.path.join(Instance.load(self.iid).data_dir, "icons")
             keep = set()
-            for app in apps:
-                desktop.write_app_entry(self.iid, self.inst.name, app, icons)
-                keep.add("waydroid-manager.{}.{}.desktop".format(self.iid, app["packageName"]))
+            if self.apps_state[0]:
+                from ..client import platform_service
+                apps = platform_service(self.iid, timeout=10).getAppsInfo() or []
+                icons = os.path.join(inst.data_dir, "icons")
+                for app in apps:
+                    desktop.write_app_entry(self.iid, inst.name, app, icons)
+                    keep.add("waydroid-manager.{}.{}.desktop".format(self.iid, app["packageName"]))
             for p in desktop.app_entries(self.iid):
                 if os.path.basename(p) not in keep:
                     os.unlink(p)
@@ -411,6 +435,10 @@ class Session:
             self.loop.quit()
 
     def on_signal(self):
+        # Stays installed (True): with the default action back, a second SIGTERM during the
+        # stop below would kill us before cleanup() ends the proxy and the renderer
+        if self.stopping:
+            return True
         log.info("stopping")
         self.stopping = True
         try:
@@ -418,7 +446,7 @@ class Session:
         except DaemonError as e:
             log.warning("stop: %s", e)
         self.quit()
-        return False
+        return True
 
     def run(self):
         try:
@@ -446,6 +474,8 @@ class Session:
         for sig in ("ConfigChanged", "InstanceAdded", "InstanceRemoved"):
             self.bus.add_signal_receiver(self.adb_sync, signal_name=sig, dbus_interface=paths.DBUS_IFACE,
                                          bus_name=paths.DBUS_NAME, path=paths.DBUS_PATH)
+        self.bus.add_signal_receiver(self.on_config, signal_name="ConfigChanged", dbus_interface=paths.DBUS_IFACE,
+                                     bus_name=paths.DBUS_NAME, path=paths.DBUS_PATH)
         for sig in (signal.SIGTERM, signal.SIGINT, signal.SIGHUP):
             signal_add(sig, self.on_signal)
         log.info("starting instance %s", self.iid)
@@ -462,7 +492,14 @@ class Session:
         home = os.environ.get("ANDROID_USER_HOME") or os.path.expanduser("~/.android")
         key = ""
         try:
-            subprocess.run(["adb", "start-server"], stdin=subprocess.DEVNULL, capture_output=True, timeout=60)
+            # In a scope of its own: started in this session's unit, the server would be killed
+            # with the instance, and every phone and IDE using adb would lose it
+            r = None
+            if shutil.which("systemd-run"):
+                r = subprocess.run(["systemd-run", "--user", "--scope", "--collect", "--quiet", "--",
+                                    "adb", "start-server"], stdin=subprocess.DEVNULL, capture_output=True, timeout=60)
+            if r is None or r.returncode != 0:
+                subprocess.run(["adb", "start-server"], stdin=subprocess.DEVNULL, capture_output=True, timeout=60)
             with open(os.path.join(home, "adbkey.pub")) as f:
                 key = f.read().strip()
         except (OSError, subprocess.TimeoutExpired) as e:
@@ -529,8 +566,9 @@ class Session:
         self.stop_renderer()
         if getattr(self, "rotation_w", None) is not None:
             os.close(self.rotation_w)
-        if getattr(self, "confirm", None) and self.confirm.poll() is None:
-            self.confirm.terminate()
+        for helper in (getattr(self, "confirm", None), getattr(self, "picker", None)):
+            if helper and helper.poll() is None:
+                helper.terminate()
         for s in self.services:
             try:
                 s.close()
@@ -542,6 +580,7 @@ class Session:
                 self.proxy.wait(3)
             except subprocess.TimeoutExpired:
                 self.proxy.kill()
+                self.proxy.wait()
 
 
 def main(iid, background=False):
