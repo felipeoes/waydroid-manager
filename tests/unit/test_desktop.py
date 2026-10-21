@@ -54,6 +54,22 @@ class AppEntryTest(unittest.TestCase):
             self.assertIn("Name=Example (Renamed)\n", read(path))
             self.assertEqual(os.listdir(d), [os.path.basename(path)])   # no temporary file left
 
+    def test_entry_follows_a_changed_icon(self):
+        with tempfile.TemporaryDirectory() as d, \
+                mock.patch.object(desktop.paths, "user_applications_dir", return_value=d):
+            icon = os.path.join(d, "org.example.png")
+            open(icon, "w").close()
+            desktop.write_app_entry("1", "One", self.APP, d)
+            path, = desktop.app_entries("1")
+            self.assertIn("Icon={}\n".format(icon), read(path))
+            os.utime(path, (50, 50))
+            os.utime(icon, (40, 40))
+            desktop.write_app_entry("1", "One", self.APP, d)
+            self.assertEqual(os.stat(path).st_mtime, 50)
+            os.utime(icon, (60, 60))                            # an app update's new icon
+            desktop.write_app_entry("1", "One", self.APP, d)
+            self.assertGreater(os.stat(path).st_mtime, 60)
+
 
 if __name__ == "__main__":
     unittest.main()

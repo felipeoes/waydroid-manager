@@ -36,6 +36,21 @@ def _escape(v):
     return v.replace("\\", "\\\\").replace("\n", " ").replace("\r", " ")
 
 
+def _write_entry(p, text, since=0):
+    """Write a desktop entry whole (never seen half-written), and only if it changed or is older
+    than since: every write makes the app grid reload."""
+    try:
+        with open(p) as f:
+            if f.read() == text and os.fstat(f.fileno()).st_mtime >= since:
+                return
+    except FileNotFoundError:
+        pass
+    tmp = p + ".tmp"
+    with open(tmp, "w") as f:
+        f.write(text)
+    os.replace(tmp, p)
+
+
 def launcher_path(iid):
     return os.path.join(paths.user_applications_dir(), "waydroid-manager.{}.desktop".format(iid))
 
@@ -80,10 +95,7 @@ def write_launcher(iid, name):
         "",
     ])
     p = launcher_path(iid)
-    tmp = p + ".tmp"
-    with open(tmp, "w") as f:
-        f.write(text)
-    os.replace(tmp, p)
+    _write_entry(p, text)
     return p
 
 
@@ -133,27 +145,22 @@ def write_app_entry(iid, inst_name, app, icons_dir):
         return
     p = os.path.join(paths.user_applications_dir(), "waydroid-manager.{}.{}.desktop".format(iid, pkg))
     icon = os.path.join(icons_dir, pkg + ".png")
+    try:
+        icon_at = os.path.getmtime(icon)
+    except OSError:
+        icon, icon_at = "waydroid", 0
     text = "\n".join([
         "[Desktop Entry]",
         "Type=Application",
         "Name={} ({})".format(_escape(app.get("name", pkg)), _escape(inst_name)),
         "Exec=" + _cmd("app", "launch", iid, pkg),
-        "Icon=" + (icon if os.path.exists(icon) else "waydroid"),
+        "Icon=" + icon,
         "Categories=X-WayDroid-App;",
         "StartupWMClass=waydroid-manager.{}.{}".format(iid, pkg),
         "",
     ])
-    # Every write makes the app grid reload: skip unchanged entries, and never show a half-written one
-    try:
-        with open(p) as f:
-            if f.read() == text:
-                return
-    except FileNotFoundError:
-        pass
-    tmp = p + ".tmp"
-    with open(tmp, "w") as f:
-        f.write(text)
-    os.replace(tmp, p)
+    # an app update rewrites its icon under the same name: the grid reloads it with the entry
+    _write_entry(p, text, icon_at)
 
 
 def remove_app_entry(iid, pkg):
