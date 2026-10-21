@@ -126,7 +126,8 @@ class _Dialog(Adw.Dialog):
     def _on(self, obj, signal, handler):
         """obj.connect, undone when the dialog closes. Handlers on our widgets hold self: a cycle
         through GTK that Python's gc can't see, so a closed dialog (megabytes of widgets) would
-        never be freed."""
+        never be freed. A weak self (window.BaseRow) isn't enough here: handlers hold other
+        widgets of the dialog too (a property's remove button, its row)."""
         self.__dict__.setdefault("_handlers", []).append((obj, obj.connect(signal, handler)))
 
     def _disconnect(self):

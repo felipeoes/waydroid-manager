@@ -68,7 +68,8 @@ class BaseRow(Adw.ActionRow):
         self.win = win
         self.info = info
         # Handlers on our own widgets reach the row through this: holding it would be a cycle
-        # through GTK that Python's gc can't see, and a deleted instance's row would never be freed
+        # through GTK that Python's gc can't see, and a deleted instance's row would never be freed.
+        # (Dialogs disconnect theirs on close instead, see dialogs._Dialog._on; a row has no close.)
         me = weakref.proxy(self)
         self.check = None
         if check:  # for batch actions; clicking the row toggles it too
