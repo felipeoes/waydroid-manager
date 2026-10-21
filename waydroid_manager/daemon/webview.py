@@ -13,6 +13,7 @@ the existing WebViewFasterGetDefaultUserAgent path, which schedules startup asyn
 """
 import hashlib
 import os
+import re
 import shutil
 import struct
 import subprocess
@@ -26,19 +27,37 @@ from .util import CommandError, log
 
 APK = "system/product/app/webview/webview.apk"
 LAYER = "webview-2"                 # keep mounted older layers intact during upgrades
+OLD_LAYERS = ("webview",)           # removed once no instance has them mounted
 _UA_DEX_SHA256 = "67ccc320333b08297c3c0bdb04949198145032c12357b152ad4dad2f925feda7"
 _UA_OFFSET = 0x16FB00
 _USE32BITABI = 0x01010515           # android:use32bitAbi
 _V2_BLOCK_ID = 0x7109871A
 _RSA_PKCS1_SHA256 = 0x0103
 _lock = threading.Lock()            # parallel starts of one image set share its layer
+_unpatched = set()                  # layer dirs no patch applies to: not read and hashed at every start
 
 
 def layer(system_root, d):
     """The layer d with the patched WebView of the mounted system image, built on first use.
     Returns d, or None if no patch applies or the layer can't be built."""
     with _lock:
+        _drop_old(os.path.dirname(d))
+        if d in _unpatched:
+            return None
         return d if os.path.isdir(d) else _build(system_root, d)
+
+
+def _drop_old(images_dir):
+    """Remove the image set's layers of earlier revisions that no overlay has in its stack (an
+    instance started before the upgrade keeps its own until it stops)."""
+    with open("/proc/self/mountinfo") as f:
+        mounts = f.read()
+    for name in OLD_LAYERS:
+        old = os.path.join(images_dir, name)
+        # in a lowerdir list as the layer itself or its vendor/
+        if os.path.isdir(old) and not re.search(re.escape(old) + r"[:,/\s]", mounts):
+            log.info("removing the old WebView layer %s", old)
+            shutil.rmtree(old, ignore_errors=True)
 
 
 def _build(system_root, d):
@@ -51,6 +70,7 @@ def _build(system_root, d):
         os.makedirs(os.path.dirname(os.path.join(tmp, APK)))
         if not patch_apk(src, os.path.join(tmp, APK)):
             log.info("no compatibility patch applies to the image's WebView; no layer")
+            _unpatched.add(d)
             return None
         layers.set_modes(tmp)
         os.rename(tmp, d)

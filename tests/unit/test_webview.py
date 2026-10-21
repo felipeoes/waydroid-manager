@@ -8,7 +8,7 @@ import tempfile
 import unittest
 import zipfile
 import zlib
-from unittest.mock import patch
+from unittest.mock import mock_open, patch
 
 from waydroid_manager.daemon import webview
 
@@ -52,6 +52,29 @@ class FastUserAgentTest(unittest.TestCase):
                 patch.object(webview, "_UA_OFFSET", 112):
             with self.assertRaises(ValueError):
                 webview.fast_user_agent(dex)
+
+
+class LayerTest(unittest.TestCase):
+    def test_webview_no_patch_applies_to_is_read_once(self):
+        with tempfile.TemporaryDirectory() as d, patch.object(webview, "_unpatched", set()), \
+                patch.object(webview, "patch_apk", return_value=False) as patch_apk:
+            os.makedirs(os.path.join(d, os.path.dirname(webview.APK)))
+            open(os.path.join(d, webview.APK), "w").close()
+            for _ in range(2):
+                self.assertIsNone(webview.layer(d, os.path.join(d, webview.LAYER)))
+        patch_apk.assert_called_once()
+
+    def test_old_layer_goes_once_no_overlay_has_it(self):
+        with tempfile.TemporaryDirectory() as d, patch.object(webview, "_build", return_value=None):
+            old = os.path.join(d, "webview")
+            os.makedirs(old)
+            mounted = "1 2 0:1 / /r rw - overlay overlay rw,lowerdir={0}/vendor:{0}-2/vendor\n".format(old)
+            with patch("builtins.open", mock_open(read_data=mounted)):
+                webview.layer(d, os.path.join(d, webview.LAYER))
+            self.assertTrue(os.path.isdir(old))
+            with patch("builtins.open", mock_open(read_data=mounted.replace(old + "/", "/x/"))):
+                webview.layer(d, os.path.join(d, webview.LAYER))
+            self.assertFalse(os.path.isdir(old))
 
 
 @unittest.skipUnless(shutil.which("openssl"), "needs openssl")
