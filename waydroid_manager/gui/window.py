@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 """Main window: the instance list."""
 import os
+import weakref
 
 import gi
 
@@ -66,6 +67,9 @@ class BaseRow(Adw.ActionRow):
         super().__init__()
         self.win = win
         self.info = info
+        # Handlers on our own widgets reach the row through this: holding it would be a cycle
+        # through GTK that Python's gc can't see, and a deleted instance's row would never be freed
+        me = weakref.proxy(self)
         self.check = None
         if check:  # for batch actions; clicking the row toggles it too
             self.check = Gtk.CheckButton(valign=Gtk.Align.CENTER)
@@ -77,11 +81,11 @@ class BaseRow(Adw.ActionRow):
         self.spinner.set_valign(Gtk.Align.CENTER)
         self.spinner.set_visible(False)
         self.add_suffix(self.spinner)
-        self.play = _flat_button("media-playback-start-symbolic", "Start", lambda: win.start_or_show(self.info))
+        self.play = _flat_button("media-playback-start-symbolic", "Start", lambda: win.start_or_show(me.info))
         self.add_suffix(self.play)
-        self.stop = _flat_button("media-playback-stop-symbolic", "Stop", lambda: win.stop(self.info))
+        self.stop = _flat_button("media-playback-stop-symbolic", "Stop", lambda: win.stop(me.info))
         self.add_suffix(self.stop)
-        self.restart = _flat_button("system-reboot-symbolic", "Restart", lambda: win.restart(self.info))
+        self.restart = _flat_button("system-reboot-symbolic", "Restart", lambda: win.restart(me.info))
         self.add_suffix(self.restart)
         # Disk space used, next to ⋮ so it lines up across rows; filled in by update() (instances only: the daemon measures it)
         self.disk = Gtk.Box(spacing=4, valign=Gtk.Align.CENTER, visible=False, css_classes=["dim-label"],
@@ -93,7 +97,7 @@ class BaseRow(Adw.ActionRow):
         self.more = Gtk.MenuButton(icon_name="view-more-symbolic", valign=Gtk.Align.CENTER, tooltip_text="More")
         self.more.add_css_class("flat")
         # Rebuilt every time it opens so labels reflect the current state
-        self.more.set_create_popup_func(lambda btn: btn.set_menu_model(self.menu()))
+        self.more.set_create_popup_func(lambda btn: btn.set_menu_model(me.menu()))
         self.add_suffix(self.more)
         self.actions = Gio.SimpleActionGroup()
         self.insert_action_group("row", self.actions)
@@ -132,11 +136,12 @@ class InstanceRow(BaseRow):
     def __init__(self, win, info):
         # #0 (stock Waydroid) can't be deleted, so it stays out of the batch selection
         super().__init__(win, info, check=info["id"] != "0")
-        self.add_action("settings", lambda: win.edit(self.info["id"]))
-        self.add_action("clone", lambda: win.clone(self.info))
-        self.add_action("install", lambda: win.install_apk(self.info["id"]))
-        self.add_action("launcher", lambda: win.toggle_launcher(self.info))
-        self.add_action("delete", lambda: win.delete(self.info))
+        me = weakref.proxy(self)            # see BaseRow
+        self.add_action("settings", lambda: win.edit(me.info["id"]))
+        self.add_action("clone", lambda: win.clone(me.info))
+        self.add_action("install", lambda: win.install_apk(me.info["id"]))
+        self.add_action("launcher", lambda: win.toggle_launcher(me.info))
+        self.add_action("delete", lambda: win.delete(me.info))
         self.update(info)
 
     def menu(self):
@@ -250,10 +255,18 @@ class MainWindow(Adw.ApplicationWindow):
         self.set_content(view)
         self.refresh()
         GLib.timeout_add_seconds(5, self._tick)
+        self.connect("notify::suspended", lambda *_: self.is_suspended() or self.refresh())
 
     # -- data --------------------------------------------------------------------
     def _tick(self):
-        self.refresh()
+        # Changes of state arrive as signals: polling only keeps the figures current (the memory
+        # of running instances, the disk use the daemon measures in the background) and retries
+        # a List that failed
+        if self.is_suspended():
+            return True
+        if self.stack.get_visible_child_name() == "error" or \
+                any(i["state"] in ACTIVE or not i.get("disk_used") for i in self.instances):
+            self.refresh()
         return True
 
     def refresh(self):
