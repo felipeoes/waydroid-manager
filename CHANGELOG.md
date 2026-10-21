@@ -26,6 +26,31 @@ follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions f
   video on Android 15, 16 and 17. Seeing an NVIDIA renderer, the engine names the video texture
   extension the way NVIDIA's drivers accept but ANGLE did not; the image's ANGLE is patched to
   accept it too (64-bit apps; Android 11, 13 and 14 aren't covered yet).
+- The manager no longer freezes for every instance while one of them starts or installs an APK
+  and its window is resized: saving the window size waited for that instance's operation.
+- An Android reboot is no longer sometimes taken for a shutdown, and an instance that stops on
+  its own is always cleaned up. Before, a check landing mid-stop, or any error while checking,
+  could miss it, the latter until the manager restarted.
+- Settings, New Instance and Clone dialogs, and the rows of deleted instances, are freed when
+  closed. Each one used to keep 2–3 MB of memory until the app quit.
+- An instance whose window process ends unexpectedly is stopped, with a notification, instead of
+  running on with no window; the window process itself no longer ends on a failing tooltip or
+  message.
+- Enabling app shortcuts no longer removes the instance's own launcher from the app grid.
+  Turning them off removes them while the instance runs, a rename updates them, and a Play Store
+  update of many apps rewrites them once instead of once per app.
+- The adb server the first instance starts no longer stops with that instance, taking other
+  devices and IDEs with it.
+- Copying more than 128 KiB of text in Android reaches the desktop clipboard, and Android
+  notifications keep working after the desktop's notification service restarts.
+- A failed stock image sync is retried when stock's images change, not every 30 seconds with a
+  full copy; a failed start no longer leaves the network or session sockets set up; a cloned
+  instance's identity reset is retried when it didn't run.
+- When the desktop can't take Android's buffers directly (another GPU under GNOME on NVIDIA),
+  copying each frame takes a quarter of the time (1.15 ms to 0.34 ms for 900×1600).
+- Lower idle cost: Android no longer reports its display rotation twice a second when it hasn't
+  changed, the manager doesn't poll stopped instances or ask for the instance list while nothing
+  runs, and listing instances doesn't run a command per instance.
 
 ## [1.3.6] - 2026-10-14
 
