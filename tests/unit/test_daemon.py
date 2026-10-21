@@ -20,6 +20,7 @@ def manager():
     m.transient, m.known, m.sessions, m.helpers, m.key_fds = {}, {}, {}, {}, {}
     m.disk, m.last_close, m.picked, m.stopping_by_us = {}, {}, set(), set()
     m.key_lock = threading.Lock()
+    m.config_turn = {}
     m.sync_failed = None
     m.StateChanged, m.ConfigChanged = mock.Mock(), mock.Mock()
     return m
@@ -54,6 +55,26 @@ class SetConfigTest(unittest.TestCase):
         self.cur.save.assert_called_once()
         self.m.ConfigChanged.assert_called_once_with("1")
 
+    def test_saves_in_the_order_they_came(self):
+        class LastComesFirst:
+            """An instance lock whose later waiters win it."""
+            lock, n = threading.Lock(), 0
+
+            def __enter__(self):
+                self.n += 1
+                time.sleep(0.1 / self.n)
+                self.lock.acquire()
+
+            def __exit__(self, *a):
+                self.lock.release()
+        self.m.locks["1"] = LastComesFirst()
+        replies = threading.Semaphore(0)
+        for z in range(8):
+            self.m.SetConfig("1", {"zoom": str(z)}, ":1.2", replies.release, mock.Mock())
+        for _ in range(8):
+            self.assertTrue(replies.acquire(timeout=5))
+        self.assertEqual([c.args[1] for c in self.cur.set.call_args_list], [str(z) for z in range(8)])
+
     def test_invalid_value_reaches_the_caller(self):
         failed = threading.Event()
         errors = []
@@ -70,7 +91,9 @@ class WatcherTest(unittest.TestCase):
     def setUp(self):
         self.m = manager()
         self.idle = mock.Mock()
+        self.up = set()
         for p in (mock.patch.object(main, "list_ids", return_value=["1"]),
+                  mock.patch.object(main, "active_ids", lambda: self.up),
                   mock.patch.object(main.GLib, "idle_add", self.idle)):
             p.start()
             self.addCleanup(p.stop)
@@ -95,10 +118,16 @@ class WatcherTest(unittest.TestCase):
 
     def test_stopped_instance_without_a_container_is_not_polled(self):
         self.m.known["1"] = "STOPPED"
-        with mock.patch.object(main, "lxc_state") as state, \
-                mock.patch.object(main.os.path, "isdir", return_value=False):
+        with mock.patch.object(main, "lxc_state") as state:
             self.m._watch_tick(2)
         state.assert_not_called()
+
+    def test_running_instance_recorded_as_stopped_is_corrected(self):
+        self.m.known["1"] = "STOPPED"           # a failed lxc-info right after its start
+        self.up.add("1")
+        with mock.patch.object(main, "lxc_state", return_value="RUNNING"):
+            self.m._watch_tick(2)
+        self.idle.assert_called_once_with(self.m._on_observed, "1", "RUNNING")
 
     def test_failed_stock_sync_is_retried_only_for_new_images(self):
         with mock.patch.object(main, "lxc_state", return_value="STOPPED"), mock.patch.object(main, "log"), \
@@ -148,6 +177,31 @@ class SessionTest(unittest.TestCase):
             m._restart("1")
         self.assertNotIn("1", m.key_fds)
         self.assertRaises(OSError, os.fstat, w)
+
+    def test_helper_of_a_stopped_container_is_not_restarted(self):
+        m = manager()
+        p = mock.Mock(returncode=0)
+        m.helpers["1"], m.known["1"] = p, "RUNNING"     # the watcher hasn't seen the stop yet
+        m.start_helper = mock.Mock()
+        with mock.patch.object(main, "lxc_state", return_value="STOPPED"), mock.patch.object(main, "log"):
+            m._helper_exited("1", p, 60)
+        m.start_helper.assert_not_called()
+        self.assertNotIn("1", m.helpers)
+
+    def test_deleted_instance_gets_no_disk_figure_back(self):
+        m = manager()
+        inst = types.SimpleNamespace(id="3", index=3, dir="/nonexistent")
+        du = threading.Event()
+
+        def run(*a, **kw):
+            du.wait(5)
+            return types.SimpleNamespace(stdout="123\t/x\n123\ttotal\n")
+        with mock.patch.object(main.subprocess, "run", run):
+            m.disk_used(inst)
+            m.disk.pop("3")                         # _delete, while du runs
+            du.set()
+            next(t for t in threading.enumerate() if t.name == "du-3").join(5)
+        self.assertNotIn("3", m.disk)
 
 
 class CreateTest(unittest.TestCase):

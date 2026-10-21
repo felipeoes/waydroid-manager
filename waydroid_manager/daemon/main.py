@@ -93,6 +93,7 @@ class Manager(dbus.service.Object):
         self.stopping_by_us = set()
         self.key_fds = {}        # id -> fd of the instance's keyboard FIFO (kept open while running)
         self.key_lock = threading.Lock()     # key_fds: written on the main loop, closed by workers
+        self.config_turn = {}    # id -> Event set when its latest SetConfig is done
         self.sync_failed = None  # stock image id whose automatic sync failed
         self.dbus_info = dbus.Interface(bus.get_object("org.freedesktop.DBus", "/org/freedesktop/DBus"),
                                         "org.freedesktop.DBus")
@@ -196,7 +197,8 @@ class Manager(dbus.service.Object):
         thread, at most once a minute, since List runs on the main loop."""
         val, at = self.disk.get(inst.id, ("", 0))
         if time.time() - at > 60:
-            self.disk[inst.id] = (val, float("inf"))   # in flight: a du slower than a minute mustn't pile up
+            # in flight: a du slower than a minute mustn't pile up
+            mark = self.disk[inst.id] = (val, float("inf"))
 
             def measure():
                 size = val
@@ -221,7 +223,8 @@ class Manager(dbus.service.Object):
                     if r.stdout.split():
                         size = r.stdout.split()[-2]
                 finally:
-                    self.disk[inst.id] = (size, time.time())
+                    if self.disk.get(inst.id) is mark:      # not once deleted: a new one may take the number
+                        self.disk[inst.id] = (size, time.time())
             threading.Thread(target=measure, daemon=True, name="du-" + inst.id).start()
         return val
 
@@ -304,9 +307,10 @@ class Manager(dbus.service.Object):
         suspend and reboot requests go nowhere. One that dies right away isn't restarted."""
         if self.helpers.get(iid) is not p:
             return False
-        del self.helpers[iid]
+        self.helpers.pop(iid, None)     # a worker's stop_helper may have taken it since
         log.warning("%s: hardware helper exited (code %s)", iid, p.returncode)
-        if ran > 10 and self.state(iid) in ACTIVE:
+        # not state(): a helper exits when its container stops, before the watcher sees that
+        if ran > 10 and (self.transient.get(iid) or lxc_state(iid)) in ACTIVE:
             try:
                 self.start_helper(Instance.load(iid))
             except FileNotFoundError:
@@ -472,8 +476,8 @@ class Manager(dbus.service.Object):
                     os.write(fd, struct.pack("=qqHHi", sec, usec + 1, 1, code, 0))
                     return
                 except OSError:
-                    del self.key_fds[iid]
-                    os.close(fd)
+                    with contextlib.suppress(OSError):
+                        os.close(self.key_fds.pop(iid))
                     if attempt:
                         raise
 
@@ -664,13 +668,14 @@ class Manager(dbus.service.Object):
             self._stop(iid)
         self.set_transient(iid, "DELETING")
         self._close_key_fd(iid)
-        self.disk.pop(iid, None)
         self.last_close.pop(iid, None)
+        self.config_turn.pop(iid, None)
         try:
             storage.delete_instance_files(inst)
         finally:
             self.transient.pop(iid, None)
             self.known.pop(iid, None)       # may say DELETING: a new instance can take the number
+            self.disk.pop(iid, None)        # last: a List meanwhile measures it again
         self.refresh_hosts()
         GLib.idle_add(lambda: (self.InstanceRemoved(iid), False)[1])
 
@@ -727,9 +732,13 @@ class Manager(dbus.service.Object):
         except Error as e:
             return error(e)
         values = _s(values)
+        # In a worker: the lock may be held for minutes (a start, an APK install). One at a time, in
+        # the order they came: workers all waiting on the lock would take it in any order, and an
+        # older window size could be saved last.
+        prev, mine = self.config_turn.get(inst.id), threading.Event()
+        self.config_turn[inst.id] = mine
 
-        def work():
-            # in a worker: the lock may be held for minutes (a start, an APK install)
+        def save():
             cur = Instance.load(inst.id)
             try:
                 for k, v in values.items():
@@ -750,10 +759,19 @@ class Manager(dbus.service.Object):
             if "name" in values:
                 self.refresh_names()
 
+        def work():
+            if prev:
+                prev.wait()             # before the lock: the previous call needs it
+            try:
+                with self.locks[inst.id]:
+                    save()
+            finally:
+                mine.set()
+
         def done():
             self.ConfigChanged(inst.id)
             reply()
-        self.run_async(inst.id, work, done, error)
+        self.run_async(inst.id, work, done, error, lock=False)
 
     @dbus.service.method(paths.DBUS_IFACE, in_signature="sa{ss}", out_signature="",
                          sender_keyword="sender", async_callbacks=("reply", "error"))
@@ -1021,12 +1039,13 @@ class Manager(dbus.service.Object):
                 self.sync_failed = stock_id
                 log.warning("automatic image sync failed: %s", e)
         try:
+            up = active_ids()
             for iid in list_ids():
                 if iid in self.transient or iid in self.stopping_by_us:
                     continue
-                # only the daemon starts containers, and it records their state itself
-                if self.known.get(iid) == "STOPPED" and not os.path.isdir(
-                        "/sys/fs/cgroup/lxc.payload." + paths.container_name(iid)):
+                # only the daemon starts containers, and it records their state itself; one lxc-ls
+                # for all still corrects a STOPPED recorded from a failed lxc-info
+                if self.known.get(iid) == "STOPPED" and iid not in up:
                     continue
                 st = lxc_state(iid)
                 # act on where a container lands: a STOPPING caught on the way would hide a
