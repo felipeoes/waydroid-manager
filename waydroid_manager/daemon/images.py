@@ -134,6 +134,15 @@ def stock_is_newer():
 
 def stock_busy():
     """True while stock Waydroid may be rewriting its images."""
+    now = time.time()
+    cfg = stock.load_stock_cfg()
+    src = stock.stock_images_path(cfg)
+    for p in (paths.STOCK_CFG, os.path.join(src, "system.img"), os.path.join(src, "vendor.img")):
+        try:
+            if now - os.stat(p).st_mtime < 30:
+                return True
+        except OSError:
+            return True
     for pid in os.listdir("/proc"):
         if not pid.isdigit():
             continue
@@ -144,15 +153,6 @@ def stock_busy():
             continue
         if any(a.endswith(b"waydroid") or a.endswith(b"waydroid.py") for a in argv[:2]) and \
                 any(a in (b"upgrade", b"init") for a in argv):
-            return True
-    now = time.time()
-    cfg = stock.load_stock_cfg()
-    src = stock.stock_images_path(cfg)
-    for p in (paths.STOCK_CFG, os.path.join(src, "system.img"), os.path.join(src, "vendor.img")):
-        try:
-            if now - os.stat(p).st_mtime < 30:
-                return True
-        except OSError:
             return True
     return False
 

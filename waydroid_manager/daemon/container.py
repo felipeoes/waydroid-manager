@@ -345,7 +345,15 @@ def load_apparmor_profile():
     if not apparmor_profile_loaded(name):
         return None
     with open(os.path.join("/etc/apparmor.d/lxc", name)) as f:
-        _write(APPARMOR_FILE, apparmor_profile(f.read(), name))
+        text = apparmor_profile(f.read(), name)
+    try:
+        with open(APPARMOR_FILE) as f:
+            # loaded this boot (the file is on tmpfs) and unchanged: skip the parser, slow under _pin_lock
+            if f.read() == text and apparmor_profile_loaded(APPARMOR_PROFILE):
+                return APPARMOR_PROFILE
+    except OSError:
+        pass
+    _write(APPARMOR_FILE, text)
     run(["apparmor_parser", "--replace", "--skip-cache", APPARMOR_FILE])
     return APPARMOR_PROFILE
 
@@ -765,32 +773,32 @@ def start(inst, net, hosts, session_in, uid, in_use, cpus_busy=list):
     render = render_for(inst)
     with _pin_lock:
         write_lxc_config(inst, net, cpus_busy(), render)
-    net.ensure_up(hosts)
-    set_device_permissions()
-    ensure_overcommit()
-
-    # Sockets: validate the caller's and bind them at root-owned paths
-    stage = paths.staging_dir(inst.id)
-    umount_tree(stage)
-    os.makedirs(stage, mode=0o755, exist_ok=True)
-    wl = os.path.join(stage, "wayland-0")
-    stage_socket(session_in["wayland_socket"], wl, uid)
-    pulse = ""
-    if session_in.get("pulse_socket"):
-        try:
-            pulse = os.path.join(stage, "pulse-native")
-            stage_socket(session_in["pulse_socket"], pulse, uid)
-        except (OSError, PermissionError) as e:
-            log.warning("%s: no audio: %s", inst.id, e)
-            pulse = ""
-    venus = ""
-    if render[0] == "nvidia":
-        venus = os.path.join(stage, "venus")
-        stage_dir(session_in.get("venus_dir", ""), venus, uid)
-    _write(os.path.join(inst.lxc_dir, "config_session"),
-           lxcconfig.session_entries(wl, pulse, inst.data_dir, venus))
-
     try:
+        net.ensure_up(hosts)
+        set_device_permissions()
+        ensure_overcommit()
+
+        # Sockets: validate the caller's and bind them at root-owned paths
+        stage = paths.staging_dir(inst.id)
+        umount_tree(stage)
+        os.makedirs(stage, mode=0o755, exist_ok=True)
+        wl = os.path.join(stage, "wayland-0")
+        stage_socket(session_in["wayland_socket"], wl, uid)
+        pulse = ""
+        if session_in.get("pulse_socket"):
+            try:
+                pulse = os.path.join(stage, "pulse-native")
+                stage_socket(session_in["pulse_socket"], pulse, uid)
+            except (OSError, PermissionError) as e:
+                log.warning("%s: no audio: %s", inst.id, e)
+                pulse = ""
+        venus = ""
+        if render[0] == "nvidia":
+            venus = os.path.join(stage, "venus")
+            stage_dir(session_in.get("venus_dir", ""), venus, uid)
+        _write(os.path.join(inst.lxc_dir, "config_session"),
+               lxcconfig.session_entries(wl, pulse, inst.data_dir, venus))
+
         if inst.index == 0:
             mount_stock_data(inst)
         # Shader caches of another renderer crash Android 13's apps (storage.clear_shader_caches).
@@ -884,11 +892,12 @@ def wait_boot(inst, timeout=180):
 
 # Waydroid pins the display to the user rotation (no sensors), so apps wanting the other orientation
 # are letterboxed. In the full-UI window (active_apps "Waydroid") let it follow them, like a phone;
-# an app's own window (single- or multi-window mode) doesn't turn, so there it stays pinned. Prints
-# the rotation (Surface.ROTATION_*) every half second. Android 11 names the setting
+# an app's own window (single- or multi-window mode) doesn't turn, so there it stays pinned. Checks
+# every half second and prints the rotation (Surface.ROTATION_*) when it changes: lines every half
+# second woke the daemon, session and proxy for nothing. Android 11 names the setting
 # set-fix-to-user-rotation and has no "default" (its own is "enabled").
 ROTATION_LOOP = """
-last=
+last= shown=
 while :; do
   m=default old=enabled
   [ "$(getprop waydroid.active_apps)" = Waydroid ] && [ "$(getprop persist.waydroid.multi_windows)" != true ] \\
@@ -899,15 +908,18 @@ while :; do
     wm set-ignore-orientation-request false >/dev/null 2>&1
     last=$m
   fi
-  [ -n "$r" ] && echo "${r#mRotation=}"
+  if [ -n "$r" ] && [ "$r" != "$shown" ]; then
+    echo "${r#mRotation=}"
+    shown=$r
+  fi
   sleep 0.5
 done
 """
 
 
 def watch_rotation(inst, fd):
-    """Write Android's display rotation to fd (the session's pipe to its proxy), a line every half
-    second, for as long as the pipe has a reader: across Android reboots too. Runs in a thread."""
+    """Write Android's display rotation to fd (the session's pipe to its proxy) when it changes,
+    for as long as the pipe has a reader: across Android reboots too. Runs in a thread."""
     os.set_blocking(fd, False)          # a reader that falls behind loses lines, never blocks us
     gone = select.poll()
     gone.register(fd, select.POLLERR)   # a pipe whose reader closed
@@ -920,9 +932,18 @@ def watch_rotation(inst, fd):
                 p = subprocess.Popen(cmd, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
                                      stderr=subprocess.DEVNULL)
                 try:
-                    for line in p.stdout:
+                    # lines come only on a change, none while frozen: wake for a reader gone too
+                    ev = select.poll()
+                    ev.register(fd, select.POLLERR)
+                    ev.register(p.stdout, select.POLLIN)
+                    while True:
+                        if fd in dict(ev.poll()):
+                            return          # the reader is gone
+                        data = os.read(p.stdout.fileno(), 4096)
+                        if not data:
+                            break           # Android stopped or rebooted
                         try:
-                            os.write(fd, line)
+                            os.write(fd, data)
                         except BlockingIOError:
                             pass
                 except OSError:             # EPIPE: the proxy is gone
@@ -930,6 +951,7 @@ def watch_rotation(inst, fd):
                 finally:
                     p.kill()
                     p.wait()
+                    p.stdout.close()
             time.sleep(2)
     finally:
         os.close(fd)

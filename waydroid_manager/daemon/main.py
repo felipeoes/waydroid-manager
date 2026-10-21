@@ -92,6 +92,8 @@ class Manager(dbus.service.Object):
         self.names_lock = threading.Lock()   # computing and writing them, from several threads
         self.stopping_by_us = set()
         self.key_fds = {}        # id -> fd of the instance's keyboard FIFO (kept open while running)
+        self.key_lock = threading.Lock()     # key_fds: written on the main loop, closed by workers
+        self.sync_failed = None  # stock image id whose automatic sync failed
         self.dbus_info = dbus.Interface(bus.get_object("org.freedesktop.DBus", "/org/freedesktop/DBus"),
                                         "org.freedesktop.DBus")
 
@@ -136,7 +138,8 @@ class Manager(dbus.service.Object):
             raise Error("instance #{} belongs to another user".format(inst.id), "AccessDenied")
 
     def state(self, iid):
-        return self.transient.get(iid) or lxc_state(iid)
+        """The watcher's view (at most 3 s old): List and Get run on the main loop."""
+        return self.transient.get(iid) or self.known.get(iid) or lxc_state(iid)
 
     def all_instances(self):
         out = []
@@ -193,28 +196,32 @@ class Manager(dbus.service.Object):
         thread, at most once a minute, since List runs on the main loop."""
         val, at = self.disk.get(inst.id, ("", 0))
         if time.time() - at > 60:
-            self.disk[inst.id] = (val, time.time())
+            self.disk[inst.id] = (val, float("inf"))   # in flight: a du slower than a minute mustn't pile up
 
             def measure():
-                args, fds = [inst.dir], []
-                if inst.index == 0:
-                    # #0's data is stock's, in the user's home (bound at data/ only while running)
-                    try:
-                        fds.append(storage.open_stock_data(inst.owner_uid))
-                        args = ["/proc/self/fd/{}".format(fds[0])] + [
-                            os.path.join(inst.dir, n) for n in os.listdir(inst.dir) if n != "data"]
-                    except OSError:
-                        pass
-                # -x: not into the mounted rootfs (shared images); -D: through the fd link only;
-                # du exits 1 when Android deletes files mid-walk but still prints the total
+                size = val
                 try:
-                    r = subprocess.run(["du", "-sxcD", "--block-size=1"] + args, capture_output=True, text=True,
-                                       pass_fds=fds)
+                    args, fds = [inst.dir], []
+                    if inst.index == 0:
+                        # #0's data is stock's, in the user's home (bound at data/ only while running)
+                        try:
+                            fds.append(storage.open_stock_data(inst.owner_uid))
+                            args = ["/proc/self/fd/{}".format(fds[0])] + [
+                                os.path.join(inst.dir, n) for n in os.listdir(inst.dir) if n != "data"]
+                        except OSError:
+                            pass
+                    # -x: not into the mounted rootfs (shared images); -D: through the fd link only;
+                    # du exits 1 when Android deletes files mid-walk but still prints the total
+                    try:
+                        r = subprocess.run(["du", "-sxcD", "--block-size=1"] + args, capture_output=True,
+                                           text=True, pass_fds=fds)
+                    finally:
+                        for fd in fds:
+                            os.close(fd)
+                    if r.stdout.split():
+                        size = r.stdout.split()[-2]
                 finally:
-                    for fd in fds:
-                        os.close(fd)
-                if r.stdout.split():
-                    self.disk[inst.id] = (r.stdout.split()[-2], time.time())
+                    self.disk[inst.id] = (size, time.time())
             threading.Thread(target=measure, daemon=True, name="du-" + inst.id).start()
         return val
 
@@ -227,7 +234,10 @@ class Manager(dbus.service.Object):
 
     def _emit_state(self, iid):
         st = self.transient.get(iid) or lxc_state(iid) if os.path.isdir(paths.instance_dir(iid)) else "DELETED"
-        self.known[iid] = st
+        if st == "DELETED":
+            self.known.pop(iid, None)   # a new instance may take the number
+        else:
+            self.known[iid] = st
         self.StateChanged(iid, st)
         return False
 
@@ -273,8 +283,9 @@ class Manager(dbus.service.Object):
         env = dict(os.environ)
         env["PYTHONPATH"] = os.path.dirname(paths.PKG_DIR) + os.pathsep + env.get("PYTHONPATH", "")
         p = subprocess.Popen([sys.executable, "-m", "waydroid_manager.daemon.hwhelper", inst.cfg_path],
-                             stdout=subprocess.PIPE, stdin=subprocess.DEVNULL, text=True, env=env)
+                             stdout=subprocess.PIPE, stdin=subprocess.DEVNULL, text=True, errors="replace", env=env)
         self.helpers[inst.id] = p
+        started = time.monotonic()
 
         def reader():
             for line in p.stdout:
@@ -283,7 +294,24 @@ class Manager(dbus.service.Object):
                     GLib.idle_add(self.on_hw_event, inst.id, line[4:])
                 elif line:
                     log.debug("%s hwhelper: %s", inst.id, line)
+            p.stdout.close()
+            p.wait()
+            GLib.idle_add(self._helper_exited, inst.id, p, time.monotonic() - started)
         threading.Thread(target=reader, daemon=True, name="hw-" + inst.id).start()
+
+    def _helper_exited(self, iid, p, ran):
+        """A helper that died on its own (stop_helper forgets one first): without it Android's
+        suspend and reboot requests go nowhere. One that dies right away isn't restarted."""
+        if self.helpers.get(iid) is not p:
+            return False
+        del self.helpers[iid]
+        log.warning("%s: hardware helper exited (code %s)", iid, p.returncode)
+        if ran > 10 and self.state(iid) in ACTIVE:
+            try:
+                self.start_helper(Instance.load(iid))
+            except FileNotFoundError:
+                pass
+        return False
 
     def stop_helper(self, iid):
         p = self.helpers.pop(iid, None)
@@ -293,6 +321,7 @@ class Manager(dbus.service.Object):
                 p.wait(3)
             except subprocess.TimeoutExpired:
                 p.kill()
+                p.wait()
 
     def on_hw_event(self, iid, word):
         if word in ("registered",):
@@ -340,6 +369,11 @@ class Manager(dbus.service.Object):
             inst = Instance.load(iid)
             self.start_helper(inst)
             GLib.idle_add(self._attach_session, iid, uid, session, sender)
+        except Exception:
+            # the bridge goes unless another instance (or this one, should it be up) uses it
+            self.transient.pop(iid, None)
+            self._maybe_network_down()
+            raise
         finally:
             self.set_transient(iid, None)
             self.picked.discard(iid)
@@ -392,19 +426,20 @@ class Manager(dbus.service.Object):
         def owner_changed(new_owner):
             if not new_owner and self.sessions.get(iid, {}).get("sender") == sender:
                 log.info("%s: session went away, stopping instance", iid)
-                self.sessions.pop(iid, None)
+                self._drop_session(iid)     # also ends this watch: a match rule each otherwise
                 self.run_async(iid, lambda: self._stop(iid), lambda *a: None, lambda e: log.error("%s", e))
         watch = self.bus.watch_name_owner(sender, owner_changed)
         self.sessions[iid] = {"sender": sender, "uid": uid, "session": session, "watch": watch}
         return False
 
     def _close_key_fd(self, iid):
-        fd = self.key_fds.pop(iid, None)
-        if fd is not None:
-            try:
-                os.close(fd)
-            except OSError:
-                pass
+        with self.key_lock:
+            fd = self.key_fds.pop(iid, None)
+            if fd is not None:
+                try:
+                    os.close(fd)
+                except OSError:
+                    pass
 
     def send_key(self, iid, code):
         """Inject an evdev key straight into Android's keyboard input FIFO.
@@ -415,27 +450,32 @@ class Manager(dbus.service.Object):
         """
         import struct
         for attempt in (0, 1):
-            fd = self.key_fds.get(iid)
-            if fd is None:
-                pid = container_pid(iid)
-                if not pid:
-                    raise Error("instance #{} is not running".format(iid), "NotRunning")
-                # Android's /dev is writable from inside: don't follow its links to the host
-                fd = open_in_container(pid, "dev/input/wl_keyboard_events", os.O_WRONLY | os.O_NONBLOCK)
-                if not stat.S_ISFIFO(os.fstat(fd).st_mode):
+            # a worker's _close_key_fd mustn't free the fd number while we write to it
+            with self.key_lock:
+                fd = self.key_fds.get(iid)
+                if fd is None:
+                    pid = container_pid(iid)
+                    if not pid:
+                        raise Error("instance #{} is not running".format(iid), "NotRunning")
+                    # Android's /dev is writable from inside: don't follow its links to the host, and
+                    # a tty planted there mustn't become our controlling terminal
+                    fd = open_in_container(pid, "dev/input/wl_keyboard_events",
+                                           os.O_WRONLY | os.O_NONBLOCK | os.O_NOCTTY)
+                    if not stat.S_ISFIFO(os.fstat(fd).st_mode):
+                        os.close(fd)
+                        raise Error("instance #{}: keyboard input is not a FIFO".format(iid))
+                    self.key_fds[iid] = fd
+                try:
+                    now = time.time()
+                    sec, usec = int(now), int((now % 1) * 1e6)
+                    os.write(fd, struct.pack("=qqHHi", sec, usec, 1, code, 1))
+                    os.write(fd, struct.pack("=qqHHi", sec, usec + 1, 1, code, 0))
+                    return
+                except OSError:
+                    del self.key_fds[iid]
                     os.close(fd)
-                    raise Error("instance #{}: keyboard input is not a FIFO".format(iid))
-                self.key_fds[iid] = fd
-            try:
-                now = time.time()
-                sec, usec = int(now), int((now % 1) * 1e6)
-                os.write(fd, struct.pack("=qqHHi", sec, usec, 1, code, 1))
-                os.write(fd, struct.pack("=qqHHi", sec, usec + 1, 1, code, 0))
-                return
-            except OSError:
-                self._close_key_fd(iid)
-                if attempt:
-                    raise
+                    if attempt:
+                        raise
 
     def _stop(self, iid):
         inst = Instance.load(iid)
@@ -469,8 +509,9 @@ class Manager(dbus.service.Object):
         s = self.sessions.get(iid)
         if not s:
             return self._stop(iid)
-        self.set_transient(iid, "STARTING")   # the session quits on a STOPPED
         inst = Instance.load(iid)
+        self._close_key_fd(iid)               # the old container's FIFO
+        self.set_transient(iid, "STARTING")   # the session quits on a STOPPED
         try:
             self.stop_helper(iid)
             container.stop(inst, keep_stock=True)  # #0: stock Waydroid stays paused across the reboot
@@ -542,7 +583,8 @@ class Manager(dbus.service.Object):
                     props.pop(k[5:], None)
             else:
                 settings[k] = validate_setting(k, v)
-        used = [i.index for i in self.all_instances()]
+        # a directory left by a delete that failed half-way still holds its number
+        used = [int(n) for n in os.listdir(paths.INSTANCES_DIR) if n.isdigit()]
         index = allocate_index(used)
         iid = str(index)
         if os.path.exists(paths.instance_dir(iid)):
@@ -612,7 +654,7 @@ class Manager(dbus.service.Object):
             return "/proc/{}/fd/{}".format(os.getpid(), fd), fd
         sinst = self.load(src)
         self.check_owner(sinst, uid)
-        if self.state(sinst.id) != "STOPPED":
+        if self.transient.get(sinst.id) or lxc_state(sinst.id) != "STOPPED":
             raise Error("stop instance #{} before cloning it".format(src), "Busy")
         return sinst.data_dir, None
 
@@ -621,10 +663,14 @@ class Manager(dbus.service.Object):
         if lxc_state(iid) != "STOPPED":
             self._stop(iid)
         self.set_transient(iid, "DELETING")
+        self._close_key_fd(iid)
+        self.disk.pop(iid, None)
+        self.last_close.pop(iid, None)
         try:
             storage.delete_instance_files(inst)
         finally:
             self.transient.pop(iid, None)
+            self.known.pop(iid, None)       # may say DELETING: a new instance can take the number
         self.refresh_hosts()
         GLib.idle_add(lambda: (self.InstanceRemoved(iid), False)[1])
 
@@ -671,32 +717,43 @@ class Manager(dbus.service.Object):
             return error(e)
         self.run_async(inst.id, lambda: self._delete(inst.id), reply, error)
 
-    @dbus.service.method(paths.DBUS_IFACE, in_signature="sa{ss}", out_signature="", sender_keyword="sender")
-    def SetConfig(self, iid, values, sender):
-        inst = self.load(iid)
-        uid = self.caller(sender)
-        self.check_owner(inst, uid)
-        with self.locks[inst.id]:
-            inst = Instance.load(inst.id)
+    @dbus.service.method(paths.DBUS_IFACE, in_signature="sa{ss}", out_signature="",
+                         sender_keyword="sender", async_callbacks=("reply", "error"))
+    def SetConfig(self, iid, values, sender, reply, error):
+        try:
+            inst = self.load(iid)
+            uid = self.caller(sender)
+            self.check_owner(inst, uid)
+        except Error as e:
+            return error(e)
+        values = _s(values)
+
+        def work():
+            # in a worker: the lock may be held for minutes (a start, an APK install)
+            cur = Instance.load(inst.id)
             try:
-                for k, v in _s(values).items():
+                for k, v in values.items():
                     if k.startswith("prop:"):
                         key = k[5:]
                         if v == "":
-                            inst.cfg["properties"].pop(key, None)
+                            cur.cfg["properties"].pop(key, None)
                         else:
-                            inst.cfg["properties"][key] = validate_prop(key, v, trusted=uid == 0)
+                            cur.cfg["properties"][key] = validate_prop(key, v, trusted=uid == 0)
                     elif k in CREATE_ONLY:
                         raise ValueError("{} is chosen when an instance is created".format(k))
                     else:
-                        inst.set(k, v)
-                self.check_android(container.android_of(inst), {k: inst.get(k) for k in SETTINGS})
+                        cur.set(k, v)
+                self.check_android(container.android_of(cur), {k: cur.get(k) for k in SETTINGS})
             except ValueError as e:
                 raise Error(e, "InvalidArgs")
-            inst.save()
-        if "name" in values:
-            self.refresh_names()
-        self.ConfigChanged(inst.id)
+            cur.save()
+            if "name" in values:
+                self.refresh_names()
+
+        def done():
+            self.ConfigChanged(inst.id)
+            reply()
+        self.run_async(inst.id, work, done, error)
 
     @dbus.service.method(paths.DBUS_IFACE, in_signature="sa{ss}", out_signature="",
                          sender_keyword="sender", async_callbacks=("reply", "error"))
@@ -748,7 +805,8 @@ class Manager(dbus.service.Object):
             if not pid:
                 raise Error("instance #{} is not running".format(inst.id), "NotRunning")
             # Android's /data is writable from inside: don't follow its links (or hard links) to other files
-            fd = open_in_container(pid, "data/misc/adb/adb_keys", os.O_RDWR | os.O_APPEND | os.O_CREAT, 0o640)
+            fd = open_in_container(pid, "data/misc/adb/adb_keys",
+                                   os.O_RDWR | os.O_APPEND | os.O_CREAT | os.O_NOCTTY | os.O_NONBLOCK, 0o640)
             with os.fdopen(fd, "r+") as f:
                 st = os.fstat(fd)
                 if not stat.S_ISREG(st.st_mode) or st.st_nlink != 1:
@@ -800,12 +858,15 @@ class Manager(dbus.service.Object):
             return error(e)
 
         def work():
-            st = lxc_state(inst.id)
-            if st == "FROZEN":
-                container.unfreeze(inst)
-            elif st != "RUNNING":
+            try:
+                st = lxc_state(inst.id)
+                if st == "FROZEN":
+                    container.unfreeze(inst)
+                elif st != "RUNNING":
+                    raise Error("instance #{} is not running".format(inst.id), "NotRunning")
+            except BaseException:
                 os.close(raw)
-                raise Error("instance #{} is not running".format(inst.id), "NotRunning")
+                raise
             return storage.install_apk(inst, raw, str(filename))
         self.run_async(inst.id, work, reply, error)
 
@@ -941,21 +1002,40 @@ class Manager(dbus.service.Object):
             while True:
                 time.sleep(3)
                 ticks += 1
-                if ticks % 10 == 1:   # every ~30 s
-                    try:
-                        if images.stock_is_newer() and not images.stock_busy():
-                            log.info("stock Waydroid images changed, syncing the image store")
-                            images.ensure_synced(self.images_in_use)
-                            log.info("image store now at %s", images.current_id())
-                    except Exception as e:  # noqa: BLE001
-                        log.warning("automatic image sync failed: %s", e)
-                for iid in list_ids():
-                    if iid in self.transient or iid in self.stopping_by_us:
-                        continue
-                    st = lxc_state(iid)
-                    if self.known.get(iid) != st:
-                        GLib.idle_add(self._on_observed, iid, st)
+                self._watch_tick(ticks)
         threading.Thread(target=loop, daemon=True, name="state-watch").start()
+
+    def _watch_tick(self, ticks):
+        if ticks % 10 == 1:   # every ~30 s
+            stock_id = None
+            try:
+                stock_id = images.stock_image_id()
+                # a failed sync (no space, a bad image) would copy GBs again every 30 s: retry when
+                # stock's images change, or on `images update`
+                if stock_id != self.sync_failed and images.stock_is_newer() and not images.stock_busy():
+                    log.info("stock Waydroid images changed, syncing the image store")
+                    images.ensure_synced(self.images_in_use)
+                    log.info("image store now at %s", images.current_id())
+            except Exception as e:  # noqa: BLE001 - the watcher must keep running
+                self.sync_failed = stock_id
+                log.warning("automatic image sync failed: %s", e)
+        try:
+            for iid in list_ids():
+                if iid in self.transient or iid in self.stopping_by_us:
+                    continue
+                # only the daemon starts containers, and it records their state itself
+                if self.known.get(iid) == "STOPPED" and not os.path.isdir(
+                        "/sys/fs/cgroup/lxc.payload." + paths.container_name(iid)):
+                    continue
+                st = lxc_state(iid)
+                # act on where a container lands: a STOPPING caught on the way would hide a
+                # RUNNING -> STOPPED (an Android reboot) from _on_observed
+                if st not in ("RUNNING", "FROZEN", "STOPPED"):
+                    continue
+                if self.known.get(iid) != st:
+                    GLib.idle_add(self._on_observed, iid, st)
+        except Exception:  # noqa: BLE001 - a failed lxc-info (fork under memory pressure) must not end the watcher
+            log.exception("state watcher")
 
     def _on_observed(self, iid, st):
         prev = self.known.get(iid)
@@ -966,7 +1046,9 @@ class Manager(dbus.service.Object):
             return False   # no STOPPED: the session would quit and take the instance down with it
         if st == "STOPPED" and prev in ACTIVE and iid not in self.transient:
             log.info("%s: container stopped on its own, cleaning up", iid)
-            self.run_async(iid, lambda: self._stop(iid), lambda *a: None, lambda e: log.error("%s", e))
+            # by the time the lock is ours, the owner may have started it again
+            self.run_async(iid, lambda: lxc_state(iid) == "STOPPED" and self._stop(iid),
+                           lambda *a: None, lambda e: log.error("%s", e))
         self.StateChanged(iid, st)
         return False
 

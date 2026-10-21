@@ -108,7 +108,8 @@ def reset_ids_online(iid):
     """After boot: new legacy android_id and fresh Google Services identity."""
     out = []
     new_id = secrets.token_hex(8)
-    attach(iid, ["/system/bin/settings", "put", "secure", "android_id", new_id], check=False)
+    # must work: a reset marked done that never ran leaves a clone with its source's identity
+    attach(iid, ["/system/bin/settings", "put", "secure", "android_id", new_id])
     out.append("android_id={}".format(new_id))
     pkgs = attach(iid, ["/system/bin/pm", "list", "packages"], check=False).stdout
     for pkg in GMS_PACKAGES:
@@ -227,6 +228,10 @@ def _pm(inst, args, src=None, check=True):
                threading.Thread(target=drain, args=(p.stderr, "err"), daemon=True)]
     for t in readers:
         t.start()
+    # also while feeding it: a pm that stops reading would hold the instance lock forever
+    killer = threading.Timer(900, p.kill)
+    killer.daemon = True
+    killer.start()
     try:
         if src is not None:
             shutil.copyfileobj(src, p.stdin, 1024 * 1024)
@@ -237,11 +242,8 @@ def _pm(inst, args, src=None, check=True):
             p.stdin.close()
         except OSError:
             pass
-    try:
-        p.wait(timeout=900)
-    except subprocess.TimeoutExpired:
-        p.kill()
-        p.wait()
+    p.wait()
+    killer.cancel()
     for t in readers:
         t.join(5)
     out = (chunks["out"] + chunks["err"]).decode("utf-8", "replace").strip()
@@ -253,17 +255,29 @@ def _pm(inst, args, src=None, check=True):
 def screenshot(inst, fd):
     """Write a PNG of the Android screen to fd (never handed to lxc-attach itself)."""
     import subprocess
+    import threading
     out = os.fdopen(fd, "wb", closefd=True)
     try:
         cmd = ["lxc-attach", "-P", paths.LXC_PATH, "-n", inst.container, "--clear-env",
                "--set-var", "PATH=/system/bin:/system/xbin:/vendor/bin", "--",
                "/system/bin/screencap", "-p"]
         p = subprocess.Popen(cmd, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
-        size = 0
-        for chunk in iter(lambda: p.stdout.read(1024 * 1024), b""):
-            out.write(chunk)
-            size += len(chunk)
-        p.wait(timeout=30)
+        killer = threading.Timer(60, p.kill)    # a hung screencap (e.g. re-frozen) would block the read
+        killer.daemon = True
+        killer.start()
+        try:
+            size = 0
+            for chunk in iter(lambda: p.stdout.read(1024 * 1024), b""):
+                out.write(chunk)
+                size += len(chunk)
+            p.wait(timeout=30)
+        except BaseException:
+            p.kill()                    # a write error: don't leave lxc-attach behind
+            raise
+        finally:
+            p.wait()
+            killer.cancel()
+            p.stdout.close()
         if p.returncode != 0 or size == 0:
             raise RuntimeError("screencap failed")
         return size
