@@ -10,6 +10,7 @@ instead doesn't work: GNOME Shell's app grid keeps launching the old one.) Per-a
 ("waydroid-manager.<id>.<pkg>.desktop") so they never collide with the stock
 instance's "waydroid.<pkg>.desktop" files.
 """
+import functools
 import os
 import shlex
 import shutil
@@ -18,6 +19,7 @@ import sys
 from .. import paths
 
 
+@functools.lru_cache(maxsize=None)      # a PATH search per app entry otherwise
 def _exec_prefix():
     exe = shutil.which("waydroid-manager")
     if exe:
@@ -32,6 +34,21 @@ def _cmd(*args):
 
 def _escape(v):
     return v.replace("\\", "\\\\").replace("\n", " ").replace("\r", " ")
+
+
+def _write_entry(p, text, since=0):
+    """Write a desktop entry whole (never seen half-written), and only if it changed or is older
+    than since: every write makes the app grid reload."""
+    try:
+        with open(p) as f:
+            if f.read() == text and os.fstat(f.fileno()).st_mtime >= since:
+                return
+    except FileNotFoundError:
+        pass
+    tmp = p + ".tmp"
+    with open(tmp, "w") as f:
+        f.write(text)
+    os.replace(tmp, p)
 
 
 def launcher_path(iid):
@@ -78,10 +95,7 @@ def write_launcher(iid, name):
         "",
     ])
     p = launcher_path(iid)
-    tmp = p + ".tmp"
-    with open(tmp, "w") as f:
-        f.write(text)
-    os.replace(tmp, p)
+    _write_entry(p, text)
     return p
 
 
@@ -116,8 +130,10 @@ def remove_launcher(iid):
 def app_entries(iid):
     d = paths.user_applications_dir()
     prefix = "waydroid-manager.{}.".format(iid)
+    own = os.path.basename(launcher_path(iid))      # matches the prefix too, but isn't an app's
     try:
-        return [os.path.join(d, f) for f in os.listdir(d) if f.startswith(prefix) and f.endswith(".desktop")]
+        return [os.path.join(d, f) for f in os.listdir(d)
+                if f.startswith(prefix) and f.endswith(".desktop") and f != own]
     except FileNotFoundError:
         return []
 
@@ -129,18 +145,22 @@ def write_app_entry(iid, inst_name, app, icons_dir):
         return
     p = os.path.join(paths.user_applications_dir(), "waydroid-manager.{}.{}.desktop".format(iid, pkg))
     icon = os.path.join(icons_dir, pkg + ".png")
+    try:
+        icon_at = os.path.getmtime(icon)
+    except OSError:
+        icon, icon_at = "waydroid", 0
     text = "\n".join([
         "[Desktop Entry]",
         "Type=Application",
         "Name={} ({})".format(_escape(app.get("name", pkg)), _escape(inst_name)),
         "Exec=" + _cmd("app", "launch", iid, pkg),
-        "Icon=" + (icon if os.path.exists(icon) else "waydroid"),
+        "Icon=" + icon,
         "Categories=X-WayDroid-App;",
         "StartupWMClass=waydroid-manager.{}.{}".format(iid, pkg),
         "",
     ])
-    with open(p, "w") as f:
-        f.write(text)
+    # an app update rewrites its icon under the same name: the grid reloads it with the entry
+    _write_entry(p, text, icon_at)
 
 
 def remove_app_entry(iid, pkg):

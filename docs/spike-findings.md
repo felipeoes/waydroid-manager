@@ -373,6 +373,43 @@ in syscall nr=0x175`, then "Render process ...'s crash wasn't handled by all ass
   there's no oem partition: setting it (to the build's own fingerprint, as the other partitions
   have) re-derives the ABI once (x86_64, with x86 secondary).
 
+## Unity ad initialization and video on Android 16 (2026-10-21)
+Airship Knights 1.1.6 from Google Play reproduced both failures on the 2026-07-17 image,
+with root disabled and the system read-only. Reinstalling the app did not fix them.
+
+- **Ad initialization deadlock:** the main thread waits in Unity's Google Ads initialization
+  callback while UnityMain calls IronSource, then `WebSettings.getDefaultUserAgent`, which waits
+  for Chromium startup on the main thread. Chromium 150 already has a nonblocking path gated by
+  `WebViewFasterGetDefaultUserAgent`, disabled by default. Its
+  [SharedStatics.java](https://github.com/chromium/chromium/blob/150.0.7871.63/android_webview/glue/java/src/com/android/webview/chromium/SharedStatics.java)
+  schedules startup and returns the UA without that wait.
+- The WebView layer enables that existing path in `StaticsAdapter.getDefaultUserAgent`.
+  The whole DEX must match the recorded SHA-256 before changing one instruction; unknown builds
+  keep their bytecode and log a warning. DEX checksums and the APK signature are rebuilt.
+  This is a pinned workaround for 150.0.7871.63, to revalidate or remove on WebView upgrades.
+  Per-app cached flags are unsuitable: Chromium consumes them on startup and rewrites them.
+  `webview-2` preserves old mounted layers, and the OEM fingerprint includes the layer revision
+  so PackageManager rescans the replacement without clearing app data.
+- **Video decoder failure:** the vendor forces `debug.ffmpeg-codec2.pixel_format=RGBX_8888`.
+  Unity asks for planar YUV ByteBuffers, producing `unrecognized color format ... for RGB layout`,
+  then Codec2 errors. Setting `YUV_420` restores the decoder's normal YUV negotiation. A 90-frame
+  H.264 sample fails with RGBX and decodes all frames with YUV, including after instance restart.
+  Lowering FFmpeg's priority does not help: this image's `Codec2InfoBuilder` omits Android's
+  software video decoders when gralloc is `minigbm_gbm_mesa`.
+- The original game reaches its title and opening tutorial with both fixes. No APK or game
+  data patch is needed. Long gameplay and rewarded ads require further testing.
+
+Reproduce independently of the game with an unlocked instance, JDK, SDK platform 35 and
+build-tools 36.0.0:
+
+```sh
+tests/integration/webview-video.sh waydroid-nonroot-dev:5555 "$HOME/Android/Sdk" /path/to/short-h264.mp4
+```
+
+The probe makes a background UA request while its UI thread waits, then decodes the supplied
+video into planar YUV ByteBuffers. It installs and removes only its own test app; no game assets
+are bundled. Omit the sample to test WebView alone.
+
 ## Measuring
 - `dumpsys SurfaceFlinger --latency` is empty on 16 and newer. `dumpsys SurfaceFlinger --timestats
   -enable`, then `-dump`, gives per-layer fps on every version.
