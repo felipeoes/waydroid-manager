@@ -894,10 +894,12 @@ def wait_boot(inst, timeout=180):
 # are letterboxed. In the full-UI window (active_apps "Waydroid") let it follow them, like a phone;
 # an app's own window (single- or multi-window mode) doesn't turn, so there it stays pinned. Checks
 # every half second and prints the rotation (Surface.ROTATION_*) when it changes: lines every half
-# second woke the daemon, session and proxy for nothing. Android 11 names the setting
-# set-fix-to-user-rotation and has no "default" (its own is "enabled").
+# second woke the daemon, session and proxy for nothing. And every 10 s regardless: writing is how
+# a loop whose reader died (a daemon restart; KillMode=process leaves lxc-attach) gets SIGPIPE and
+# ends. Android 11 names the setting set-fix-to-user-rotation and has no "default" (its own is
+# "enabled").
 ROTATION_LOOP = """
-last= shown=
+last= shown= n=0
 while :; do
   m=default old=enabled
   [ "$(getprop waydroid.active_apps)" = Waydroid ] && [ "$(getprop persist.waydroid.multi_windows)" != true ] \\
@@ -908,9 +910,10 @@ while :; do
     wm set-ignore-orientation-request false >/dev/null 2>&1
     last=$m
   fi
-  if [ -n "$r" ] && [ "$r" != "$shown" ]; then
+  n=$((n + 1))
+  if [ -n "$r" ] && { [ "$r" != "$shown" ] || [ $n -ge 20 ]; }; then
     echo "${r#mRotation=}"
-    shown=$r
+    shown=$r n=0
   fi
   sleep 0.5
 done
