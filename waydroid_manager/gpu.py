@@ -36,9 +36,6 @@ NVIDIA_PROPS = {
     # no mutable-format swapchains: Mesa asks gralloc for such buffers with CPU_WRITE_RARELY
     # (to force LINEAR), and NVIDIA can't render into LINEAR ones, so games' windows stay black
     "debug.angle.feature_overrides_disabled": "supportsYUVSamplerConversion:supportsSwapchainMutableFormat",
-    # ANGLE only offers GL_EXT_multisampled_render_to_texture on tiling GPUs; without it Unity
-    # URP's MSAA attachments come out single-sampled, every render pass fails, the game stays black
-    "debug.angle.feature_overrides_enabled": "enableMultisampledRenderToTexture",
     "persist.waydroid.use_subsurface": "false",
     "ro.surface_flinger.vsync_event_phase_offset_ns": "0", "ro.surface_flinger.vsync_sf_event_phase_offset_ns": "0",
     "ro.surface_flinger.max_frame_buffer_acquired_buffers": "3",

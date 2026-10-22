@@ -229,13 +229,6 @@ Stored in `instance.cfg` and changed with `waydroid-manager config N set KEY VAL
 | `gpu` | `auto` | `auto`, `software` or a GPU's PCI address (`gpu.mode`, restart) |
 | `desktop_apps` | false | launchers for the instance's apps |
 
-On Linux 6.14+, an LXC `start-host` hook sets `kernel.pid_max = 65535` in the instance's PID
-namespace using the host's writable proc mount (Android's `/proc/sys` stays read-only).
-Android's 32-bit libc stores mutex owner thread IDs in 16 bits: larger IDs can abort
-audio services and even their crash reporters, causing recursive crashes and memory exhaustion.
-Older kernels have a host-wide PID limit, so the manager leaves it unchanged; use Linux 6.14+
-to prevent this failure without restricting other host processes.
-
 Android properties are set with `prop:<key>`. They go into the instance's `vendor/waydroid.prop`,
 which Android reads last.
 

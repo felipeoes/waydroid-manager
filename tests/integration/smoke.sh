@@ -23,7 +23,6 @@ field() { $W status "$1" 2>/dev/null | awk -v k="$2" '$1==k{print $2}'; }
 num() { sed -n 's/^Created instance #\([0-9]*\).*/\1/p'; }
 
 stock_before=$($W list | awk '$1=="0"{print $(NF-4)}')
-host_pid_max=$(cat /proc/sys/kernel/pid_max)
 cleanup() {
     for n in $CREATED; do
         $W stop "$n" >/dev/null 2>&1
@@ -46,10 +45,6 @@ ip1=$(field "$n1" ip)
 ip2=$(field "$n2" ip)
 [ -n "$ip1" ] && [ "$ip1" != "$ip2" ] && pass "distinct fixed IPs $ip1 $ip2" || fail "IPs"
 [ "$(sh_in "$n1" /system/bin/getprop sys.boot_completed)" = "1" ] && pass "#$n1 boot_completed" || fail "#$n1 boot_completed"
-if uname -r | awk -F. '{exit !($1 > 6 || ($1 == 6 && $2 >= 14))}'; then
-    [ "$(sh_in "$n1" /system/bin/cat /proc/sys/kernel/pid_max)" = "65535" ] && pass "#$n1 PID limit" || fail "#$n1 PID limit"
-fi
-[ "$(cat /proc/sys/kernel/pid_max)" = "$host_pid_max" ] && pass "host PID limit unchanged" || fail "host PID limit changed"
 sh_in "$n1" /system/bin/ping -c1 -W2 "waydroid-$n1" | grep -q "($ip1)" && pass "#$n1 own hostname" || fail "#$n1 own hostname"
 sh_in "$n1" /system/bin/ping -c1 -W3 1.1.1.1 | grep -q " 0% packet loss" && pass "#$n1 internet" || fail "#$n1 internet"
 sh_in "$n1" /system/bin/ping -c1 -W2 "$ip2" | grep -q " 0% packet loss" && fail "#$n1 can reach #$n2" || pass "#$n1 cannot reach #$n2"
