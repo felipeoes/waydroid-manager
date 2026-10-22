@@ -289,7 +289,6 @@ def write_lxc_config(inst, net, cpus_busy=(), render=("gpu", None)):
         stock.lxc_snippets(),
         rootfs=inst.rootfs, lxc_dir=inst.lxc_dir, bridge=net.cfg.bridge, mac=inst.mac,
         veth=inst.veth, uts_name="waydroid-" + inst.id.replace("_", "-"), arch=platform.machine(),
-        kernel_release=platform.release(), pidlimit_hook=paths.PIDLIMIT_SCRIPT,
         apparmor_profile=load_apparmor_profile(),
         poststop_hook=paths.POSTSTOP_SCRIPT,
         netup_hook=paths.NET_UP_SCRIPT if net.cfg.isolate else None, limits=limits)
@@ -579,7 +578,7 @@ def mount_rootfs(inst, images_dir, gpu_layers=()):
     mount_image(os.path.join(images_dir, "system.img"), rootfs)
     sdk = stock.read_prop_file(rootfs + "/system/build.prop", "ro.build.version.sdk")
     arm = armtrans.layer(inst.get("arm_translation"), sdk)
-    wv = (webview.layer(rootfs, os.path.join(images_dir, webview.LAYER))
+    wv = (webview.layer(rootfs, os.path.join(images_dir, "webview"))
           if catalog.get(android_of(inst), "webview64") else None)
     shared = list(gpu_layers) + [d for d in (arm, images.gapps_layer(inst.image_id), wv) if d]
     if os.path.isdir(paths.STOCK_OVERLAY) and runs_stock_android(inst):
@@ -675,13 +674,13 @@ def write_props(inst, session, arm, render=("gpu", None)):
     key = android_of(inst)
     if key:
         eff["properties"].update(catalog.get(key, "props", {}))
-    if catalog.get(key, "webview64") and os.path.isdir(os.path.join(images.image_dir(inst.image_id), webview.LAYER)):
+    if catalog.get(key, "webview64") and os.path.isdir(os.path.join(images.image_dir(inst.image_id), "webview")):
         # Android keeps a package's ABI until the build fingerprints change: this one (there's no
         # oem partition) makes a device made before the 64-bit WebView re-derive it, once. It
-        # includes the layer revision so an updated APK is rescanned too.
+        # repeats the build's own fingerprint, like the other partitions' do
         fp = (inst.cfg["properties"].get("ro.build.fingerprint")
               or stock.read_prop_file(inst.rootfs + "/system/build.prop", "ro.build.fingerprint"))
-        eff["properties"]["ro.oem.build.fingerprint"] = (fp or "waydroid-manager") + ":" + webview.LAYER
+        eff["properties"]["ro.oem.build.fingerprint"] = fp or "waydroid-manager:webview64"
     if mode == "gpu" and node:
         eff["waydroid"]["drm_device"] = node        # stock's props follow the picked GPU
     if mode == "vkms":

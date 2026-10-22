@@ -41,8 +41,6 @@ def build(base, **kw):
     args = dict(rootfs="/var/lib/waydroid-manager/instances/t1/rootfs",
                 lxc_dir="/var/lib/waydroid-manager/lxc/wdm-t1", bridge="wdm0",
                 mac="02:57:44:4d:00:01", veth="wdm1v", uts_name="waydroid-t1", arch="x86_64",
-                kernel_release="7.0.0-38-generic",
-                pidlimit_hook="/x/pidlimit.sh",
                 apparmor_profile="lxc-waydroid", poststop_hook="/x/poststop.sh",
                 netup_hook="/x/netup.sh", limits=["lxc.cgroup2.memory.high = 4G"])
     args.update(kw)
@@ -77,20 +75,6 @@ class LxcConfigTest(unittest.TestCase):
 
     def test_stock_163_poststop_placeholder(self):
         self.check_common(build(BASE_163))
-
-    def test_android_pids_fit_in_32_bit_bionic_mutexes(self):
-        for release in ("6.14.0", "6.14.0-rc2", "7.0.0-38-generic"):
-            with self.subTest(release=release):
-                text = build(BASE_162 + "lxc.sysctl.kernel.pid_max = 4194304\n", kernel_release=release)
-                self.assertEqual(values(text, "lxc.hook.start-host"), ["/x/pidlimit.sh"])
-                self.assertEqual(values(text, "lxc.sysctl.kernel.pid_max"), [])
-
-    def test_older_kernels_do_not_change_host_pid_limit(self):
-        for release in ("5.15.0", "6.8.0-90-generic", "6.13.12", "unknown"):
-            with self.subTest(release=release):
-                text = build(BASE_162 + "lxc.sysctl.kernel.pid_max = 65535\n", kernel_release=release)
-                self.assertEqual(values(text, "lxc.sysctl.kernel.pid_max"), [])
-                self.assertEqual(values(text, "lxc.hook.start-host"), [])
 
     def test_apparmor_unloaded_falls_back_to_unconfined(self):
         self.assertEqual(values(build(BASE_162, apparmor_profile=None), "lxc.apparmor.profile"), ["unconfined"])
