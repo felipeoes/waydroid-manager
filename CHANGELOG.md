@@ -7,6 +7,9 @@ follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions f
 ## [Unreleased]
 
 ### Fixed
+- Unity games that render with URP and MSAA, such as Monopoly GO, no longer stay black on NVIDIA
+  GPUs. ANGLE now offers multisampled render-to-texture there, as phone GPUs do. Existing
+  instances receive it on restart.
 - Google Play Games sign-in on Android 16's 2026-07-17 image: supply newer Google-signed Play
   services and its system permissions in a shared layer. Works for existing and new instances
   without enabling root or a writable system, and preserves accounts and app data.
