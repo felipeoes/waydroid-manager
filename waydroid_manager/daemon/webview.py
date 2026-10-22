@@ -6,6 +6,10 @@ The images' WebView prefers its 32-bit build (use32bitAbi), so its renderers run
 Android 16, 32-bit bionic calls shutdown() as its own syscall rather than through socketcall,
 and Chromium's renderer sandbox allows that syscall on every architecture but i386: the
 renderer is killed (SIGSYS) and takes the app with it. 64-bit renderers aren't affected.
+
+WebView 150's synchronous default-user-agent lookup can also deadlock Unity ad SDKs: the
+Unity thread waits for Chromium's UI startup while the UI waits for Unity's callback. Enable
+the existing WebViewFasterGetDefaultUserAgent path, which schedules startup asynchronously.
 """
 import hashlib
 import os
@@ -15,11 +19,15 @@ import subprocess
 import tempfile
 import threading
 import zipfile
+import zlib
 
 from . import layers
 from .util import CommandError, log
 
 APK = "system/product/app/webview/webview.apk"
+LAYER = "webview-2"                 # keep mounted older layers intact during upgrades
+_UA_DEX_SHA256 = "67ccc320333b08297c3c0bdb04949198145032c12357b152ad4dad2f925feda7"
+_UA_OFFSET = 0x16FB00
 _USE32BITABI = 0x01010515           # android:use32bitAbi
 _V2_BLOCK_ID = 0x7109871A
 _RSA_PKCS1_SHA256 = 0x0103
@@ -28,7 +36,7 @@ _lock = threading.Lock()            # parallel starts of one image set share its
 
 def layer(system_root, d):
     """The layer d with the patched WebView of the mounted system image, built on first use.
-    Returns d, or None (no WebView of that kind, or it can't be built: then 32-bit it stays)."""
+    Returns d, or None if no patch applies or the layer can't be built."""
     with _lock:
         return d if os.path.isdir(d) else _build(system_root, d)
 
@@ -42,13 +50,13 @@ def _build(system_root, d):
     try:
         os.makedirs(os.path.dirname(os.path.join(tmp, APK)))
         if not patch_apk(src, os.path.join(tmp, APK)):
-            log.info("the image's WebView isn't 32-bit-preferred; no WebView layer")
+            log.info("no compatibility patch applies to the image's WebView; no layer")
             return None
         layers.set_modes(tmp)
         os.rename(tmp, d)
         return d
     except (CommandError, OSError, ValueError, zipfile.BadZipFile) as e:
-        log.warning("keeping the image's 32-bit WebView: %s", e)
+        log.warning("keeping the image's original WebView: %s", e)
         return None
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
@@ -79,10 +87,11 @@ def clear_use32bitabi(axml):
 
 
 def patch_apk(src, dst):
-    """Write src with use32bitAbi cleared, aligned and signed to dst. False if src doesn't set it."""
+    """Write the compatible WebView, aligned and signed to dst. False if no patch applies."""
     with zipfile.ZipFile(src) as zin:
         manifest = clear_use32bitabi(zin.read("AndroidManifest.xml"))
-        if manifest is None:
+        dex = fast_user_agent(zin.read("classes.dex")) if "classes.dex" in zin.namelist() else None
+        if manifest is None and dex is None:
             return False
         with zipfile.ZipFile(dst, "w") as zout:
             for info in zin.infolist():
@@ -99,13 +108,33 @@ def patch_apk(src, dst):
                     align = 16384 if info.filename.endswith(".so") else 4
                     data_at = zout.fp.tell() + 30 + len(info.filename.encode())
                     out.extra = b"\0" * (-data_at % align)
-                if info.filename == "AndroidManifest.xml":
+                if info.filename == "AndroidManifest.xml" and manifest is not None:
                     zout.writestr(out, manifest)
+                    continue
+                if info.filename == "classes.dex" and dex is not None:
+                    zout.writestr(out, dex)
                     continue
                 with zin.open(info) as s, zout.open(out, "w") as o:
                     shutil.copyfileobj(s, o, 1 << 20)
     sign_v2(dst)
     return True
+
+
+def fast_user_agent(dex):
+    """Enable Chromium's async UA path in the image's WebView 150.0.7871.63 classes.dex."""
+    # shortcut: pinned bytecode, revalidate against upstream SharedStatics.java on WebView upgrades.
+    if hashlib.sha256(dex).hexdigest() != _UA_DEX_SHA256:
+        log.warning("WebView build not recognized; leaving its user-agent startup behavior unchanged")
+        return None
+    # StaticsAdapter.getDefaultUserAgent: move-result v4 -> const/4 v4, 1 after the
+    # WebViewFasterGetDefaultUserAgent flag lookup; keep the async startup call and UA intact.
+    if dex[_UA_OFFSET:_UA_OFFSET + 2] != b"\x0a\x04":
+        raise ValueError("unexpected WebView user-agent instruction")
+    buf = bytearray(dex)
+    buf[_UA_OFFSET:_UA_OFFSET + 2] = b"\x12\x14"
+    buf[12:32] = hashlib.sha1(buf[32:]).digest()
+    struct.pack_into("<I", buf, 8, zlib.adler32(buf[12:]))
+    return bytes(buf)
 
 
 def _lp(b):

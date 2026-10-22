@@ -7,6 +7,15 @@ follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions f
 ## [Unreleased]
 
 ### Fixed
+- Unity games that render with URP and MSAA, such as Monopoly GO, no longer stay black on NVIDIA
+  GPUs. ANGLE now offers multisampled render-to-texture there, as phone GPUs do. Existing
+  instances receive it on restart.
+- Airship Knights startup on Android 16: use YUV video output instead of the image's forced
+  RGBX output, and enable WebView 150.0.7871.63's asynchronous user-agent lookup to avoid a
+  Unity/ad-SDK deadlock. Existing instances receive the updated compatibility layer on restart.
+- Long-running instances no longer freeze from recursive 32-bit crash reporters after their
+  process/thread IDs exceed 65,535. On Linux 6.14+, each instance caps its own PID range without
+  lowering the host's limit. Older kernels lack this isolation and are left unchanged.
 - Google Play Games sign-in on Android 16's 2026-07-17 image: supply newer Google-signed Play
   services and its system permissions in a shared layer. Works for existing and new instances
   without enabling root or a writable system, and preserves accounts and app data.

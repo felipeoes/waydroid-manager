@@ -1,4 +1,5 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
+import hashlib
 import os
 import shutil
 import struct
@@ -6,6 +7,8 @@ import subprocess
 import tempfile
 import unittest
 import zipfile
+import zlib
+from unittest.mock import patch
 
 from waydroid_manager.daemon import webview
 
@@ -28,8 +31,45 @@ class ClearUse32bitAbiTest(unittest.TestCase):
         self.assertIsNone(webview.clear_use32bitabi(manifest(0)))
 
 
+class FastUserAgentTest(unittest.TestCase):
+    def test_unknown_build_is_unchanged(self):
+        self.assertIsNone(webview.fast_user_agent(b"unknown dex"))
+
+    def test_enable_async_path_and_repair_dex_checksums(self):
+        dex = b"dex\n035\0" + bytes(104) + b"\x0a\x04" + bytes(16)
+        with patch.object(webview, "_UA_DEX_SHA256", hashlib.sha256(dex).hexdigest()), \
+                patch.object(webview, "_UA_OFFSET", 112):
+            out = webview.fast_user_agent(dex)
+        self.assertEqual(out[112:114], b"\x12\x14")  # const/4 v4, 1
+        self.assertEqual(out[32:112], dex[32:112])
+        self.assertEqual(out[114:], dex[114:])
+        self.assertEqual(out[12:32], hashlib.sha1(out[32:]).digest())
+        self.assertEqual(struct.unpack_from("<I", out, 8)[0], zlib.adler32(out[12:]))
+
+    def test_known_hash_with_wrong_instruction_is_rejected(self):
+        dex = bytes(128)
+        with patch.object(webview, "_UA_DEX_SHA256", hashlib.sha256(dex).hexdigest()), \
+                patch.object(webview, "_UA_OFFSET", 112):
+            with self.assertRaises(ValueError):
+                webview.fast_user_agent(dex)
+
+
 @unittest.skipUnless(shutil.which("openssl"), "needs openssl")
 class PatchApkTest(unittest.TestCase):
+    def test_dex_fix_also_applies_to_already_64bit_webview(self):
+        dex = b"dex\n035\0" + bytes(104) + b"\x0a\x04" + bytes(16)
+        with tempfile.TemporaryDirectory() as tmp:
+            src, dst = os.path.join(tmp, "in.apk"), os.path.join(tmp, "out.apk")
+            with zipfile.ZipFile(src, "w") as z:
+                z.writestr("AndroidManifest.xml", manifest(0))
+                z.writestr("classes.dex", dex)
+            with patch.object(webview, "_UA_DEX_SHA256", hashlib.sha256(dex).hexdigest()), \
+                    patch.object(webview, "_UA_OFFSET", 112):
+                self.assertTrue(webview.patch_apk(src, dst))
+            with zipfile.ZipFile(dst) as z:
+                self.assertEqual(z.read("AndroidManifest.xml"), manifest(0))
+                self.assertEqual(z.read("classes.dex")[112:114], b"\x12\x14")
+
     def test_aligned_and_signed(self):
         with tempfile.TemporaryDirectory() as tmp:
             src, dst = os.path.join(tmp, "in.apk"), os.path.join(tmp, "out.apk")
