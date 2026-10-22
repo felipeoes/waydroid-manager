@@ -7,6 +7,9 @@ follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions f
 ## [Unreleased]
 
 ### Fixed
+- Unity games that render with URP and MSAA, such as Monopoly GO, no longer stay black on NVIDIA
+  GPUs. ANGLE now offers multisampled render-to-texture there, as phone GPUs do. Existing
+  instances receive it on restart.
 - Airship Knights startup on Android 16: use YUV video output instead of the image's forced
   RGBX output, and enable WebView 150.0.7871.63's asynchronous user-agent lookup to avoid a
   Unity/ad-SDK deadlock. Existing instances receive the updated compatibility layer on restart.
