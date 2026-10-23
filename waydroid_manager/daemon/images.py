@@ -284,7 +284,11 @@ def update(in_use):
 
 def gapps_layer(image_id):
     """The Google Play layer a set runs with, or None (in the image itself, or stock's)."""
-    kind = catalog.get(read_cfg(image_id).get("android"), "gapps", "image")
+    cfg = read_cfg(image_id)
+    # This factory GmsCore predates GET_ROLE_HOLDERS: an allowlist alone cannot grant it to updates.
+    if cfg.get("android") == "16" and cfg.get("built") == "1784256682":
+        return gapps.gms16_layer()
+    kind = catalog.get(cfg.get("android"), "gapps", "image")
     if kind == "mtg14":
         return gapps.mtg_layer()
     if kind == "gms_apex":

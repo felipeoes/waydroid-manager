@@ -110,6 +110,14 @@ entry it first loaded.
   layers that every device mounts below its own: ARM translation (`armtrans.py`), Google Play
   (`gapps.py`), NVIDIA's Android drivers (`nvidia.py`), and on 16 and 17 the image's WebView
   re-signed to run 64-bit (`webview.py`).
+  Android 16's 2026-07-17 system image also gets Google-signed Play services 26.11.36 and its
+  permission list from a checksum-pinned APEX in the image maintainer's repository. Its old
+  factory APK never requested `GET_ROLE_HOLDERS`, so allowing that permission alone does not
+  grant it to Play Store updates; Play Games sign-in then fails. The layer replaces that APK
+  at the same path, preserves account/app data, and works with read-only systems. It is selected
+  by the affected system build timestamp, so newer images and other Android versions are left
+  alone. When changing the pin, verify the Google signature, SDK/ABI compatibility, a fresh
+  Android 16 boot, and sign-in with an existing Play services update.
 - **Graphics** (`gpu.py`): the `gpu` setting resolves to a mode at each start (`gpu.mode`):
   - `nvidia`: Android's Venus Vulkan driver talks over a unix socket to a renderer the session
     runs as the user (`daemon/nvidia.py`); ANGLE runs GLES on it.

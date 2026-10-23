@@ -6,6 +6,39 @@ follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions f
 
 ## [Unreleased]
 
+## [1.4.0] - 2026-10-23
+
+### Changed
+- Devices look like a retail ARM64 phone to apps that check for emulators. The device model now
+  carries a matching `user` build: fingerprint, description, tags and numeric incremental for
+  the system and every partition (the OEM one on Android 16 and 17 too), no Lineage or Waydroid
+  names in them, and a locked, verified bootloader (`ro.boot.verifiedbootstate=green`). Native
+  code reads `ro.build.type` as `user` once Android has booted, but Android's own `Build.TYPE`
+  keeps the image's: booted as `user` it warns "internal problem with your device", because a
+  host kernel without SELinux fails its VINTF check. `/proc/cpuinfo` and `/proc/cmdline` show an
+  ARM64 phone's, and the host's ACPI, PCI, DMI, kernel module, battery and thermal data are
+  hidden. ARM translation is reported as native ARM64 (Houdini is renamed `libnb_impl`), and
+  Berberis's guest-call stack check no longer aborts Unity IL2CPP games on Android 11 to 16. The
+  first start after updating re-derives apps' ABIs, so it boots slower once.
+
+### Fixed
+- Unity games that render with URP and MSAA, such as Monopoly GO, no longer stay black on NVIDIA
+  GPUs. ANGLE now offers multisampled render-to-texture there, as phone GPUs do. Existing
+  instances receive it on restart.
+- Google Play Games sign-in on Android 16's 2026-07-17 image: supply newer Google-signed Play
+  services and its system permissions in a shared layer. Works for existing and new instances
+  without enabling root or a writable system, and preserves accounts and app data.
+- Games such as Merge Cruise no longer pause for DNS timeouts when resolving the device's
+  own hostname. Each instance maps its hostname to its own address in Android's hosts file.
+- Unreal Engine games, such as Goodville, no longer abort at launch on hosts with less RAM plus
+  swap than the 48 GB their allocator reserves. Starting an instance sets the host's
+  `vm.overcommit_memory` from the kernel's heuristic default (0) to 1, as Android's own init does
+  but can't from inside the container. The setting is host-wide; a strict 2 is left alone.
+- Unreal Engine games on NVIDIA GPUs, such as Goodville, no longer quit when they start playing a
+  video on Android 15, 16 and 17. Seeing an NVIDIA renderer, the engine names the video texture
+  extension the way NVIDIA's drivers accept but ANGLE did not; the image's ANGLE is patched to
+  accept it too (64-bit apps; Android 11, 13 and 14 aren't covered yet).
+
 ## [1.3.6] - 2026-10-14
 
 ### Fixed
@@ -291,7 +324,8 @@ First release.
 - Root daemon hardened against symlink and race attacks, root-enabling Android properties,
   and misuse of passed file descriptors. Each user sees and controls only their own instances.
 
-[Unreleased]: https://github.com/felipeoes/waydroid-manager/compare/v1.3.6...HEAD
+[Unreleased]: https://github.com/felipeoes/waydroid-manager/compare/v1.4.0...HEAD
+[1.4.0]: https://github.com/felipeoes/waydroid-manager/compare/v1.3.6...v1.4.0
 [1.3.6]: https://github.com/felipeoes/waydroid-manager/compare/v1.3.5...v1.3.6
 [1.3.5]: https://github.com/felipeoes/waydroid-manager/compare/v1.3.4...v1.3.5
 [1.3.4]: https://github.com/felipeoes/waydroid-manager/compare/v1.3.3...v1.3.4
