@@ -8,10 +8,12 @@ follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions f
 
 ### Changed
 - Devices look like a retail ARM64 phone to apps that check for emulators. The device model now
-  carries a matching `user` build: fingerprint, description, build type, tags and numeric
-  incremental for the system and every partition (the OEM one on Android 16 and 17 too), no
-  Lineage or Waydroid names in them, and a locked, verified bootloader
-  (`ro.boot.verifiedbootstate=green`). `/proc/cpuinfo` and `/proc/cmdline` show an
+  carries a matching `user` build: fingerprint, description, tags and numeric incremental for
+  the system and every partition (the OEM one on Android 16 and 17 too), no Lineage or Waydroid
+  names in them, and a locked, verified bootloader (`ro.boot.verifiedbootstate=green`). Native
+  code reads `ro.build.type` as `user` once Android has booted, but Android's own `Build.TYPE`
+  keeps the image's: booted as `user` it warns "internal problem with your device", because a
+  host kernel without SELinux fails its VINTF check. `/proc/cpuinfo` and `/proc/cmdline` show an
   ARM64 phone's, and the host's ACPI, PCI, DMI, kernel module, battery and thermal data are
   hidden. ARM translation is reported as native ARM64 (Houdini is renamed `libnb_impl`), and
   Berberis's guest-call stack check no longer aborts Unity IL2CPP games on Android 11 to 16. The

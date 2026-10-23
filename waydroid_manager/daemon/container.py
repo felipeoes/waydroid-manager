@@ -773,7 +773,8 @@ def hide_emulator_props(inst):
     if not pid:
         return
     dev_props = devices.props_for(inst.get("device_model"), inst.cfg["properties"])
-    updates = {"ro.dalvik.vm.native.bridge": "0", "qemu.hw.mainkeys": ""}
+    # zygote's Build.TYPE and system_server's VINTF check already saw the image's own (devices.build_props)
+    updates = {"ro.dalvik.vm.native.bridge": "0", "qemu.hw.mainkeys": "", "ro.build.type": "user"}
     for k in ("ro.build.product", "ro.product.board", "ro.hardware", "ro.bootloader", "ro.build.tags"):
         if k in dev_props:
             updates[k] = dev_props[k]

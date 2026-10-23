@@ -351,7 +351,10 @@ class DevicesTest(unittest.TestCase):
         fp = "google/husky/husky:13/TQ3A.230901.001/{}:user/release-keys".format(num)
         self.assertEqual(p["ro.build.fingerprint"], fp)
         self.assertEqual(p["ro.build.description"], "husky-user 13 TQ3A.230901.001 {} release-keys".format(num))
-        self.assertEqual((p["ro.build.type"], p["ro.build.display.id"]), ("user", "TQ3A.230901.001"))
+        self.assertEqual(p["ro.build.display.id"], "TQ3A.230901.001")
+        # a "user" ro.build.type at boot makes system_server enforce the VINTF check that a host kernel
+        # without SELinux fails ("internal problem with your device"): it stays the image's, patched after boot
+        self.assertNotIn("ro.build.type", p)
         self.assertEqual(p["ro.lineage.version"], "20.0-20260927-GAPPS-husky")
         self.assertNotIn("ro.modversion", p)        # nothing of Waydroid's in it: left alone
         for part in devices.PARTITIONS:
@@ -363,7 +366,7 @@ class DevicesTest(unittest.TestCase):
             self.assertNotIn(tell, joined)
         # a custom device without a name or brand still stops being a debug build, but gets no fingerprint
         custom = devices.build_props(devices.props_for("custom", {"ro.product.waydroid.device": "x1"}), image)
-        self.assertEqual(custom["ro.build.type"], "user")
+        self.assertEqual(custom["ro.system.build.type"], "user")
         self.assertNotIn("ro.build.fingerprint", custom)
 
 

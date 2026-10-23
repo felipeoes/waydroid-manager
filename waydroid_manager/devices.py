@@ -71,9 +71,11 @@ def props_for(key, custom_props=None):
 def build_props(dev_props, image):
     """What a production build reports instead of the image's userdebug one: ro.build.* and each
     partition's type, tags, fingerprint and incremental, derived from props_for() (dev_props)
-    and the image's own IMAGE_PROPS (image). The image's real build id stays."""
+    and the image's own IMAGE_PROPS (image). The image's real build id stays. Not ro.build.type: with
+    "user" at boot system_server enforces the VINTF check, which a host kernel without SELinux fails
+    ("There's an internal problem with your device"); hide_emulator_props patches it after boot."""
     num = str(10000000 + zlib.crc32(image.get("ro.build.version.incremental", "").encode()) % 90000000)
-    out = {"ro.build.type": "user", "ro.build.user": "android-build", "ro.build.host": "abfarm",
+    out = {"ro.build.user": "android-build", "ro.build.host": "abfarm",
            "ro.build.version.incremental": num, "ro.build.display.id": image.get("ro.build.id")}
     dev = dev_props.get("ro.build.product")
     for k in ("ro.lineage.device", "ro.lineage.version", "ro.lineage.display.version", "ro.modversion"):

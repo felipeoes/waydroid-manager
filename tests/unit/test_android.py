@@ -588,6 +588,7 @@ class EmulatorStealthTest(unittest.TestCase):
                     "ro.build.product": "waydroid_x86_64",
                     "ro.build.flavor": "lineage_waydroid_x86_64-userdebug",
                     "ro.build.tags": "test-keys",
+                    "ro.build.type": "userdebug",
                 }))
             with open(os.path.join(props_dir, "u:object_r:build_vendor_prop:s0"), "wb") as f:
                 f.write(self.make_prop_area({
@@ -621,6 +622,7 @@ class EmulatorStealthTest(unittest.TestCase):
                 self.assertEqual(self.read_prop(build_data, "ro.build.product"), "husky")
                 self.assertEqual(self.read_prop(build_data, "ro.build.flavor"), "husky-user")
                 self.assertEqual(self.read_prop(build_data, "ro.build.tags"), "release-keys")
+                self.assertEqual(self.read_prop(build_data, "ro.build.type"), "user")
                 with open(os.path.join(props_dir, "u:object_r:build_vendor_prop:s0"), "rb") as f:
                     vendor_data = f.read()
                 self.assertEqual(self.read_prop(vendor_data, "ro.product.vendor.device"), "husky")
