@@ -9,7 +9,7 @@ import threading
 import zipfile
 
 from .. import paths
-from .util import CommandError, attach, download, log
+from .util import CommandError, download
 
 # Same build waydroid_script installs, pinned to a commit and checked by hash
 APK_URL = ("https://github.com/mistrmochov/magiskdeltaorig/raw/"
@@ -17,7 +17,6 @@ APK_URL = ("https://github.com/mistrmochov/magiskdeltaorig/raw/"
 APK_SHA256 = "a3c37c4172b6ce7fdfbcccb2a608ef84b0a267d7aaef7c183047adceb8494c80"
 APK_CACHE = paths.STATE_DIR + "/magisk-delta.apk"
 STAMP = "magisk.sha256"  # in the instance dir: which build its lower layer holds
-HIDDEN = "magisk-hidden"  # in the instance dir: hiding was switched on once
 ABIS = {"x86_64": "x86_64", "i686": "x86", "aarch64": "arm64-v8a", "armv7l": "armeabi-v7a"}
 ASSETS = ("addon.d.sh", "boot_patch.sh", "stub.apk", "util_functions.sh")
 SOCK = "/dev/magisk_iqeoVo2mDrO"
@@ -154,17 +153,3 @@ def _put(z, name, dst, mode):
     with z.open(name) as src, open(dst, "wb") as out:
         shutil.copyfileobj(src, out)
     os.chmod(dst, mode)
-
-
-def hide_root(inst):
-    """After Root's first boot, turn on Magisk Delta's hiding: with SuList only the apps on its list
-    see su, Magisk's mounts and /data/adb. SuList is read when Magisk boots, so it applies from the
-    next start. Once, so switching it off in the Magisk app sticks."""
-    stamp = os.path.join(inst.dir, HIDDEN)
-    if os.path.lexists(stamp) or not inst.getbool("root") or not os.path.isfile(os.path.join(inst.dir, STAMP)):
-        return
-    for action in ("enable", "sulist enable"):
-        attach(inst.id, ["/system/bin/sh", "-c", "{}/magisk --hide {}".format(SOCK, action)])
-    with open(stamp, "w"):
-        pass
-    log.info("%s: Magisk hides root from apps not on its list, from the next start", inst.id)

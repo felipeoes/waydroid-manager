@@ -832,13 +832,9 @@ def finish_boot(inst):
         attach(inst.id, ["/system/bin/mount", "-t", "tmpfs", "-o", "nosuid,nodev,noexec,size=4k,mode=755",
                          "tmpfs", "/proc/sys/dev"], check=False)
         if wait_boot(inst):
-            for step in (hide_emulator_props, magisk.hide_root):
-                try:
-                    step(inst)
-                except Exception:  # noqa: BLE001
-                    log.exception("%s: %s failed", inst.id, step.__name__)
+            hide_emulator_props(inst)
     except Exception:  # noqa: BLE001
-        log.exception("%s: post-boot setup failed", inst.id)
+        log.exception("%s: post-boot property scrub failed", inst.id)
 
 
 def bind_patched(inst, src, data, name, mode):

@@ -13,7 +13,7 @@ import zipfile
 from unittest import mock
 
 from waydroid_manager import catalog, gpu
-from waydroid_manager.daemon import container, gapps, images, layers, magisk, main, nvidia, storage, util
+from waydroid_manager.daemon import container, gapps, images, layers, main, nvidia, storage, util
 from waydroid_manager.instance import CREATE_ONLY, Instance, validate_setting
 
 
@@ -488,42 +488,6 @@ class LayerHelpersTest(unittest.TestCase):
                 z.writestr("lib/x86/sub/libbar.so", b"x")      # not a top-level lib
             layers.extract_apk_libs(d)
             self.assertEqual(sorted(os.listdir(os.path.join(d, "lib", "x86"))), ["libfoo.so"])
-
-
-class HideRootTest(unittest.TestCase):
-    def setUp(self):
-        self.tmp = tempfile.TemporaryDirectory()
-        self.addCleanup(self.tmp.cleanup)
-        self.inst = Instance.new("6", 6, 1000, "", {}, {})
-        self.inst.set("root", "true")
-        patch = mock.patch.object(Instance, "dir", self.tmp.name)
-        patch.start()
-        self.addCleanup(patch.stop)
-
-    def installed(self):
-        with open(os.path.join(self.tmp.name, magisk.STAMP), "w"):
-            pass
-
-    def test_turns_hiding_on_once_after_roots_first_boot(self):
-        self.installed()
-        with mock.patch.object(magisk, "attach") as attach:
-            magisk.hide_root(self.inst)
-            magisk.hide_root(self.inst)     # a second boot: the user may have switched it off since
-        self.assertEqual([c.args[1][-1] for c in attach.call_args_list],
-                         [magisk.SOCK + "/magisk --hide enable", magisk.SOCK + "/magisk --hide sulist enable"])
-        self.assertTrue(os.path.exists(os.path.join(self.tmp.name, magisk.HIDDEN)))
-
-    def test_does_nothing_without_magisk_or_when_it_failed(self):
-        with mock.patch.object(magisk, "attach") as attach:
-            magisk.hide_root(self.inst)         # Magisk isn't in the layer
-            self.installed()
-            self.inst.set("root", "false")
-            magisk.hide_root(self.inst)         # Root is off
-            self.inst.set("root", "true")
-            attach.side_effect = util.CommandError("magisk is not up")
-            with self.assertRaises(util.CommandError):
-                magisk.hide_root(self.inst)
-        self.assertFalse(os.path.exists(os.path.join(self.tmp.name, magisk.HIDDEN)))     # retried next boot
 
 
 class EmulatorStealthTest(unittest.TestCase):
