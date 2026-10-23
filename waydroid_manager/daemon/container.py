@@ -960,6 +960,18 @@ def stock_props(inst, arm, mode):
     return out
 
 
+def identity_props(inst):
+    """The device model's props, and the production build's over the image's own (devices.build_props)
+    minus what the instance sets itself."""
+    dev_props = devices.props_for(inst.get("device_model"), inst.cfg["properties"])
+    # Android 16's Lineage props are in the product partition's build.prop, 11 to 15's in system's
+    image = {k: stock.read_prop_file(inst.rootfs + "/system/build.prop", k)
+             or stock.read_prop_file(inst.rootfs + "/system/product/etc/build.prop", k)
+             for k in devices.IMAGE_PROPS}
+    build = devices.build_props(dev_props, image)
+    return dev_props, {k: v for k, v in build.items() if k not in inst.cfg["properties"]}
+
+
 def write_props(inst, session, arm, render=("gpu", None)):
     """Generate waydroid_base.prop and waydroid.prop for this start. arm: the mounted ARM
     translation layer (None: off, or none of ours: then stock's own stays on stock's Android,
@@ -974,6 +986,7 @@ def write_props(inst, session, arm, render=("gpu", None)):
         eff["properties"].update(armtrans.PROPS[kind])
     elif kind == "none":
         eff["properties"]["ro.dalvik.vm.native.bridge"] = "0"   # also switches off the image's own
+    dev_props, build = identity_props(inst)
     key = android_of(inst)
     if key:
         eff["properties"].update(catalog.get(key, "props", {}))
@@ -981,7 +994,7 @@ def write_props(inst, session, arm, render=("gpu", None)):
         # Android keeps a package's ABI until the build fingerprints change: this one (there's no
         # oem partition) makes a device made before the 64-bit WebView re-derive it, once. It
         # repeats the build's own fingerprint, like the other partitions' do
-        fp = (inst.cfg["properties"].get("ro.build.fingerprint")
+        fp = (inst.cfg["properties"].get("ro.build.fingerprint") or build.get("ro.build.fingerprint")
               or stock.read_prop_file(inst.rootfs + "/system/build.prop", "ro.build.fingerprint"))
         eff["properties"]["ro.oem.build.fingerprint"] = fp or "waydroid-manager:webview64"
     if mode == "gpu" and node:
@@ -1024,9 +1037,6 @@ def write_props(inst, session, arm, render=("gpu", None)):
     t.helpers.images.make_prop(a, session, full)
     extra = ["waydroid.manager.instance=" + inst.id]
     # Device model: ro.product.waydroid.* win in Android's product property source order
-    dev_props = devices.props_for(inst.get("device_model"), inst.cfg["properties"])
-    image = {k: stock.read_prop_file(inst.rootfs + "/system/build.prop", k) for k in devices.IMAGE_PROPS}
-    build = {k: v for k, v in devices.build_props(dev_props, image).items() if k not in inst.cfg["properties"]}
     for k, v in list(dev_props.items()) + list(build.items()):
         extra.append("{}={}".format(k, v))
     if inst.get("width") != "0":

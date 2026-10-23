@@ -667,6 +667,27 @@ class EmulatorStealthTest(unittest.TestCase):
         for p in ("sys/class/power_supply", "sys/class/thermal"):
             self.assertIn("tmpfs {} tmpfs".format(p), nodes)
 
+    def test_identity_props_derive_from_the_image_and_keep_the_instances_own(self):
+        with tempfile.TemporaryDirectory() as d:
+            os.makedirs(os.path.join(d, "rootfs/system"))
+            with open(os.path.join(d, "rootfs/system/build.prop"), "w") as f:
+                f.write("ro.build.id=BP4A.251205.006\nro.build.version.release=16\n"
+                        "ro.build.version.incremental=eng.x.1\nro.build.fingerprint=google/tangorpro/x:16/y\n")
+            os.makedirs(os.path.join(d, "rootfs/system/product/etc"))
+            with open(os.path.join(d, "rootfs/system/product/etc/build.prop"), "w") as f:
+                f.write("ro.lineage.version=23.2-UNOFFICIAL-WayDroidATV-waydroid_x86_64\n")
+            inst = Instance.new("8", 8, 1000, "", {}, {"ro.build.host": "mine"})
+            inst.set("device_model", "pixel_8_pro")
+            with mock.patch.object(Instance, "dir", d), \
+                    mock.patch.object(Instance, "rootfs", os.path.join(d, "rootfs")):
+                dev, build = container.identity_props(inst)
+        self.assertEqual(dev["ro.build.product"], "husky")
+        self.assertEqual(build["ro.build.fingerprint"],
+                         "google/husky/husky:16/BP4A.251205.006/{}:user/release-keys".format(
+                             build["ro.build.version.incremental"]))
+        self.assertEqual(build["ro.lineage.version"], "23.2-UNOFFICIAL-WayDroidATV-husky")
+        self.assertNotIn("ro.build.host", build)    # the instance's own property wins
+
     def test_fix_ndk_translation_patches_pinned_build(self):
         with tempfile.TemporaryDirectory() as d:
             inst = Instance.new("4", 4, 1000, "", {}, {})

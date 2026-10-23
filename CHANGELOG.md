@@ -9,15 +9,18 @@ follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions f
 ### Changed
 - Devices look like a retail ARM64 phone to apps that check for emulators. The device model now
   carries a matching `user` build: fingerprint, description, build type, tags and numeric
-  incremental for the system and every partition, no Lineage or Waydroid names, and a locked,
-  verified bootloader (`ro.boot.verifiedbootstate=green`). `/proc/cpuinfo` and `/proc/cmdline` show an
+  incremental for the system and every partition (the OEM one on Android 16 and 17 too), no
+  Lineage or Waydroid names in them, and a locked, verified bootloader
+  (`ro.boot.verifiedbootstate=green`). `/proc/cpuinfo` and `/proc/cmdline` show an
   ARM64 phone's, and the host's ACPI, PCI, DMI, kernel module, battery and thermal data are
   hidden. ARM translation is reported as native ARM64 (Houdini is renamed `libnb_impl`), and
   Berberis's guest-call stack check no longer aborts Unity IL2CPP games on Android 11 to 16. The
   first start after updating re-derives apps' ABIs, so it boots slower once.
 - Root is hidden from apps by default. After Root's first boot Magisk Delta's hiding and SuList
   are turned on once: from the next start only apps on Magisk's list (the Magisk app, and the apps
-  you add) see `su` and its mounts. Turning it off in the Magisk app sticks.
+  you add) see `su` and its mounts. Turning it off in the Magisk app sticks. Apps that were
+  granted root before need adding to the list. The Magisk app keeps its own name; hiding that is
+  done inside the app.
 
 ### Fixed
 - Unity games that render with URP and MSAA, such as Monopoly GO, no longer stay black on NVIDIA
