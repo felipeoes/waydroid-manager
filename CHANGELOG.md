@@ -6,6 +6,8 @@ follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions f
 
 ## [Unreleased]
 
+## [1.4.0] - 2026-10-23
+
 ### Changed
 - Devices look like a retail ARM64 phone to apps that check for emulators. The device model now
   carries a matching `user` build: fingerprint, description, tags and numeric incremental for
@@ -322,7 +324,8 @@ First release.
 - Root daemon hardened against symlink and race attacks, root-enabling Android properties,
   and misuse of passed file descriptors. Each user sees and controls only their own instances.
 
-[Unreleased]: https://github.com/felipeoes/waydroid-manager/compare/v1.3.6...HEAD
+[Unreleased]: https://github.com/felipeoes/waydroid-manager/compare/v1.4.0...HEAD
+[1.4.0]: https://github.com/felipeoes/waydroid-manager/compare/v1.3.6...v1.4.0
 [1.3.6]: https://github.com/felipeoes/waydroid-manager/compare/v1.3.5...v1.3.6
 [1.3.5]: https://github.com/felipeoes/waydroid-manager/compare/v1.3.4...v1.3.5
 [1.3.4]: https://github.com/felipeoes/waydroid-manager/compare/v1.3.3...v1.3.4
