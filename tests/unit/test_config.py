@@ -327,11 +327,18 @@ class DevicesTest(unittest.TestCase):
         from waydroid_manager import devices
         p = devices.props_for("galaxy_s24_ultra")
         self.assertEqual(p["ro.product.waydroid.model"], "SM-S928B")
-        self.assertEqual(set(p), {"ro.product.waydroid." + f for f in devices.FIELDS})
-        self.assertEqual(devices.props_for("waydroid"), {})
+        self.assertEqual(p["ro.build.product"], "e3q")
+        self.assertEqual(p["ro.product.board"], "e3q")
+        self.assertEqual(p["ro.hardware"], "e3q")
+        self.assertEqual(p["ro.bootloader"], "e3q")
+        self.assertEqual(p["ro.build.tags"], "release-keys")
+        self.assertTrue({"ro.product.waydroid." + f for f in devices.FIELDS}.issubset(p))
+        default = devices.props_for("waydroid")
+        self.assertEqual(default["ro.product.waydroid.model"], "Pixel 8 Pro")
+        self.assertEqual(default["ro.build.product"], "husky")
         custom = devices.props_for("custom", {"ro.product.waydroid.model": "X1", "ro.product.waydroid.brand": "",
                                               "other": "y"})
-        self.assertEqual(custom, {"ro.product.waydroid.model": "X1"})
+        self.assertEqual(custom, {"ro.product.waydroid.model": "X1", "ro.build.tags": "release-keys"})
 
 
 if __name__ == "__main__":

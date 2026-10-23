@@ -43,10 +43,20 @@ def label(key):
 
 
 def props_for(key, custom_props=None):
-    """ro.product.waydroid.* props for a preset ('custom' takes them from custom_props)."""
+    """ro.product.waydroid.* and build/hardware props for a preset ('custom' takes them from custom_props)."""
+    src = custom_props or {}
     if key == "custom":
-        src = custom_props or {}
-        return {"ro.product.waydroid." + f: src["ro.product.waydroid." + f]
-                for f in FIELDS if src.get("ro.product.waydroid." + f)}
-    values = PRESETS.get(key, PRESETS["waydroid"])[2]
-    return {"ro.product.waydroid." + f: v for f, v in values.items()}
+        out = {"ro.product.waydroid." + f: src["ro.product.waydroid." + f]
+               for f in FIELDS if src.get("ro.product.waydroid." + f)}
+        dev = out.get("ro.product.waydroid.device", "")
+    else:
+        values = PRESETS.get(key, PRESETS["pixel_8_pro"])[2] or PRESETS["pixel_8_pro"][2]
+        out = {"ro.product.waydroid." + f: v for f, v in values.items()}
+        dev = values["device"]
+    if dev:
+        for k in ("ro.build.product", "ro.product.board", "ro.hardware", "ro.bootloader"):
+            if not src.get(k):
+                out[k] = dev
+    if not src.get("ro.build.tags"):
+        out["ro.build.tags"] = "release-keys"
+    return out
