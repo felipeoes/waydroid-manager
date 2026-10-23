@@ -84,7 +84,8 @@ Then open **Waydroid Manager** from your app grid.
   get plain mouse input in a device: `waydroid-manager config N prop persist.waydroid.fake_touch none`.
 - **Root** (Magisk Delta): turn it on in Settings, then install the Magisk app with
   `waydroid-manager app install N /var/lib/waydroid-manager/magisk-delta.apk`. Root in Android is
-  close to root on your PC: only use it on machines you trust.
+  close to root on your PC: only use it on machines you trust. Root is hidden from apps by
+  default (from the second start): add an app to the list in the Magisk app for it to see `su`.
 - **A clone is a new device to Google:** register it once at
   <https://www.google.com/android/uncertified> with the number `waydroid-manager gsf-id N` prints.
 - **#0 and plain `waydroid` share your Waydroid's data**, so only one of them runs at a time.

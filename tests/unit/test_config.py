@@ -340,6 +340,32 @@ class DevicesTest(unittest.TestCase):
                                               "other": "y"})
         self.assertEqual(custom, {"ro.product.waydroid.model": "X1", "ro.build.tags": "release-keys"})
 
+    def test_build_props_report_a_production_build(self):
+        from waydroid_manager import devices
+        image = {"ro.build.version.release": "13", "ro.build.id": "TQ3A.230901.001",
+                 "ro.build.version.incremental": "eng.aleast.20260927.143833", "ro.lineage.device": "waydroid_x86_64",
+                 "ro.lineage.version": "20.0-20260927-GAPPS-waydroid_x86_64", "ro.modversion": "20.0-GAPPS"}
+        p = devices.build_props(devices.props_for("pixel_8_pro"), image)
+        num = p["ro.build.version.incremental"]
+        self.assertTrue(num.isdigit() and len(num) == 8)
+        fp = "google/husky/husky:13/TQ3A.230901.001/{}:user/release-keys".format(num)
+        self.assertEqual(p["ro.build.fingerprint"], fp)
+        self.assertEqual(p["ro.build.description"], "husky-user 13 TQ3A.230901.001 {} release-keys".format(num))
+        self.assertEqual((p["ro.build.type"], p["ro.build.display.id"]), ("user", "TQ3A.230901.001"))
+        self.assertEqual(p["ro.lineage.version"], "20.0-20260927-GAPPS-husky")
+        self.assertNotIn("ro.modversion", p)        # nothing of Waydroid's in it: left alone
+        for part in devices.PARTITIONS:
+            self.assertEqual(p["ro.{}.build.fingerprint".format(part)], fp)
+            self.assertEqual((p["ro.{}.build.type".format(part)], p["ro.{}.build.tags".format(part)]),
+                             ("user", "release-keys"))
+        joined = " ".join(p.values())
+        for tell in ("userdebug", "test-keys", "eng.", "aleasto", "x86", "waydroid", "lineage_"):
+            self.assertNotIn(tell, joined)
+        # a custom device without a name or brand still stops being a debug build, but gets no fingerprint
+        custom = devices.build_props(devices.props_for("custom", {"ro.product.waydroid.device": "x1"}), image)
+        self.assertEqual(custom["ro.build.type"], "user")
+        self.assertNotIn("ro.build.fingerprint", custom)
+
 
 if __name__ == "__main__":
     unittest.main()

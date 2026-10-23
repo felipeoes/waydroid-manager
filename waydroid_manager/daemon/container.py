@@ -135,6 +135,8 @@ HIDDEN_HOST_PATHS = (
     "proc/bus/pci",
     "proc/scsi",
     "proc/sys/dev",
+    "sys/class/power_supply",
+    "sys/class/thermal",
     "sys/devices/virtual/dmi",
     "sys/module",
 )
@@ -312,6 +314,9 @@ CPUINFO_CORE = (
     "CPU revision\t: 0\n\n"
 )
 CPUINFO_FOOTER = "Hardware\t: Qualcomm Technologies, Inc SM8550\n"
+# A locked, verified phone: init exports androidboot.* as ro.boot.* (the host's own command line has none)
+CMDLINE = ("androidboot.verifiedbootstate=green androidboot.flash.locked=1 "
+           "androidboot.vbmeta.device_state=locked androidboot.veritymode=enforcing\n")
 
 
 def cpu_count(inst, cpuset=""):
@@ -364,6 +369,9 @@ def write_lxc_config(inst, net, cpus_busy=(), render=("gpu", None)):
         nodes.append("lxc.mount.entry = {} {} none bind,create=file 0 0".format(node, node[1:]))
     cpuinfo = write_cpuinfo(inst, cpu_count(inst, cpuset))
     nodes.append("lxc.mount.entry = {} proc/cpuinfo none bind 0 0".format(cpuinfo))
+    cmdline = os.path.join(inst.dir, "cmdline")
+    _write(cmdline, CMDLINE)
+    nodes.append("lxc.mount.entry = {} proc/cmdline none bind 0 0".format(cmdline))
     for p in HIDDEN_HOST_PATHS:
         nodes.append("lxc.mount.entry = tmpfs {} tmpfs nosuid,nodev,noexec,size=4k,mode=755,optional 0 0".format(p))
     _write(os.path.join(inst.lxc_dir, "config_nodes"), "\n".join(nodes) + "\n")
@@ -636,6 +644,7 @@ PROP_AREAS = (
     "u:object_r:build_prop:s0",
     "u:object_r:build_vendor_prop:s0",
     "u:object_r:dalvik_config_prop:s0",
+    "u:object_r:default_prop:s0",
     "u:object_r:exported_dalvik_prop:s0",
     "u:object_r:exported_default_prop:s0",
     "u:object_r:exported2_default_prop:s0",
@@ -774,11 +783,12 @@ def hide_emulator_props(inst):
         dev = dev_props["ro.build.product"]
         updates["ro.build.flavor"] = dev + "-user"
         updates["ro.lineage.device"] = dev
+        updates["ro.board.platform"] = dev
     for f in devices.FIELDS:
         v = dev_props.get("ro.product.waydroid." + f)
         if v:
             updates["ro.product." + f] = v
-            for part in ("system", "vendor", "odm", "product", "system_ext", "bootimage"):
+            for part in ("system", "vendor", "odm", "product", "system_ext", "bootimage", "vendor_dlkm", "odm_dlkm"):
                 updates["ro.product.{}.{}".format(part, f)] = v
     if inst.get("arm_translation") != "none":
         updates["ro.product.cpu.abi"] = "arm64-v8a"
@@ -821,9 +831,13 @@ def finish_boot(inst):
         attach(inst.id, ["/system/bin/mount", "-t", "tmpfs", "-o", "nosuid,nodev,noexec,size=4k,mode=755",
                          "tmpfs", "/proc/sys/dev"], check=False)
         if wait_boot(inst):
-            hide_emulator_props(inst)
+            for step in (hide_emulator_props, magisk.hide_root):
+                try:
+                    step(inst)
+                except Exception:  # noqa: BLE001
+                    log.exception("%s: %s failed", inst.id, step.__name__)
     except Exception:  # noqa: BLE001
-        log.exception("%s: post-boot property scrub failed", inst.id)
+        log.exception("%s: post-boot setup failed", inst.id)
 
 
 def bind_patched(inst, src, data, name, mode):
@@ -1010,7 +1024,10 @@ def write_props(inst, session, arm, render=("gpu", None)):
     t.helpers.images.make_prop(a, session, full)
     extra = ["waydroid.manager.instance=" + inst.id]
     # Device model: ro.product.waydroid.* win in Android's product property source order
-    for k, v in devices.props_for(inst.get("device_model"), inst.cfg["properties"]).items():
+    dev_props = devices.props_for(inst.get("device_model"), inst.cfg["properties"])
+    image = {k: stock.read_prop_file(inst.rootfs + "/system/build.prop", k) for k in devices.IMAGE_PROPS}
+    build = {k: v for k, v in devices.build_props(dev_props, image).items() if k not in inst.cfg["properties"]}
+    for k, v in list(dev_props.items()) + list(build.items()):
         extra.append("{}={}".format(k, v))
     if inst.get("width") != "0":
         extra.append("persist.waydroid.width=" + inst.get("width"))

@@ -13,7 +13,7 @@ import zipfile
 from unittest import mock
 
 from waydroid_manager import catalog, gpu
-from waydroid_manager.daemon import container, gapps, images, layers, main, nvidia, storage, util
+from waydroid_manager.daemon import container, gapps, images, layers, magisk, main, nvidia, storage, util
 from waydroid_manager.instance import CREATE_ONLY, Instance, validate_setting
 
 
@@ -490,6 +490,42 @@ class LayerHelpersTest(unittest.TestCase):
             self.assertEqual(sorted(os.listdir(os.path.join(d, "lib", "x86"))), ["libfoo.so"])
 
 
+class HideRootTest(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.inst = Instance.new("6", 6, 1000, "", {}, {})
+        self.inst.set("root", "true")
+        patch = mock.patch.object(Instance, "dir", self.tmp.name)
+        patch.start()
+        self.addCleanup(patch.stop)
+
+    def installed(self):
+        with open(os.path.join(self.tmp.name, magisk.STAMP), "w"):
+            pass
+
+    def test_turns_hiding_on_once_after_roots_first_boot(self):
+        self.installed()
+        with mock.patch.object(magisk, "attach") as attach:
+            magisk.hide_root(self.inst)
+            magisk.hide_root(self.inst)     # a second boot: the user may have switched it off since
+        self.assertEqual([c.args[1][-1] for c in attach.call_args_list],
+                         [magisk.SOCK + "/magisk --hide enable", magisk.SOCK + "/magisk --hide sulist enable"])
+        self.assertTrue(os.path.exists(os.path.join(self.tmp.name, magisk.HIDDEN)))
+
+    def test_does_nothing_without_magisk_or_when_it_failed(self):
+        with mock.patch.object(magisk, "attach") as attach:
+            magisk.hide_root(self.inst)         # Magisk isn't in the layer
+            self.installed()
+            self.inst.set("root", "false")
+            magisk.hide_root(self.inst)         # Root is off
+            self.inst.set("root", "true")
+            attach.side_effect = util.CommandError("magisk is not up")
+            with self.assertRaises(util.CommandError):
+                magisk.hide_root(self.inst)
+        self.assertFalse(os.path.exists(os.path.join(self.tmp.name, magisk.HIDDEN)))     # retried next boot
+
+
 class EmulatorStealthTest(unittest.TestCase):
     @staticmethod
     def make_prop_area(props):
@@ -560,6 +596,8 @@ class EmulatorStealthTest(unittest.TestCase):
                 }))
             with open(os.path.join(props_dir, "u:object_r:bootloader_prop:s0"), "wb") as f:
                 f.write(self.make_prop_area({"ro.boot.hardware": "waydroid"}))
+            with open(os.path.join(props_dir, "u:object_r:default_prop:s0"), "wb") as f:
+                f.write(self.make_prop_area({"ro.system.product.cpu.abilist": "x86_64,x86"}))
             with open(os.path.join(props_dir, "u:object_r:dalvik_config_prop:s0"), "wb") as f:
                 f.write(self.make_prop_area({"ro.dalvik.vm.native.bridge": "libndk_translation.so"}))
             dalvik_path = os.path.join(props_dir, "u:object_r:dalvik_prop:s0")
@@ -592,12 +630,42 @@ class EmulatorStealthTest(unittest.TestCase):
                     self.assertEqual(self.read_prop(f.read(), "ro.boot.hardware"), "husky")
                 with open(os.path.join(props_dir, "u:object_r:dalvik_config_prop:s0"), "rb") as f:
                     self.assertEqual(self.read_prop(f.read(), "ro.dalvik.vm.native.bridge"), "0")
+                with open(os.path.join(props_dir, "u:object_r:default_prop:s0"), "rb") as f:
+                    self.assertEqual(self.read_prop(f.read(), "ro.system.product.cpu.abilist"),
+                                     "arm64-v8a,armeabi-v7a,armeabi")
                 # system_server's existing inode keeps x86_64; apps opening the path see ""
                 self.assertEqual(self.read_prop(os.pread(ss_fd, 4096, 0), "ro.dalvik.vm.isa.arm64"), "x86_64")
                 with open(dalvik_path, "rb") as f:
                     self.assertEqual(self.read_prop(f.read(), "ro.dalvik.vm.isa.arm64"), "")
             finally:
                 os.close(ss_fd)
+
+    def test_lxc_config_fakes_cmdline_and_hides_host_sensors(self):
+        with tempfile.TemporaryDirectory() as d:
+            inst = Instance.new("5", 5, 1000, "", {}, {})
+            inst.set("cpuset", "all")
+            seccomp = os.path.join(d, "seccomp")
+            open(seccomp, "w").close()
+            net = mock.Mock(cfg=mock.Mock(bridge="br", isolate=False))
+            with mock.patch.object(Instance, "dir", d), mock.patch.object(Instance, "lxc_dir", d), \
+                    mock.patch.object(container, "stock_args"), \
+                    mock.patch.object(container.stock, "lxc_snippets"), \
+                    mock.patch.object(container.stock, "seccomp_profile", return_value=seccomp), \
+                    mock.patch.object(container.stock, "tools") as tools, \
+                    mock.patch.object(container.lxcconfig, "build_config", return_value=""), \
+                    mock.patch.object(container, "load_apparmor_profile", return_value=None):
+                tools.return_value.helpers.lxc.generate_nodes_lxc_config.return_value = []
+                container.write_lxc_config(inst, net)
+            with open(os.path.join(d, "cmdline")) as f:
+                cmdline = f.read()
+            with open(os.path.join(d, "config_nodes")) as f:
+                nodes = f.read()
+        for arg in ("verifiedbootstate=green", "flash.locked=1", "vbmeta.device_state=locked"):
+            self.assertIn("androidboot." + arg, cmdline)
+        self.assertNotIn("BOOT_IMAGE", cmdline)
+        self.assertIn("{}/cmdline proc/cmdline none bind".format(d), nodes)
+        for p in ("sys/class/power_supply", "sys/class/thermal"):
+            self.assertIn("tmpfs {} tmpfs".format(p), nodes)
 
     def test_fix_ndk_translation_patches_pinned_build(self):
         with tempfile.TemporaryDirectory() as d:
