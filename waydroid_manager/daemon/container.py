@@ -13,6 +13,7 @@ import pwd
 import select
 import shutil
 import stat
+import struct
 import subprocess
 import threading
 import time
@@ -21,8 +22,8 @@ from .. import catalog, devices, gpu, lxcconfig, paths, stock, stockctl
 from ..instance import PROTECTED_PROP_RE, Instance
 from . import armtrans, binder, images, magisk, nvidia, storage, webview
 from .util import (CommandError, apparmor_profile_loaded, attach, bind, bind_file, bind_mount, chown_tree_top,
-                   is_mount, log, lxc_state, mount_image, mount_overlay, open_beneath, run, stage_dir, stage_socket,
-                   umount_tree)
+                   container_pid, is_mount, log, lxc_state, mount_image, mount_overlay, open_beneath,
+                   open_in_container, run, stage_dir, stage_socket, umount_tree)
 
 DEVICE_NODES = [
     "/dev/ashmem", "/dev/sw_sync", "/sys/kernel/debug/sync/sw_sync",
@@ -113,6 +114,32 @@ ANGLE_PATCHES = {
         (0xd0, "7a664100000000007a66410000000000"),
     ),
 }
+# Berberis's ExecuteGuestCall in Android 11-16 aborts ("Guest call didn't restore sp") when a
+# guest callback (e.g. Unity IL2CPP's signal/exception handler) returns with sp shifted; Android 17
+# warns, restores state->cpu.r[sp] to expected_sp, and returns. Backport 17's behavior to 11-16.
+# SHA-256 -> (file offset, new bytes).
+NDK_TRANSLATION_PATCHES = {
+    "37b56c2e542c4c1cf6a2743f58eea78fcd5bc33ddc000de1c5d26bb9c3be5ba4": (  # 11/13/14
+        0x19345e, "4885db740748898b08010000ebbd"
+    ),
+    "3356392ec6ef54d9a1d200d17d090b306b1e6cec2c8264883b705f2531ab278d": (  # 15
+        0x214451, "4885db740748898b08010000eb9a"
+    ),
+    "fbadc774c989534a567e6af8fd16d2c00727b1f1d9cc778bf538d6b59ed9776d": (  # 16
+        0x355581, "4885db740748898b08010000eb91"
+    ),
+}
+HIDDEN_HOST_PATHS = (
+    "proc/acpi",
+    "proc/asound",
+    "proc/bus/pci",
+    "proc/scsi",
+    "proc/sys/dev",
+    "sys/class/power_supply",
+    "sys/class/thermal",
+    "sys/devices/virtual/dmi",
+    "sys/module",
+)
 
 
 def _stock_stopped():
@@ -274,6 +301,44 @@ def pinned_cpus(inst):
         return []
 
 
+CPUINFO_CORE = (
+    "processor\t: {}\n"
+    "BogoMIPS\t: 38.40\n"
+    "Features\t: fp asimd evtstrm aes pmull sha1 sha2 crc32 atomics fphp asimdhp cpuid asimdrdm "
+    "jscvt fcma lrcpc dcpop sha3 sm3 sm4 asimddp sha512 asimdfhm dit uscat ilrcpc flagm ssbs sb "
+    "paca pacg dcpodp flagm2 frint\n"
+    "CPU implementer\t: 0x41\n"
+    "CPU architecture: 8\n"
+    "CPU variant\t: 0x2\n"
+    "CPU part\t: 0xd46\n"
+    "CPU revision\t: 0\n\n"
+)
+CPUINFO_FOOTER = "Hardware\t: Qualcomm Technologies, Inc SM8550\n"
+# A locked, verified phone: init exports androidboot.* as ro.boot.* (the host's own command line has none)
+CMDLINE = ("androidboot.verifiedbootstate=green androidboot.flash.locked=1 "
+           "androidboot.vbmeta.device_state=locked androidboot.veritymode=enforcing\n")
+
+
+def cpu_count(inst, cpuset=""):
+    if cpuset:
+        return max(1, len(lxcconfig.parse_cpus(cpuset)))
+    try:
+        return max(1, int(round(float(inst.get("cpus")))))
+    except ValueError:
+        return 4
+
+
+def cpuinfo_text(count):
+    return "".join(CPUINFO_CORE.format(n) for n in range(max(1, count))) + CPUINFO_FOOTER
+
+
+def write_cpuinfo(inst, count):
+    """Fake ARM64 /proc/cpuinfo: emulator checks scan the host's for intel, amd or hypervisor."""
+    path = os.path.join(inst.dir, "cpuinfo")
+    _write(path, cpuinfo_text(count))
+    return path
+
+
 def write_lxc_config(inst, net, cpus_busy=(), render=("gpu", None)):
     """render: (gpu mode, Android's DRM node or None), see render_for."""
     a = stock_args(inst)
@@ -302,6 +367,13 @@ def write_lxc_config(inst, net, cpus_busy=(), render=("gpu", None)):
         nodes = [n for n in nodes if "= /dev/dri/" not in n]
     if node:
         nodes.append("lxc.mount.entry = {} {} none bind,create=file 0 0".format(node, node[1:]))
+    cpuinfo = write_cpuinfo(inst, cpu_count(inst, cpuset))
+    nodes.append("lxc.mount.entry = {} proc/cpuinfo none bind 0 0".format(cpuinfo))
+    cmdline = os.path.join(inst.dir, "cmdline")
+    _write(cmdline, CMDLINE)
+    nodes.append("lxc.mount.entry = {} proc/cmdline none bind 0 0".format(cmdline))
+    for p in HIDDEN_HOST_PATHS:
+        nodes.append("lxc.mount.entry = tmpfs {} tmpfs nosuid,nodev,noexec,size=4k,mode=755,optional 0 0".format(p))
     _write(os.path.join(inst.lxc_dir, "config_nodes"), "\n".join(nodes) + "\n")
     session = os.path.join(inst.lxc_dir, "config_session")
     if not os.path.exists(session):
@@ -540,6 +612,231 @@ def fix_angle(inst):
         log.info("%s: ANGLE accepts Unreal Engine's video shaders", inst.id)
 
 
+def fix_ndk_translation(inst):
+    """Backport Android 17's non-fatal guest sp restoration in Berberis ExecuteGuestCall to
+    known Android 11-16 libndk_translation.so builds, for this mount only."""
+    try:
+        fd = open_beneath(inst.rootfs, "system/lib64/libndk_translation.so", os.O_RDONLY | os.O_NONBLOCK)
+    except FileNotFoundError:
+        return
+    with os.fdopen(fd, "rb") as src:
+        if not stat.S_ISREG(os.fstat(src.fileno()).st_mode):
+            raise RuntimeError("libndk_translation.so is not a regular file")
+        data = bytearray(src.read(16 << 20))   # known builds are under 9 MB; bound reads of guest files
+        patch = NDK_TRANSLATION_PATCHES.get(hashlib.sha256(data).hexdigest())
+        if patch is None:
+            return
+        offset, new = patch
+        new = bytes.fromhex(new)
+        data[offset:offset + len(new)] = new
+        bind_patched(inst, src, bytes(data), "libndk_translation.so", 0o644)
+        log.info("%s: applied libndk_translation ExecuteGuestCall fix", inst.id)
+
+
+ISA_PROP_CONTEXTS = (
+    b"\nro.dalvik.vm.isa. u:object_r:dalvik_prop:s0\n"
+    b"ro.dalvik.vm.isa.arm u:object_r:dalvik_prop:s0 exact string\n"
+    b"ro.dalvik.vm.isa.arm64 u:object_r:dalvik_prop:s0 exact string\n"
+)
+PROP_AREAS = (
+    "u:object_r:bootloader_prop:s0",
+    "u:object_r:build_odm_prop:s0",
+    "u:object_r:build_prop:s0",
+    "u:object_r:build_vendor_prop:s0",
+    "u:object_r:dalvik_config_prop:s0",
+    "u:object_r:default_prop:s0",
+    "u:object_r:exported_dalvik_prop:s0",
+    "u:object_r:exported_default_prop:s0",
+    "u:object_r:exported2_default_prop:s0",
+    "u:object_r:qemu_hw_prop:s0",
+    "u:object_r:vendor_default_prop:s0",
+)
+
+
+def fix_property_contexts(inst):
+    """Put ro.dalvik.vm.isa.* in their own property file (dalvik_prop, unused elsewhere),
+    so replacing that file after boot hides them from apps while system_server keeps its mapping."""
+    if getattr(inst, "get", lambda _: "")("arm_translation") == "none":
+        return
+    rel = "system/etc/selinux/plat_property_contexts"
+    try:
+        fd = open_beneath(inst.rootfs, rel, os.O_RDONLY | os.O_NONBLOCK)
+    except FileNotFoundError:
+        return
+    with os.fdopen(fd, "rb") as src:
+        if not stat.S_ISREG(os.fstat(src.fileno()).st_mode):
+            raise RuntimeError("plat_property_contexts is not a regular file")
+        data = src.read((1 << 20) + 1)
+        if len(data) > 1 << 20:
+            raise ValueError("plat_property_contexts is too large")
+        if b"ro.dalvik.vm.isa.arm " in data:
+            return
+        bind_patched(inst, src, data + ISA_PROP_CONTEXTS, "plat_property_contexts", 0o644)
+
+
+def fix_cpuinfo(inst):
+    """Bind the fake ARM64 cpuinfo over any static cpuinfo templates in /system/etc."""
+    data = cpuinfo_text(cpu_count(inst)).encode()
+    for name in ("cpuinfo.arm.txt", "cpuinfo.arm64.txt"):
+        try:
+            fd = open_beneath(inst.rootfs, "system/etc/" + name, os.O_RDONLY | os.O_NONBLOCK)
+        except FileNotFoundError:
+            continue
+        with os.fdopen(fd, "rb") as src:
+            if stat.S_ISREG(os.fstat(src.fileno()).st_mode):
+                bind_patched(inst, src, data, name, 0o644)
+
+
+def patch_prop_area(data, updates):
+    """Update short (< 92 byte) properties in a Bionic prop_area image; returns the new bytes,
+    or None if none of updates were found."""
+    if len(data) < 128:
+        return None
+    buf = bytearray(data)
+    changed = False
+    for key, val in updates.items():
+        val_b = val.encode()
+        if len(val_b) >= 92:
+            raise ValueError("property value too long: " + key)
+        needle = key.encode() + b"\0"
+        i = 128 + 96
+        while True:
+            idx = buf.find(needle, i)
+            if idx < 0:
+                break
+            i = idx + 1
+            # In prop_info, name immediately follows the 4-byte serial and 92-byte NUL-padded value
+            if buf[idx - 1] != 0:
+                continue
+            serial = struct.unpack_from("<I", buf, idx - 96)[0]
+            old_len = serial >> 24
+            if old_len >= 92 or buf[idx - 92:idx].find(b"\0") != old_len:
+                continue
+            new_serial = (len(val_b) << 24) | ((serial + 2) & 0x00ffffff)
+            struct.pack_into("<I92s", buf, idx - 96, new_serial, val_b)
+            changed = True
+    if not changed:
+        return None
+    area_serial = struct.unpack_from("<I", buf, 4)[0]
+    struct.pack_into("<I", buf, 4, (area_serial + 2) & 0xffffffff)
+    return bytes(buf)
+
+
+def _replace_prop_area(dir_fd, name, updates):
+    """Replace a prop_area file with a new inode so processes that already mapped the old one
+    (system_server) keep the original values while newly opened mappings (apps) see updates."""
+    try:
+        fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=dir_fd)
+    except FileNotFoundError:
+        return
+    selinux = None
+    with os.fdopen(fd, "rb") as src:
+        st = os.fstat(fd)
+        if not stat.S_ISREG(st.st_mode):
+            return
+        try:
+            selinux = os.getxattr(fd, "security.selinux")
+        except OSError:
+            pass
+        patched = patch_prop_area(src.read(256 << 10), updates)
+    if patched is None:
+        return
+    tmp = name + ".tmp"
+    try:
+        os.unlink(tmp, dir_fd=dir_fd)
+    except FileNotFoundError:
+        pass
+    tfd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o444, dir_fd=dir_fd)
+    try:
+        with os.fdopen(tfd, "wb") as out:
+            out.write(patched)
+            os.fchmod(out.fileno(), st.st_mode & 0o777)
+            if selinux is not None:
+                try:
+                    os.setxattr(out.fileno(), "security.selinux", selinux)
+                except OSError:
+                    pass
+        os.replace(tmp, name, src_dir_fd=dir_fd, dst_dir_fd=dir_fd)
+    except BaseException:
+        try:
+            os.unlink(tmp, dir_fd=dir_fd)
+        except OSError:
+            pass
+        raise
+
+
+def hide_emulator_props(inst):
+    """Once Android has booted (zygote initialized the native bridge and system_server cached
+    SUPPORTED_ABIS and mapped dalvik_prop), scrub the emulator-identifying properties in
+    /dev/__properties__ so apps see an ARM64 device with no native bridge."""
+    pid = container_pid(inst.id)
+    if not pid:
+        return
+    dev_props = devices.props_for(inst.get("device_model"), inst.cfg["properties"])
+    # zygote's Build.TYPE and system_server's VINTF check already saw the image's own (devices.build_props)
+    updates = {"ro.dalvik.vm.native.bridge": "0", "qemu.hw.mainkeys": "", "ro.build.type": "user"}
+    for k in ("ro.build.product", "ro.product.board", "ro.hardware", "ro.bootloader", "ro.build.tags"):
+        if k in dev_props:
+            updates[k] = dev_props[k]
+    if "ro.hardware" in dev_props:
+        updates["ro.boot.hardware"] = dev_props["ro.hardware"]
+    if "ro.build.product" in dev_props:
+        dev = dev_props["ro.build.product"]
+        updates["ro.build.flavor"] = dev + "-user"
+        updates["ro.lineage.device"] = dev
+        updates["ro.board.platform"] = dev
+    for f in devices.FIELDS:
+        v = dev_props.get("ro.product.waydroid." + f)
+        if v:
+            updates["ro.product." + f] = v
+            for part in ("system", "vendor", "odm", "product", "system_ext", "bootimage", "vendor_dlkm", "odm_dlkm"):
+                updates["ro.product.{}.{}".format(part, f)] = v
+    if inst.get("arm_translation") != "none":
+        updates["ro.product.cpu.abi"] = "arm64-v8a"
+        updates["ro.arch"] = "arm64"
+        updates["ro.berberis.version"] = ""
+        updates["ro.ndk_translation.version"] = ""
+        for pfx in ("ro.", "ro.system.", "ro.vendor.", "ro.odm.", "ro.product.", "ro.system_ext."):
+            updates[pfx + "product.cpu.abilist"] = "arm64-v8a,armeabi-v7a,armeabi"
+            updates[pfx + "product.cpu.abilist32"] = "armeabi-v7a,armeabi"
+            updates[pfx + "product.cpu.abilist64"] = "arm64-v8a"
+    try:
+        dir_fd = open_in_container(pid, "dev/__properties__", os.O_RDONLY | os.O_DIRECTORY)
+    except OSError:
+        return
+    try:
+        for name in PROP_AREAS:
+            try:
+                fd = os.open(name, os.O_RDWR | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=dir_fd)
+            except FileNotFoundError:
+                continue
+            with os.fdopen(fd, "r+b") as f:
+                st = os.fstat(fd)
+                if not stat.S_ISREG(st.st_mode) or st.st_nlink != 1:
+                    continue
+                patched = patch_prop_area(f.read(256 << 10), updates)
+                if patched is not None:
+                    f.seek(0)
+                    f.write(patched)
+        if inst.get("arm_translation") != "none":
+            _replace_prop_area(dir_fd, "u:object_r:dalvik_prop:s0",
+                               {"ro.dalvik.vm.isa.arm": "", "ro.dalvik.vm.isa.arm64": ""})
+    finally:
+        os.close(dir_fd)
+
+
+def finish_boot(inst):
+    try:
+        # LXC's proc:mixed bind-mounts /proc/sys after lxc.mount.entry, covering proc/sys/dev;
+        # mounting it here propagates via shared /proc/sys to zygote and all apps.
+        attach(inst.id, ["/system/bin/mount", "-t", "tmpfs", "-o", "nosuid,nodev,noexec,size=4k,mode=755",
+                         "tmpfs", "/proc/sys/dev"], check=False)
+        if wait_boot(inst):
+            hide_emulator_props(inst)
+    except Exception:  # noqa: BLE001
+        log.exception("%s: post-boot property scrub failed", inst.id)
+
+
 def bind_patched(inst, src, data, name, mode):
     """Mount a copy of the guest file open as src, with data, over it."""
     copy = os.path.join(inst.dir, name)
@@ -595,6 +892,9 @@ def mount_rootfs(inst, images_dir, gpu_layers=()):
                   writable=inst.getbool("system_writable"))
     fix_hwc(inst)
     fix_init(inst)
+    fix_ndk_translation(inst)
+    fix_property_contexts(inst)
+    fix_cpuinfo(inst)
     if gpu_layers:
         fix_angle(inst)
     for egl_path in ("/vendor/lib/egl", "/vendor/lib64/egl"):
@@ -657,6 +957,18 @@ def stock_props(inst, arm, mode):
     return out
 
 
+def identity_props(inst):
+    """The device model's props, and the production build's over the image's own (devices.build_props)
+    minus what the instance sets itself."""
+    dev_props = devices.props_for(inst.get("device_model"), inst.cfg["properties"])
+    # Android 16's Lineage props are in the product partition's build.prop, 11 to 15's in system's
+    image = {k: stock.read_prop_file(inst.rootfs + "/system/build.prop", k)
+             or stock.read_prop_file(inst.rootfs + "/system/product/etc/build.prop", k)
+             for k in devices.IMAGE_PROPS}
+    build = devices.build_props(dev_props, image)
+    return dev_props, {k: v for k, v in build.items() if k not in inst.cfg["properties"]}
+
+
 def write_props(inst, session, arm, render=("gpu", None)):
     """Generate waydroid_base.prop and waydroid.prop for this start. arm: the mounted ARM
     translation layer (None: off, or none of ours: then stock's own stays on stock's Android,
@@ -671,6 +983,7 @@ def write_props(inst, session, arm, render=("gpu", None)):
         eff["properties"].update(armtrans.PROPS[kind])
     elif kind == "none":
         eff["properties"]["ro.dalvik.vm.native.bridge"] = "0"   # also switches off the image's own
+    dev_props, build = identity_props(inst)
     key = android_of(inst)
     if key:
         eff["properties"].update(catalog.get(key, "props", {}))
@@ -678,7 +991,7 @@ def write_props(inst, session, arm, render=("gpu", None)):
         # Android keeps a package's ABI until the build fingerprints change: this one (there's no
         # oem partition) makes a device made before the 64-bit WebView re-derive it, once. It
         # repeats the build's own fingerprint, like the other partitions' do
-        fp = (inst.cfg["properties"].get("ro.build.fingerprint")
+        fp = (inst.cfg["properties"].get("ro.build.fingerprint") or build.get("ro.build.fingerprint")
               or stock.read_prop_file(inst.rootfs + "/system/build.prop", "ro.build.fingerprint"))
         eff["properties"]["ro.oem.build.fingerprint"] = fp or "waydroid-manager:webview64"
     if mode == "gpu" and node:
@@ -721,7 +1034,7 @@ def write_props(inst, session, arm, render=("gpu", None)):
     t.helpers.images.make_prop(a, session, full)
     extra = ["waydroid.manager.instance=" + inst.id]
     # Device model: ro.product.waydroid.* win in Android's product property source order
-    for k, v in devices.props_for(inst.get("device_model"), inst.cfg["properties"]).items():
+    for k, v in list(dev_props.items()) + list(build.items()):
         extra.append("{}={}".format(k, v))
     if inst.get("width") != "0":
         extra.append("persist.waydroid.width=" + inst.get("width"))
@@ -818,6 +1131,7 @@ def start(inst, net, hosts, session_in, uid, in_use, cpus_busy=list):
         if lxc_state(inst.id) != "RUNNING":
             raise RuntimeError("container failed to start; see {}".format(os.path.join(inst.dir, "container.log")))
         net.isolate(inst.veth)
+        threading.Thread(target=finish_boot, args=(inst,), daemon=True, name="boot-" + inst.id).start()
     except Exception:
         cleanup(inst)
         raise

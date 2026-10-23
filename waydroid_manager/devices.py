@@ -7,9 +7,15 @@ ro.product.<source>.* in the order "waydroid,product,odm,vendor,system_ext,
 system". Setting ro.product.waydroid.* in the instance's vendor/waydroid.prop
 therefore changes what apps see as the device.
 """
+import zlib
 from collections import OrderedDict
 
 FIELDS = ("brand", "manufacturer", "model", "device", "name")
+# Partitions whose own ro.<p>.build.* repeat the build's identity
+PARTITIONS = ("system", "system_ext", "vendor", "odm", "product", "vendor_dlkm", "bootimage")
+# The image's build.prop props that name its Waydroid device
+IMAGE_PROPS = ("ro.build.version.release", "ro.build.id", "ro.build.version.incremental", "ro.lineage.device",
+               "ro.lineage.version", "ro.lineage.display.version", "ro.modversion")
 
 # key -> (label, kind, {field: value})
 PRESETS = OrderedDict([
@@ -43,10 +49,49 @@ def label(key):
 
 
 def props_for(key, custom_props=None):
-    """ro.product.waydroid.* props for a preset ('custom' takes them from custom_props)."""
+    """ro.product.waydroid.* and build/hardware props for a preset ('custom' takes them from custom_props)."""
+    src = custom_props or {}
     if key == "custom":
-        src = custom_props or {}
-        return {"ro.product.waydroid." + f: src["ro.product.waydroid." + f]
-                for f in FIELDS if src.get("ro.product.waydroid." + f)}
-    values = PRESETS.get(key, PRESETS["waydroid"])[2]
-    return {"ro.product.waydroid." + f: v for f, v in values.items()}
+        out = {"ro.product.waydroid." + f: src["ro.product.waydroid." + f]
+               for f in FIELDS if src.get("ro.product.waydroid." + f)}
+        dev = out.get("ro.product.waydroid.device", "")
+    else:
+        values = PRESETS.get(key, PRESETS["pixel_8_pro"])[2] or PRESETS["pixel_8_pro"][2]
+        out = {"ro.product.waydroid." + f: v for f, v in values.items()}
+        dev = values["device"]
+    if dev:
+        for k in ("ro.build.product", "ro.product.board", "ro.hardware", "ro.bootloader"):
+            if not src.get(k):
+                out[k] = dev
+    if not src.get("ro.build.tags"):
+        out["ro.build.tags"] = "release-keys"
+    return out
+
+
+def build_props(dev_props, image):
+    """What a production build reports instead of the image's userdebug one: ro.build.* and each
+    partition's type, tags, fingerprint and incremental, derived from props_for() (dev_props)
+    and the image's own IMAGE_PROPS (image). The image's real build id stays. Not ro.build.type: with
+    "user" at boot system_server enforces the VINTF check, which a host kernel without SELinux fails
+    ("There's an internal problem with your device"); hide_emulator_props patches it after boot."""
+    num = str(10000000 + zlib.crc32(image.get("ro.build.version.incremental", "").encode()) % 90000000)
+    out = {"ro.build.user": "android-build", "ro.build.host": "abfarm",
+           "ro.build.version.incremental": num, "ro.build.display.id": image.get("ro.build.id")}
+    dev = dev_props.get("ro.build.product")
+    for k in ("ro.lineage.device", "ro.lineage.version", "ro.lineage.display.version", "ro.modversion"):
+        if dev and "waydroid_x86_64" in image.get(k, ""):
+            out[k] = image[k].replace("waydroid_x86_64", dev)
+    brand, name = (dev_props.get("ro.product.waydroid." + f) for f in ("brand", "name"))
+    release, build_id = image.get("ro.build.version.release"), image.get("ro.build.id")
+    if dev and brand and name and release and build_id:
+        out["ro.build.flavor"] = dev + "-user"
+        out["ro.build.description"] = "{}-user {} {} {} release-keys".format(dev, release, build_id, num)
+        out["ro.build.fingerprint"] = "{}/{}/{}:{}/{}/{}:user/release-keys".format(
+            brand, name, dev, release, build_id, num)
+        for part in PARTITIONS:
+            out["ro.{}.build.fingerprint".format(part)] = out["ro.build.fingerprint"]
+    for part in PARTITIONS:
+        out["ro.{}.build.type".format(part)] = "user"
+        out["ro.{}.build.tags".format(part)] = "release-keys"
+        out["ro.{}.build.version.incremental".format(part)] = num
+    return {k: v for k, v in out.items() if v}

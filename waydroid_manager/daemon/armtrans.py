@@ -38,13 +38,15 @@ _ABIS = {
     "ro.dalvik.vm.isa.arm64": "x86_64",
 }
 PROPS = {
-    "houdini": dict(_ABIS, **{"ro.dalvik.vm.native.bridge": "libhoudini.so"}),
+    "houdini": dict(_ABIS, **{"ro.dalvik.vm.native.bridge": "libnb_impl.so"}),
     "libndk": dict(_ABIS, **{"ro.dalvik.vm.native.bridge": "libndk_translation.so",
                              "ro.vendor.enable.native.bridge.exec": "1",
                              "ro.vendor.enable.native.bridge.exec64": "1",
                              "ro.ndk_translation.version": "0.2.3"}),
 }
 ALL_PROPS = set(PROPS["houdini"]) | set(PROPS["libndk"])
+HOUDINI_WHITEOUTS = ("lib/libhoudini.so", "lib64/libhoudini.so", "bin/houdini", "bin/houdini64",
+                     "etc/init/houdini.rc")
 # Houdini's own rc reads its binfmt_misc entries from /vendor; this layer puts them in /system.
 # The entries are host-wide (privileged container) and named alike for both builds: the first
 # instance to register them wins until reboot, which only matters for exec'ing ARM binaries.
@@ -57,6 +59,7 @@ on property:ro.enable.native.bridge.exec=1
     copy /system/etc/binfmt_misc/arm64_exe /proc/sys/fs/binfmt_misc/register
     copy /system/etc/binfmt_misc/arm64_dyn /proc/sys/fs/binfmt_misc/register
 """
+
 
 def layer(kind, sdk):
     """Directory to mount below the instance's own overlay layer, or None (off, an image with its
@@ -71,7 +74,7 @@ def layer(kind, sdk):
         return None
     url, sha = build
     # ponytail: layers of older pins are never removed; add cleanup if the pins change often
-    d = os.path.join(paths.STATE_DIR, "arm", "{}-{}".format(kind, sha[:12]))
+    d = os.path.join(paths.STATE_DIR, "arm", "{}-2-{}".format(kind, sha[:12]))
     try:
         return layers.layer(d, url, sha, lambda z, tmp: _unpack(z, tmp, kind), kind)
     except (CommandError, OSError, zipfile.BadZipFile) as e:
@@ -92,5 +95,26 @@ def _unpack(zpath, tmp, kind):
             with z.open(name) as src, open(dst, "wb") as out:
                 shutil.copyfileobj(src, out)
     if kind == "houdini":
+        os.makedirs(os.path.join(sysdir, "etc/init"), exist_ok=True)
         with open(os.path.join(sysdir, "etc/init/houdini.rc"), "w") as f:
             f.write(HOUDINI_RC)
+        # Apps scan /proc/self/maps and /system/lib* for libhoudini.so: rename its SONAME and file
+        for lib in ("lib", "lib64"):
+            old = os.path.join(sysdir, lib, "libhoudini.so")
+            if os.path.isfile(old):
+                os.rename(old, os.path.join(sysdir, lib, "libnb_impl.so"))
+            layers.whiteout(old)
+        for root, _, files in os.walk(sysdir):
+            for n in files:
+                p = os.path.join(root, n)
+                if not os.path.isfile(p):
+                    continue
+                with open(p, "rb") as f:
+                    data = f.read()
+                if b"libhoudini.so\0" in data:
+                    with open(p, "wb") as f:
+                        f.write(data.replace(b"libhoudini.so\0", b"libnb_impl.so\0"))
+    elif kind == "libndk":
+        # Hide any Houdini libraries bundled in the base system.img (Android 14) or stock overlay
+        for rel in HOUDINI_WHITEOUTS:
+            layers.whiteout(os.path.join(sysdir, rel))
