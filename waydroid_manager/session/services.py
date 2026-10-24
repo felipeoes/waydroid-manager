@@ -68,7 +68,10 @@ def clipboard_service(sm):
         if code == I.TRANSACTION_sendClipboardData:
             text = reader.read_string16() or ""
             try:
-                subprocess.run(["wl-copy", "--", text], timeout=2, check=False,
+                # On stdin: as an argument, text over 128 KiB exceeds the kernel's limit and fails.
+                # The type is explicit, or wl-copy would guess it from what stdin looks like.
+                subprocess.run(["wl-copy", "--type", "text/plain;charset=utf-8"], input=text.encode(),
+                               timeout=2, check=False,
                                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
             except subprocess.TimeoutExpired:
                 pass
@@ -103,8 +106,10 @@ class Notifications:
         self.signals = []
         self.service = None
         try:
+            # follow: bound to the server's current connection, a restarted notification server
+            # (plasmashell, gnome-shell) would leave every later notification failing
             self.proxy = dbus.Interface(dbus.SessionBus().get_object(
-                "org.freedesktop.Notifications", "/org/freedesktop/Notifications"),
+                "org.freedesktop.Notifications", "/org/freedesktop/Notifications", follow_name_owner_changes=True),
                 "org.freedesktop.Notifications")
         except dbus.DBusException as e:
             log.info("no notification server: %s", e)

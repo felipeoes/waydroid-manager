@@ -4,6 +4,7 @@
 Pure rendering: returns ARGB8888 pixel data (cairo FORMAT_ARGB32, which is
 wl_shm ARGB8888 on little-endian hosts). The proxy owns the Wayland side.
 """
+import functools
 import glob
 import os
 
@@ -281,6 +282,7 @@ TIP_FONT = 12
 TIP_PAD_X, TIP_PAD_Y = 8, 6
 
 
+@functools.lru_cache(maxsize=None)   # a handful of fixed labels
 def tooltip_size(text):
     import cairo
     cr = cairo.Context(cairo.ImageSurface(cairo.FORMAT_ARGB32, 1, 1))

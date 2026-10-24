@@ -36,9 +36,11 @@ and the window turn with it (wl_surface.set_buffer_transform), input is turned b
 import argparse
 import array
 import collections
+import gc
 import math
 import mmap
 import os
+import select
 import selectors
 import signal
 import socket
@@ -67,6 +69,9 @@ PANEL_ALLOWANCE = 64          # room for a desktop panel when fitting to the scr
 CLIP_TYPES = ("text/plain;charset=utf-8", "UTF8_STRING", "text/plain", "TEXT", "STRING")
 CLIP_WAIT = 1.0               # longest the HWC waits on a slow clipboard owner (GNOME pings time out at 5 s)
 CLIP_MAX = 1 << 20            # more text than this is not passed to Android
+# An owner that sends nothing for this long is stuck: its reader gives up. Far above CLIP_WAIT, so a
+# slow owner still finishes in time for the next paste.
+CLIP_IDLE = 30
 URI_LIST = "text/uri-list"    # what file managers offer when files are dragged
 
 
@@ -266,12 +271,14 @@ def flush(sock, stream):
         ready = stream.fds[:stream.out_fds] if stream.count_fds else stream.fds
         fds = ready[:MAX_FDS_PER_MSG]
         # With more fds than one message may carry, send one byte per batch
-        chunk = bytes(stream.out[:1] if len(ready) > MAX_FDS_PER_MSG else stream.out[:RECV_SIZE])
+        size = 1 if len(ready) > MAX_FDS_PER_MSG else RECV_SIZE
         anc = [(socket.SOL_SOCKET, socket.SCM_RIGHTS, array.array("i", fds))] if fds else []
-        try:
-            n = sock.sendmsg([chunk], anc)
-        except (BlockingIOError, InterruptedError):
-            return False
+        # A view, not a copy; released before the bytearray is trimmed (it can't resize while viewed)
+        with memoryview(stream.out) as view, view[:size] as chunk:
+            try:
+                n = sock.sendmsg([chunk], anc)
+            except (BlockingIOError, InterruptedError):
+                return False
         for fd in fds:
             os.close(fd)
         del stream.fds[:len(fds)]
@@ -350,6 +357,9 @@ class Translator:
         p = bytearray(data)
         struct.pack_into("=I", p, 0, sobj)
         off = 8
+        # New ids are mapped only once every argument translated: a dropped request mustn't take a
+        # compositor id, or the next one skips it ("invalid new id") or names a phantom object
+        binds = []
         try:
             for arg in iface.requests[op]:
                 t = arg.type
@@ -367,13 +377,15 @@ class Translator:
                         name = bytes(p[off + 4:off + 4 + n - 1]).decode("utf-8", "replace")
                         off += 4 + ((n + 3) & ~3) + 4
                         (cid,) = struct.unpack_from("=I", p, off)
-                        struct.pack_into("=I", p, off, self._bind_new(cid, name))
+                        binds.append((off, cid, name))
                     else:
                         (cid,) = struct.unpack_from("=I", p, off)
-                        struct.pack_into("=I", p, off, self._bind_new(cid, arg.interface))
+                        binds.append((off, cid, arg.interface))
                 off = self._skip(p, off, t)
         except struct.error:
             return None
+        for off, cid, name in binds:
+            struct.pack_into("=I", p, off, self._bind_new(cid, name))
         return bytes(p)
 
     def event(self, obj, op, payload):
@@ -446,8 +458,12 @@ class Clip:
 
     def _read(self, fd):
         chunks, size = [], 0
+        ready = select.poll()
+        ready.register(fd, select.POLLIN)
         try:
             while size <= CLIP_MAX:
+                if not ready.poll(CLIP_IDLE * 1000):
+                    break
                 b = os.read(fd, 65536)
                 if not b:
                     self.data = b"".join(chunks)
@@ -517,16 +533,29 @@ class Window:
 
 
 TRACE = os.environ.get("WDM_PROXY_TRACE") == "1"
-RECENT = collections.deque(maxlen=300)     # last messages, dumped with any error
+# (direction, interface, id, opcode, length) of the last messages, dumped with any error: formatted
+# only then, as every message goes through here
+RECENT = collections.deque(maxlen=300)
 LOG_PATH = None
+LOG_ERRORS_MAX = 50       # tracebacks logged per process: a handler failing on every message fills no disk
+errors_seen = 0
 
 
-def log_error(what):
-    """Append a traceback and the recent message history to the proxy log."""
+def recent_lines():
+    return ["  {} {}@{}.{} len={}".format(*r) for r in RECENT]
+
+
+def log_error(what, always=False):
+    """Append a traceback and the recent message history to the proxy log (the first LOG_ERRORS_MAX)."""
+    global errors_seen
     import traceback
+    errors_seen += 1
+    if errors_seen > LOG_ERRORS_MAX and not always:
+        return
     text = "{} {}\n{}recent messages (oldest first):\n{}\n\n".format(
-        time.strftime("%Y-%m-%d %H:%M:%S"), what, traceback.format_exc(),
-        "\n".join("  " + r for r in RECENT))
+        time.strftime("%Y-%m-%d %H:%M:%S"), what, traceback.format_exc(), "\n".join(recent_lines()))
+    if errors_seen == LOG_ERRORS_MAX:
+        text += "(further errors are only counted, see the state dump)\n\n"
     sys.stderr.write("wlproxy: " + what + "\n")
     if LOG_PATH:
         try:
@@ -574,7 +603,6 @@ class Session:
         self.next_id = MY_ID_BASE
         self.mine = {}           # id -> kind
         self.my_globals = {}     # interface -> our bound object id
-        self.buffers = {}        # our buffer id -> ("shm"|"pixel")
         self.shm = None          # the HWC's wl_shm, and the formats the compositor takes through it
         self.shm_formats = set()
         self.dmabuf_planes = {}  # cpu_buffers: params id -> [(fd copy, offset, stride, modifier)]
@@ -782,7 +810,9 @@ class Session:
         x, y = x / z, y / z
         if self.turn and self.res and not (pointer and self.cfg.logical_pointer):
             # back to Android's natural orientation: its input reader turns touches itself
-            size = self.surfaces[sid].req_dest if sid != self.window.surface else None
+            # the focus or drag surface may be gone already (destroyed before its leave)
+            size = None if self.window and sid == self.window.surface else \
+                getattr(self.surfaces.get(sid), "req_dest", None)
             rw, rh = size or self.res     # HWC adds the layer's offset after receiving local input
             if self.turn & 1:
                 rw, rh = rh, rw
@@ -791,7 +821,7 @@ class Session:
 
     # -- client -> server -------------------------------------------------------------
     def on_request(self, obj, op, payload):
-        RECENT.append(">> {}@{}.{} len={}".format(self.objs.get(obj) or self.mine.get(obj), obj, op, len(payload)))
+        RECENT.append((">>", self.objs.get(obj) or self.mine.get(obj), obj, op, len(payload)))
         try:
             res = self._on_request(obj, op, payload)
         except Exception:  # noqa: BLE001  fail open: forward the request unchanged
@@ -956,9 +986,19 @@ class Session:
             elif self.cfg.gpu:
                 bo = self.cfg.gpu.import_buffer(fd, width, height, fmt, offset, stride, modifier)
                 if bo:
-                    pool_fd, offset, size = os.memfd_create("waydroid-frame", os.MFD_CLOEXEC), 0, stride * height
-                    os.ftruncate(pool_fd, size)
-                    self.copies[buf] = (bo, width, height, mmap.mmap(pool_fd, size), stride)
+                    # Our rows as Mesa maps the buffer's, so each attach copies the frame in one go
+                    # (row by row it took 1.15 ms for 900x1600 instead of 0.34)
+                    stride = self.cfg.gpu.map_stride(bo, width, height) or stride
+                    offset, size = 0, stride * height
+                    try:
+                        pool_fd = os.memfd_create("waydroid-frame", os.MFD_CLOEXEC)
+                        os.ftruncate(pool_fd, size)
+                        self.copies[buf] = (bo, width, height, mmap.mmap(pool_fd, size), stride)
+                    except OSError:
+                        self.cfg.gpu.free(bo)
+                        if pool_fd is not None:
+                            os.close(pool_fd)
+                        raise
             elif modifier in (P.DRM_FORMAT_MOD_LINEAR, P.DRM_FORMAT_MOD_INVALID) and \
                     os.lseek(fd, 0, os.SEEK_END) >= size:
                 pool_fd = fd
@@ -1059,6 +1099,14 @@ class Session:
         sid = self.subsurfaces.get(subid)
         if op == P.WL_SUBSURFACE_DESTROY:
             self.subsurfaces.pop(subid, None)
+            # The surface loses its role: no stale set_position for it, no duplicate child when
+            # the HWC makes it a subsurface again
+            s = self.surfaces.get(sid)
+            if s and s.sub == subid:
+                parent = self.surfaces.get(s.parent)
+                if parent and sid in parent.children:
+                    parent.children.remove(sid)
+                s.parent = s.sub = None
             return None
         if op != P.WL_SUBSURFACE_SET_POSITION or not self.window or sid is None:
             return None
@@ -1148,7 +1196,7 @@ class Session:
                     bad, self.objs.get(bad) or self.mine.get(bad), code, text))
             except ProtocolError:
                 pass
-        RECENT.append("<< {}@{}.{} len={}".format(self.objs.get(obj) or self.mine.get(obj), obj, op, len(payload)))
+        RECENT.append(("<<", self.objs.get(obj) or self.mine.get(obj), obj, op, len(payload)))
         try:
             res = self._on_event(obj, op, payload)
         except Exception:  # noqa: BLE001  fail open: forward the event unchanged
@@ -1174,7 +1222,6 @@ class Session:
                 dead = r.u()
                 if dead in self.mine:
                     del self.mine[dead]
-                    self.buffers.pop(dead, None)
                     return []
                 self._forget(dead)
             return None
@@ -1446,9 +1493,10 @@ class Session:
         if op in (P.WL_TOUCH_EV_FRAME, P.WL_TOUCH_EV_CANCEL):
             fwd, drop = self.touch_group
             self.touch_group = [False, False]
+            others = any(v[0] != "mine" for v in self.touches.values())
             if op == P.WL_TOUCH_EV_CANCEL:
-                self.touches = {k: v for k, v in self.touches.items() if v[0] != "mine"}
-            if drop and not fwd and not any(v[0] != "mine" for v in self.touches.values()):
+                self.touches = {}       # every point is cancelled, ours and the HWC's
+            if drop and not fwd and not others:
                 return []
             return None
         return None
@@ -1676,6 +1724,17 @@ class Session:
             copy[3].close()
         if iface == "wl_surface":
             self._forget_surface(oid)
+        # libwayland-client reuses ids: a stale one would name an object of another interface
+        if oid == self.pointer and self.cursor_dev is not None:
+            self.to_server(msg(self.cursor_dev, 0))     # wp_cursor_shape_device_v1.destroy: made for it
+            self.cursor_dev = None
+        for attr in ("seat", "shm", "pointer", "keyboard", "touch", "cursor_surface", "own_source"):
+            if getattr(self, attr) == oid:
+                setattr(self, attr, None)
+        if getattr(self, "_dnd_surface", None) == oid:
+            self._dnd_surface = None
+        if self.ptr_focus and self.ptr_focus[1] == oid:
+            self.ptr_focus = None
         self.viewports.pop(oid, None)
         self.subsurfaces.pop(oid, None)
         self.xdg_surfaces.pop(oid, None)
@@ -1684,9 +1743,13 @@ class Session:
         self.registries.discard(oid)
 
     def close(self):
-        """The connection is gone: let go of the GPU's buffers."""
+        """The connection is gone: let go of the GPU's buffers and the dmabuf fds kept for params."""
         for oid in list(self.copies):
             self._forget(oid)
+        for planes in self.dmabuf_planes.values():
+            for plane in planes:
+                os.close(plane[0])
+        self.dmabuf_planes.clear()
 
     # -- frame ------------------------------------------------------------------------------
     def _global(self, interface):
@@ -2153,7 +2216,7 @@ class Connection:
         if t is HIDDEN:
             return []
         if t is None:
-            RECENT.append("<< dropped untranslatable event on {}.{}".format(obj, op))
+            RECENT.append(("<<", "untranslatable, dropped", obj, op, len(payload)))
             self.drops = getattr(self, "drops", 0) + 1
             if self.drops <= 20:
                 sys.stderr.write("wlproxy: dropped untranslatable event on {}.{}\n".format(obj, op))
@@ -2207,6 +2270,8 @@ class Connection:
         self.update_interest()
 
     def on_event(self, sock, mask):
+        if self.closed:         # both sockets were ready in one select, and the first closed them
+            return
         src_is_client = sock is self.client
         if mask & selectors.EVENT_READ:
             stream = self.c2s if src_is_client else self.s2c
@@ -2351,11 +2416,21 @@ class Proxy:
                 len(c.c2s.out), len(c.c2s.deferred), len(c.c2s.inbuf), len(c.c2s.fds),
                 len(c.s2c.out), len(c.s2c.deferred), len(c.s2c.inbuf), len(c.s2c.fds)))
             lines.append("  dropped events={} ids mapped={}".format(getattr(c, "drops", 0), len(c.tr.c2s)))
+            lines.append("  objs={} copies={} offers={} clips={} surfaces={} mine={}".format(
+                len(se.objs), len(se.copies), len(se.offers), len(se.clips), len(se.surfaces), len(se.mine)))
+        # Small Python numbers next to a large RSS: the memory is native (Mesa, cairo), not ours
+        types = collections.Counter(type(o).__name__ for o in gc.get_objects())
+        lines.append("errors={} threads={} python blocks={} objects={} top={}".format(
+            errors_seen, threading.active_count(), sys.getallocatedblocks(), sum(types.values()),
+            ", ".join("{} {}".format(n, k) for k, n in types.most_common(8))))
         lines.append("recent messages (oldest first):")
-        lines.extend("  " + r for r in RECENT)
+        lines.extend(recent_lines())
         if LOG_PATH:
-            with open(LOG_PATH, "a") as f:
-                f.write("\n".join(lines) + "\n\n")
+            try:
+                with open(LOG_PATH, "a") as f:
+                    f.write("\n".join(lines) + "\n\n")
+            except OSError:
+                pass
 
     def run(self):
         if self.server is None:
@@ -2366,11 +2441,17 @@ class Proxy:
             for key, mask in self.sel.select(max(0.0, min(due) - time.monotonic()) if due else None):
                 if key.data is None:
                     self.accept()
-                else:
+                    continue
+                try:
                     key.data.on_event(key.fileobj, mask)
+                except Exception:  # noqa: BLE001  fail open like the handlers: a dead proxy leaves Android windowless
+                    log_error("error handling an event")
             for c in list(self.conns):
-                if c.session.tick():
-                    c.pump()
+                try:
+                    if c.session.tick():
+                        c.pump()
+                except Exception:  # noqa: BLE001  same: a tooltip mustn't end the window
+                    log_error("error showing a tooltip")
 
 
 def main(argv=None):
@@ -2408,7 +2489,7 @@ def main(argv=None):
     except SystemExit:
         raise
     except BaseException:
-        log_error("proxy crashed")
+        log_error("proxy crashed", always=True)
         raise
 
 

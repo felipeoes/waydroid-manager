@@ -38,6 +38,15 @@ class Device:
                                  (ctypes.c_int * 4)(offset), modifier)
         return self.lib.gbm_bo_import(self.dev, IMPORT_FD_MODIFIER, ctypes.byref(data), 0) or None
 
+    def map_stride(self, bo, width, height):
+        """The stride of rows as read() maps them (Mesa's staging copy, not the dmabuf's), or 0."""
+        stride, handle = _U32(), _P()
+        if not self.lib.gbm_bo_map(bo, 0, 0, width, height, TRANSFER_READ, ctypes.byref(stride),
+                                   ctypes.byref(handle)):
+            return 0
+        self.lib.gbm_bo_unmap(bo, handle)
+        return stride.value
+
     def read(self, bo, width, height, mem, stride):
         """Copy the buffer's pixels into mem, rows stride bytes apart; False if it can't be mapped."""
         src_stride, handle = _U32(), _P()

@@ -25,6 +25,7 @@ STOCK_HOST_PERMS = STOCK_WORK + "/host-permissions"
 NET_SCRIPT = os.path.join(DATA_DIR, "waydroid-manager-net.sh")
 POSTSTOP_SCRIPT = os.path.join(DATA_DIR, "waydroid-manager-poststop.sh")
 NET_UP_SCRIPT = os.path.join(DATA_DIR, "waydroid-manager-netup.sh")
+PIDLIMIT_SCRIPT = os.path.join(DATA_DIR, "waydroid-manager-pidlimit.sh")
 
 
 DBUS_NAME = "io.github.waydroidmanager.Manager"

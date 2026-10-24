@@ -356,6 +356,7 @@ def write_lxc_config(inst, net, cpus_busy=(), render=("gpu", None)):
         stock.lxc_snippets(),
         rootfs=inst.rootfs, lxc_dir=inst.lxc_dir, bridge=net.cfg.bridge, mac=inst.mac,
         veth=inst.veth, uts_name="waydroid-" + inst.id.replace("_", "-"), arch=platform.machine(),
+        kernel_release=platform.release(), pidlimit_hook=paths.PIDLIMIT_SCRIPT,
         apparmor_profile=load_apparmor_profile(),
         poststop_hook=paths.POSTSTOP_SCRIPT,
         netup_hook=paths.NET_UP_SCRIPT if net.cfg.isolate else None, limits=limits)
@@ -418,7 +419,15 @@ def load_apparmor_profile():
     if not apparmor_profile_loaded(name):
         return None
     with open(os.path.join("/etc/apparmor.d/lxc", name)) as f:
-        _write(APPARMOR_FILE, apparmor_profile(f.read(), name))
+        text = apparmor_profile(f.read(), name)
+    try:
+        with open(APPARMOR_FILE) as f:
+            # loaded this boot (the file is on tmpfs) and unchanged: skip the parser, slow under _pin_lock
+            if f.read() == text and apparmor_profile_loaded(APPARMOR_PROFILE):
+                return APPARMOR_PROFILE
+    except OSError:
+        pass
+    _write(APPARMOR_FILE, text)
     run(["apparmor_parser", "--replace", "--skip-cache", APPARMOR_FILE])
     return APPARMOR_PROFILE
 
@@ -899,7 +908,7 @@ def mount_rootfs(inst, images_dir, gpu_layers=()):
     mount_image(os.path.join(images_dir, "system.img"), rootfs)
     sdk = stock.read_prop_file(rootfs + "/system/build.prop", "ro.build.version.sdk")
     arm = armtrans.layer(inst.get("arm_translation"), sdk)
-    wv = (webview.layer(rootfs, os.path.join(images_dir, "webview"))
+    wv = (webview.layer(rootfs, os.path.join(images_dir, webview.LAYER))
           if catalog.get(android_of(inst), "webview64") else None)
     shared = list(gpu_layers) + [d for d in (arm, images.gapps_layer(inst.image_id), wv) if d]
     if os.path.isdir(paths.STOCK_OVERLAY) and runs_stock_android(inst):
@@ -1012,13 +1021,14 @@ def write_props(inst, session, arm, render=("gpu", None)):
     key = android_of(inst)
     if key:
         eff["properties"].update(catalog.get(key, "props", {}))
-    if catalog.get(key, "webview64") and os.path.isdir(os.path.join(images.image_dir(inst.image_id), "webview")):
+    if catalog.get(key, "webview64") and os.path.isdir(os.path.join(images.image_dir(inst.image_id), webview.LAYER)):
         # Android keeps a package's ABI until the build fingerprints change: this one (there's no
         # oem partition) makes a device made before the 64-bit WebView re-derive it, once. It
-        # repeats the build's own fingerprint, like the other partitions' do
+        # repeats the build's own fingerprint, like the other partitions' do, plus the layer
+        # revision so an updated APK is rescanned too.
         fp = (inst.cfg["properties"].get("ro.build.fingerprint") or build.get("ro.build.fingerprint")
               or stock.read_prop_file(inst.rootfs + "/system/build.prop", "ro.build.fingerprint"))
-        eff["properties"]["ro.oem.build.fingerprint"] = fp or "waydroid-manager:webview64"
+        eff["properties"]["ro.oem.build.fingerprint"] = (fp or "waydroid-manager") + ":" + webview.LAYER
     if mode == "gpu" and node:
         eff["waydroid"]["drm_device"] = node        # stock's props follow the picked GPU
     if mode == "vkms":
@@ -1102,32 +1112,32 @@ def start(inst, net, hosts, session_in, uid, in_use, cpus_busy=list):
     render = render_for(inst)
     with _pin_lock:
         write_lxc_config(inst, net, cpus_busy(), render)
-    net.ensure_up(hosts)
-    set_device_permissions()
-    ensure_overcommit()
-
-    # Sockets: validate the caller's and bind them at root-owned paths
-    stage = paths.staging_dir(inst.id)
-    umount_tree(stage)
-    os.makedirs(stage, mode=0o755, exist_ok=True)
-    wl = os.path.join(stage, "wayland-0")
-    stage_socket(session_in["wayland_socket"], wl, uid)
-    pulse = ""
-    if session_in.get("pulse_socket"):
-        try:
-            pulse = os.path.join(stage, "pulse-native")
-            stage_socket(session_in["pulse_socket"], pulse, uid)
-        except (OSError, PermissionError) as e:
-            log.warning("%s: no audio: %s", inst.id, e)
-            pulse = ""
-    venus = ""
-    if render[0] == "nvidia":
-        venus = os.path.join(stage, "venus")
-        stage_dir(session_in.get("venus_dir", ""), venus, uid)
-    _write(os.path.join(inst.lxc_dir, "config_session"),
-           lxcconfig.session_entries(wl, pulse, inst.data_dir, venus))
-
     try:
+        net.ensure_up(hosts)
+        set_device_permissions()
+        ensure_overcommit()
+
+        # Sockets: validate the caller's and bind them at root-owned paths
+        stage = paths.staging_dir(inst.id)
+        umount_tree(stage)
+        os.makedirs(stage, mode=0o755, exist_ok=True)
+        wl = os.path.join(stage, "wayland-0")
+        stage_socket(session_in["wayland_socket"], wl, uid)
+        pulse = ""
+        if session_in.get("pulse_socket"):
+            try:
+                pulse = os.path.join(stage, "pulse-native")
+                stage_socket(session_in["pulse_socket"], pulse, uid)
+            except (OSError, PermissionError) as e:
+                log.warning("%s: no audio: %s", inst.id, e)
+                pulse = ""
+        venus = ""
+        if render[0] == "nvidia":
+            venus = os.path.join(stage, "venus")
+            stage_dir(session_in.get("venus_dir", ""), venus, uid)
+        _write(os.path.join(inst.lxc_dir, "config_session"),
+               lxcconfig.session_entries(wl, pulse, inst.data_dir, venus))
+
         if inst.index == 0:
             mount_stock_data(inst)
         # Shader caches of another renderer crash Android 13's apps (storage.clear_shader_caches).
@@ -1222,11 +1232,14 @@ def wait_boot(inst, timeout=180):
 
 # Waydroid pins the display to the user rotation (no sensors), so apps wanting the other orientation
 # are letterboxed. In the full-UI window (active_apps "Waydroid") let it follow them, like a phone;
-# an app's own window (single- or multi-window mode) doesn't turn, so there it stays pinned. Prints
-# the rotation (Surface.ROTATION_*) every half second. Android 11 names the setting
-# set-fix-to-user-rotation and has no "default" (its own is "enabled").
+# an app's own window (single- or multi-window mode) doesn't turn, so there it stays pinned. Checks
+# every half second and prints the rotation (Surface.ROTATION_*) when it changes: lines every half
+# second woke the daemon, session and proxy for nothing. And every 10 s regardless: writing is how
+# a loop whose reader died (a daemon restart; KillMode=process leaves lxc-attach) gets SIGPIPE and
+# ends. Android 11 names the setting set-fix-to-user-rotation and has no "default" (its own is
+# "enabled").
 ROTATION_LOOP = """
-last=
+last= shown= n=0
 while :; do
   m=default old=enabled
   [ "$(getprop waydroid.active_apps)" = Waydroid ] && [ "$(getprop persist.waydroid.multi_windows)" != true ] \\
@@ -1237,15 +1250,19 @@ while :; do
     wm set-ignore-orientation-request false >/dev/null 2>&1
     last=$m
   fi
-  [ -n "$r" ] && echo "${r#mRotation=}"
+  n=$((n + 1))
+  if [ -n "$r" ] && { [ "$r" != "$shown" ] || [ $n -ge 20 ]; }; then
+    echo "${r#mRotation=}"
+    shown=$r n=0
+  fi
   sleep 0.5
 done
 """
 
 
 def watch_rotation(inst, fd):
-    """Write Android's display rotation to fd (the session's pipe to its proxy), a line every half
-    second, for as long as the pipe has a reader: across Android reboots too. Runs in a thread."""
+    """Write Android's display rotation to fd (the session's pipe to its proxy) when it changes,
+    for as long as the pipe has a reader: across Android reboots too. Runs in a thread."""
     os.set_blocking(fd, False)          # a reader that falls behind loses lines, never blocks us
     gone = select.poll()
     gone.register(fd, select.POLLERR)   # a pipe whose reader closed
@@ -1258,9 +1275,18 @@ def watch_rotation(inst, fd):
                 p = subprocess.Popen(cmd, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
                                      stderr=subprocess.DEVNULL)
                 try:
-                    for line in p.stdout:
+                    # lines come only on a change, none while frozen: wake for a reader gone too
+                    ev = select.poll()
+                    ev.register(fd, select.POLLERR)
+                    ev.register(p.stdout, select.POLLIN)
+                    while True:
+                        if fd in dict(ev.poll()):
+                            return          # the reader is gone
+                        data = os.read(p.stdout.fileno(), 4096)
+                        if not data:
+                            break           # Android stopped or rebooted
                         try:
-                            os.write(fd, line)
+                            os.write(fd, data)
                         except BlockingIOError:
                             pass
                 except OSError:             # EPIPE: the proxy is gone
@@ -1268,6 +1294,7 @@ def watch_rotation(inst, fd):
                 finally:
                     p.kill()
                     p.wait()
+                    p.stdout.close()
             time.sleep(2)
     finally:
         os.close(fd)
