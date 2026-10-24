@@ -490,5 +490,209 @@ class LayerHelpersTest(unittest.TestCase):
             self.assertEqual(sorted(os.listdir(os.path.join(d, "lib", "x86"))), ["libfoo.so"])
 
 
+class EmulatorStealthTest(unittest.TestCase):
+    @staticmethod
+    def make_prop_area(props):
+        import struct
+        buf = bytearray(128)
+        struct.pack_into("<IIII", buf, 0, 0, 0, 0x504F5250, 0xFC6ED0AB)
+        for k, v in props.items():
+            vb = v.encode()
+            buf.extend(struct.pack("<I92s", len(vb) << 24, vb))
+            buf.extend(k.encode() + b"\0")
+            while len(buf) % 4:
+                buf.append(0)
+        return bytes(buf)
+
+    @staticmethod
+    def read_prop(data, key):
+        import struct
+        idx = data.find(key.encode() + b"\0", 128 + 96)
+        length = struct.unpack_from("<I", data, idx - 96)[0] >> 24
+        return data[idx - 92:idx - 92 + length].decode()
+
+    def test_armtrans_renames_houdini_and_whiteouts_base_houdini(self):
+        from waydroid_manager.daemon import armtrans
+        with tempfile.TemporaryDirectory() as d:
+            zpath = os.path.join(d, "arm.zip")
+            with zipfile.ZipFile(zpath, "w") as z:
+                z.writestr("top/prebuilts/lib64/libhoudini.so", b"ELF\0libhoudini.so\0")
+                z.writestr("top/prebuilts/lib64/arm64/nb/libtcb.so", b"NEEDED\0libhoudini.so\0")
+            whiteouts = []
+            with mock.patch.object(layers, "whiteout", side_effect=whiteouts.append):
+                h_dir = os.path.join(d, "houdini")
+                armtrans._unpack(zpath, h_dir, "houdini")
+                self.assertEqual(armtrans.PROPS["houdini"]["ro.dalvik.vm.native.bridge"], "libnb_impl.so")
+                with open(os.path.join(h_dir, "system/lib64/libnb_impl.so"), "rb") as f:
+                    self.assertEqual(f.read(), b"ELF\0libnb_impl.so\0")
+                with open(os.path.join(h_dir, "system/lib64/arm64/nb/libtcb.so"), "rb") as f:
+                    self.assertEqual(f.read(), b"NEEDED\0libnb_impl.so\0")
+                self.assertIn(os.path.join(h_dir, "system/lib64/libhoudini.so"), whiteouts)
+                whiteouts.clear()
+                n_dir = os.path.join(d, "libndk")
+                armtrans._unpack(zpath, n_dir, "libndk")
+                self.assertIn(os.path.join(n_dir, "system/lib64/libhoudini.so"), whiteouts)
+
+    def test_cpuinfo_hides_host_x86_markers(self):
+        text = container.cpuinfo_text(4)
+        self.assertEqual(text.count("processor\t:"), 4)
+        for token in ("intel", "amd", "hypervisor"):
+            self.assertNotIn(token, text.lower())
+
+    def test_hide_emulator_props_updates_in_place_and_replaces_dalvik_prop_inode(self):
+        with tempfile.TemporaryDirectory() as d:
+            props_dir = os.path.join(d, "dev", "__properties__")
+            os.makedirs(props_dir)
+            with open(os.path.join(props_dir, "u:object_r:build_prop:s0"), "wb") as f:
+                f.write(self.make_prop_area({
+                    "ro.product.cpu.abilist": "x86_64,x86,arm64-v8a,armeabi-v7a,armeabi",
+                    "ro.product.cpu.abilist32": "x86,armeabi-v7a,armeabi",
+                    "ro.product.cpu.abilist64": "x86_64,arm64-v8a",
+                    "ro.product.cpu.abi": "x86_64",
+                    "ro.build.product": "waydroid_x86_64",
+                    "ro.build.flavor": "lineage_waydroid_x86_64-userdebug",
+                    "ro.build.tags": "test-keys",
+                    "ro.build.type": "userdebug",
+                }))
+            with open(os.path.join(props_dir, "u:object_r:build_vendor_prop:s0"), "wb") as f:
+                f.write(self.make_prop_area({
+                    "ro.product.vendor.device": "waydroid_x86_64",
+                    "ro.vendor.product.cpu.abilist": "x86_64,x86,arm64-v8a,armeabi-v7a,armeabi",
+                }))
+            with open(os.path.join(props_dir, "u:object_r:bootloader_prop:s0"), "wb") as f:
+                f.write(self.make_prop_area({"ro.boot.hardware": "waydroid"}))
+            with open(os.path.join(props_dir, "u:object_r:default_prop:s0"), "wb") as f:
+                f.write(self.make_prop_area({"ro.system.product.cpu.abilist": "x86_64,x86"}))
+            with open(os.path.join(props_dir, "u:object_r:dalvik_config_prop:s0"), "wb") as f:
+                f.write(self.make_prop_area({"ro.dalvik.vm.native.bridge": "libndk_translation.so"}))
+            dalvik_path = os.path.join(props_dir, "u:object_r:dalvik_prop:s0")
+            with open(dalvik_path, "wb") as f:
+                f.write(self.make_prop_area({"ro.dalvik.vm.isa.arm": "x86", "ro.dalvik.vm.isa.arm64": "x86_64"}))
+            # Simulate system_server holding an open fd to the boot-time dalvik_prop inode
+            ss_fd = os.open(dalvik_path, os.O_RDONLY)
+            try:
+                inst = Instance.new("11", 11, 1000, "", {}, {})
+                inst.set("device_model", "pixel_8_pro")
+                inst.set("arm_translation", "libndk")
+                with mock.patch.object(container, "container_pid", return_value=os.getpid()), \
+                        mock.patch.object(container, "open_in_container",
+                                          side_effect=lambda _, rel, flags: util.open_beneath(d, rel, flags)):
+                    container.hide_emulator_props(inst)
+                with open(os.path.join(props_dir, "u:object_r:build_prop:s0"), "rb") as f:
+                    build_data = f.read()
+                self.assertEqual(self.read_prop(build_data, "ro.product.cpu.abilist"),
+                                 "arm64-v8a,armeabi-v7a,armeabi")
+                self.assertEqual(self.read_prop(build_data, "ro.product.cpu.abi"), "arm64-v8a")
+                self.assertEqual(self.read_prop(build_data, "ro.build.product"), "husky")
+                self.assertEqual(self.read_prop(build_data, "ro.build.flavor"), "husky-user")
+                self.assertEqual(self.read_prop(build_data, "ro.build.tags"), "release-keys")
+                self.assertEqual(self.read_prop(build_data, "ro.build.type"), "user")
+                with open(os.path.join(props_dir, "u:object_r:build_vendor_prop:s0"), "rb") as f:
+                    vendor_data = f.read()
+                self.assertEqual(self.read_prop(vendor_data, "ro.product.vendor.device"), "husky")
+                self.assertEqual(self.read_prop(vendor_data, "ro.vendor.product.cpu.abilist"),
+                                 "arm64-v8a,armeabi-v7a,armeabi")
+                with open(os.path.join(props_dir, "u:object_r:bootloader_prop:s0"), "rb") as f:
+                    self.assertEqual(self.read_prop(f.read(), "ro.boot.hardware"), "husky")
+                with open(os.path.join(props_dir, "u:object_r:dalvik_config_prop:s0"), "rb") as f:
+                    self.assertEqual(self.read_prop(f.read(), "ro.dalvik.vm.native.bridge"), "0")
+                with open(os.path.join(props_dir, "u:object_r:default_prop:s0"), "rb") as f:
+                    self.assertEqual(self.read_prop(f.read(), "ro.system.product.cpu.abilist"),
+                                     "arm64-v8a,armeabi-v7a,armeabi")
+                # system_server's existing inode keeps x86_64; apps opening the path see ""
+                self.assertEqual(self.read_prop(os.pread(ss_fd, 4096, 0), "ro.dalvik.vm.isa.arm64"), "x86_64")
+                with open(dalvik_path, "rb") as f:
+                    self.assertEqual(self.read_prop(f.read(), "ro.dalvik.vm.isa.arm64"), "")
+            finally:
+                os.close(ss_fd)
+
+    def test_lxc_config_fakes_cmdline_and_hides_host_sensors(self):
+        with tempfile.TemporaryDirectory() as d:
+            inst = Instance.new("5", 5, 1000, "", {}, {})
+            inst.set("cpuset", "all")
+            seccomp = os.path.join(d, "seccomp")
+            open(seccomp, "w").close()
+            net = mock.Mock(cfg=mock.Mock(bridge="br", isolate=False))
+            with mock.patch.object(Instance, "dir", d), mock.patch.object(Instance, "lxc_dir", d), \
+                    mock.patch.object(container, "stock_args"), \
+                    mock.patch.object(container.stock, "lxc_snippets"), \
+                    mock.patch.object(container.stock, "seccomp_profile", return_value=seccomp), \
+                    mock.patch.object(container.stock, "tools") as tools, \
+                    mock.patch.object(container.lxcconfig, "build_config", return_value=""), \
+                    mock.patch.object(container, "load_apparmor_profile", return_value=None):
+                tools.return_value.helpers.lxc.generate_nodes_lxc_config.return_value = []
+                container.write_lxc_config(inst, net)
+            with open(os.path.join(d, "cmdline")) as f:
+                cmdline = f.read()
+            with open(os.path.join(d, "config_nodes")) as f:
+                nodes = f.read()
+        for arg in ("verifiedbootstate=green", "flash.locked=1", "vbmeta.device_state=locked"):
+            self.assertIn("androidboot." + arg, cmdline)
+        self.assertNotIn("BOOT_IMAGE", cmdline)
+        self.assertIn("{}/cmdline proc/cmdline none bind".format(d), nodes)
+        for p in ("sys/class/power_supply", "sys/class/thermal"):
+            self.assertIn("tmpfs {} tmpfs".format(p), nodes)
+
+    def test_identity_props_derive_from_the_image_and_keep_the_instances_own(self):
+        with tempfile.TemporaryDirectory() as d:
+            os.makedirs(os.path.join(d, "rootfs/system"))
+            with open(os.path.join(d, "rootfs/system/build.prop"), "w") as f:
+                f.write("ro.build.id=BP4A.251205.006\nro.build.version.release=16\n"
+                        "ro.build.version.incremental=eng.x.1\nro.build.fingerprint=google/tangorpro/x:16/y\n")
+            os.makedirs(os.path.join(d, "rootfs/system/product/etc"))
+            with open(os.path.join(d, "rootfs/system/product/etc/build.prop"), "w") as f:
+                f.write("ro.lineage.version=23.2-UNOFFICIAL-WayDroidATV-waydroid_x86_64\n")
+            inst = Instance.new("8", 8, 1000, "", {}, {"ro.build.host": "mine"})
+            inst.set("device_model", "pixel_8_pro")
+            with mock.patch.object(Instance, "dir", d), \
+                    mock.patch.object(Instance, "rootfs", os.path.join(d, "rootfs")):
+                dev, build = container.identity_props(inst)
+        self.assertEqual(dev["ro.build.product"], "husky")
+        self.assertEqual(build["ro.build.fingerprint"],
+                         "google/husky/husky:16/BP4A.251205.006/{}:user/release-keys".format(
+                             build["ro.build.version.incremental"]))
+        self.assertEqual(build["ro.lineage.version"], "23.2-UNOFFICIAL-WayDroidATV-husky")
+        self.assertNotIn("ro.build.host", build)    # the instance's own property wins
+
+    def test_fix_ndk_translation_patches_pinned_build(self):
+        with tempfile.TemporaryDirectory() as d:
+            inst = Instance.new("4", 4, 1000, "", {}, {})
+            lib = os.path.join(d, "rootfs/system/lib64/libndk_translation.so")
+            os.makedirs(os.path.dirname(lib))
+            raw = b"\x00" * 64
+            sha = hashlib.sha256(raw).hexdigest()
+            with open(lib, "wb") as f:
+                f.write(raw)
+            with mock.patch.object(Instance, "dir", d), \
+                    mock.patch.object(Instance, "rootfs", os.path.join(d, "rootfs")), \
+                    mock.patch.dict(container.NDK_TRANSLATION_PATCHES, {sha: (0x10, "4885db7407")}), \
+                    mock.patch.object(container, "bind_mount") as bm:
+                container.fix_ndk_translation(inst)
+                bm.assert_called_once()
+                with open(os.path.join(d, "libndk_translation.so"), "rb") as f:
+                    patched = f.read()
+                self.assertEqual(patched[0x10:0x15], bytes.fromhex("4885db7407"))
+
+    def test_fix_heap_caps_waydroid_init_heap(self):
+        with tempfile.TemporaryDirectory() as d:
+            inst = Instance.new("4", 4, 1000, "", {}, {})
+            rc = os.path.join(d, "rootfs/vendor/etc/init/waydroid-init.rc")
+            os.makedirs(os.path.dirname(rc))
+            with open(rc, "wb") as f:
+                f.write(b"on post-fs-data\n" + container.WAYDROID_INIT_EXEC)
+            with mock.patch.object(Instance, "dir", d), \
+                    mock.patch.object(Instance, "rootfs", os.path.join(d, "rootfs")), \
+                    mock.patch.object(container, "bind_mount") as bm:
+                container.fix_heap(inst)
+                bm.assert_called_once()
+                with open(os.path.join(d, "waydroid-init.rc"), "rb") as f:
+                    self.assertEqual(f.read(), b"on post-fs-data\n" + container.WAYDROID_INIT_EXEC +
+                                     b"    setprop dalvik.vm.heapsize 512m\n")
+                with open(rc, "w") as f:
+                    f.write("on post-fs-data\n    start something_else\n")
+                container.fix_heap(inst)
+                bm.assert_called_once()     # an rc it doesn't know is left alone
+
+
 if __name__ == "__main__":
     unittest.main()
