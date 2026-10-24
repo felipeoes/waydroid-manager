@@ -7,6 +7,11 @@ follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions f
 ## [Unreleased]
 
 ### Fixed
+- ARM games such as Raid: Shadow Legends close much less often after running for a little while
+  on Android 16 and 17, on hosts with more than 15 GB of RAM. The image sized Android's app heap
+  for the host's memory rather than the instance's, and that reservation could crowd out the
+  memory range where ARM translation keeps its translated code. The heap is now capped at 512 MB,
+  as on smaller hosts. Some restarts can still hit it, but rarely.
 - Airship Knights startup on Android 16: use YUV video output instead of the image's forced
   RGBX output, and enable WebView 150.0.7871.63's asynchronous user-agent lookup to avoid a
   Unity/ad-SDK deadlock. Existing instances receive the updated compatibility layer on restart.
