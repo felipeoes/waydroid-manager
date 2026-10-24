@@ -673,6 +673,26 @@ class EmulatorStealthTest(unittest.TestCase):
                     patched = f.read()
                 self.assertEqual(patched[0x10:0x15], bytes.fromhex("4885db7407"))
 
+    def test_fix_heap_caps_waydroid_init_heap(self):
+        with tempfile.TemporaryDirectory() as d:
+            inst = Instance.new("4", 4, 1000, "", {}, {})
+            rc = os.path.join(d, "rootfs/vendor/etc/init/waydroid-init.rc")
+            os.makedirs(os.path.dirname(rc))
+            with open(rc, "wb") as f:
+                f.write(b"on post-fs-data\n" + container.WAYDROID_INIT_EXEC)
+            with mock.patch.object(Instance, "dir", d), \
+                    mock.patch.object(Instance, "rootfs", os.path.join(d, "rootfs")), \
+                    mock.patch.object(container, "bind_mount") as bm:
+                container.fix_heap(inst)
+                bm.assert_called_once()
+                with open(os.path.join(d, "waydroid-init.rc"), "rb") as f:
+                    self.assertEqual(f.read(), b"on post-fs-data\n" + container.WAYDROID_INIT_EXEC +
+                                     b"    setprop dalvik.vm.heapsize 512m\n")
+                with open(rc, "w") as f:
+                    f.write("on post-fs-data\n    start something_else\n")
+                container.fix_heap(inst)
+                bm.assert_called_once()     # an rc it doesn't know is left alone
+
 
 if __name__ == "__main__":
     unittest.main()
