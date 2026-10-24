@@ -57,6 +57,8 @@ APPARMOR_PROFILE = "lxc-waydroid-manager"   # lxc-start may only switch to lxc-*
 APPARMOR_FILE = os.path.join(paths.RUN_DIR, "apparmor-profile")
 # mov edi, PR_SET_NO_NEW_PRIVS; mov esi, 1 (x86_64), in Waydroid's first-stage init on Android 16+
 INIT_NNP = bytes.fromhex("bf26000000be01000000")
+# The newer images' vendor init, which sets the Dalvik heap for the RAM it sees
+WAYDROID_INIT_EXEC = b"    exec -- /vendor/bin/waydroid-init\n"
 # ponytail: only inspected x86_64 builds before upstream bb49e333f3ab; inspect new builds before adding pins.
 # SHA-256 -> call's file offset.
 HWC_NVIDIA_SHA = "2bac9ae23e4536a1e2a5ea36be25e07d3430e64cfe53668c3ffa5124ec715d24"
@@ -590,6 +592,28 @@ def fix_init(inst):
         log.info("%s: init no longer sets no_new_privs", inst.id)
 
 
+def fix_heap(inst):
+    """waydroid-init sizes the Dalvik heap from sysinfo(), the host's RAM, not the container's limit:
+    over 15 GB it picks 640m. ART's large object space reserves that much again in the low 4 GB,
+    at a random spot that can fill the 1-2 GB range where Berberis maps translated code, and ARM
+    games abort once that fills. Cap it at 512m, its pick for 3 to 15 GB, right after it runs.
+    For this mount only."""
+    # ponytail: 512m only makes that rarer (the space can still land in the range); the full fix is
+    # -XX:LargeObjectSpace=map in dalvik.vm.extra-opts if it still happens (=disabled crashes zygote).
+    try:
+        fd = open_beneath(inst.rootfs, "vendor/etc/init/waydroid-init.rc", os.O_RDONLY | os.O_NONBLOCK)
+    except FileNotFoundError:
+        return
+    with os.fdopen(fd, "rb") as src:
+        if not stat.S_ISREG(os.fstat(src.fileno()).st_mode):
+            raise RuntimeError("waydroid-init.rc is not a regular file")
+        data = src.read(64 << 10)
+        if data.count(WAYDROID_INIT_EXEC) != 1:
+            return
+        data = data.replace(WAYDROID_INIT_EXEC, WAYDROID_INIT_EXEC + b"    setprop dalvik.vm.heapsize 512m\n")
+        bind_patched(inst, src, data, "waydroid-init.rc", 0o644)
+
+
 def fix_angle(inst):
     """Unreal Engine games on an NVIDIA renderer use the ESSL 1 name of the video texture
     extension in ESSL 3 shaders; ANGLE rejects them and the game quits when a video starts.
@@ -892,6 +916,7 @@ def mount_rootfs(inst, images_dir, gpu_layers=()):
                   writable=inst.getbool("system_writable"))
     fix_hwc(inst)
     fix_init(inst)
+    fix_heap(inst)
     fix_ndk_translation(inst)
     fix_property_contexts(inst)
     fix_cpuinfo(inst)
