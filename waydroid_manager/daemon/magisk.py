@@ -18,7 +18,7 @@ APK_SHA256 = "a3c37c4172b6ce7fdfbcccb2a608ef84b0a267d7aaef7c183047adceb8494c80"
 APK_CACHE = paths.STATE_DIR + "/magisk-delta.apk"
 STAMP = "magisk.sha256"  # in the instance dir: which build its lower layer holds
 ABIS = {"x86_64": "x86_64", "i686": "x86", "aarch64": "arm64-v8a", "armv7l": "armeabi-v7a"}
-ASSETS = ("addon.d.sh", "boot_patch.sh", "stub.apk", "util_functions.sh")
+ASSETS = ("addon.d.sh", "boot_patch.sh", "util_functions.sh")
 SOCK = "/dev/magisk_iqeoVo2mDrO"
 MAGISK = "/system/etc/init/magisk"
 # Paths (below the overlay root) this module owns, in the lower layer and in the instance's upper layer
@@ -112,7 +112,8 @@ def install(inst):
     stamp = os.path.join(inst.dir, STAMP)
     binary = "magisk64" if abi.endswith("64") else "magisk32"
     rc_text = BOOTANIM + SETUP.format(m=MAGISK, s=SOCK, bin=binary, cg=INIT_CGROUP)
-    build = hashlib.sha256((APK_SHA256 + rc_text).encode()).hexdigest()   # a new init script reinstalls too
+    # a new init script or file list reinstalls too
+    build = hashlib.sha256((APK_SHA256 + rc_text + " ".join(ASSETS)).encode()).hexdigest()
     try:
         with open(stamp) as f:
             if f.read() == build and os.path.isdir(mdir):
@@ -133,6 +134,9 @@ def install(inst):
             elif name.startswith("assets/") and base in ASSETS:
                 _put(z, name, os.path.join(mdir, base), 0o644)
     shutil.copyfile(apk, os.path.join(mdir, "magisk.apk"))
+    # magiskd installs stub.apk when no Magisk app is installed. The real stub downloads the app
+    # from huskydg.github.io, which is gone (404), and closes: give it the full app instead.
+    shutil.copyfile(apk, os.path.join(mdir, "stub.apk"))
     # Magisk's own updater rewrites bootanim.rc, so it keeps a pristine copy next to it
     rc = os.path.join(root, "system/etc/init/bootanim.rc")
     with gzip.open(rc + ".gz", "wb") as f:

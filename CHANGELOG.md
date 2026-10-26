@@ -7,6 +7,10 @@ follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions f
 ## [Unreleased]
 
 ### Fixed
+- The Magisk app no longer closes as soon as it opens on rooted instances. Magisk installed a
+  small placeholder app that downloads the real one from a site that no longer exists; it now
+  installs the full app directly. Instances that already have the placeholder need it replaced
+  once: `waydroid-manager app install N /var/lib/waydroid-manager/magisk-delta.apk`.
 - ARM games such as Raid: Shadow Legends close much less often after running for a little while
   on Android 16 and 17, on hosts with more than 15 GB of RAM. The image sized Android's app heap
   for the host's memory rather than the instance's, and that reservation could crowd out the
