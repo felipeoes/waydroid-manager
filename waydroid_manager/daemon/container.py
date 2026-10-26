@@ -540,7 +540,7 @@ def ensure_overcommit():
 
 
 def sync_root(inst):
-    """Root switch: Magisk Delta in the instance's own lower layer (removed when off)."""
+    """Root switch: Magisk in the instance's own lower layer (removed when off)."""
     if inst.getbool("root") and not android_of(inst):
         log.warning("%s: root needs an Android version Waydroid Manager knows; starting without it", inst.id)
     elif inst.getbool("root"):

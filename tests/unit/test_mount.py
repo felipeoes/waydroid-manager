@@ -76,16 +76,35 @@ class MagiskRemoveTest(unittest.TestCase):
             self.assertTrue(os.path.isdir(os.path.join(host, "init/magisk")))
             self.assertFalse(os.path.exists(own))
 
-    def test_stub_apk_is_the_full_app(self):
+    def test_install_patches_zygote_check_and_ships_full_app(self):
+        offset, was, becomes = magisk.PATCH["x86_64"]
         with tempfile.TemporaryDirectory() as t:
             apk = os.path.join(t, "magisk.apk")
             with zipfile.ZipFile(apk, "w") as z:
-                z.writestr("assets/stub.apk", "stub that downloads from a dead URL")
+                z.writestr("assets/stub.apk", "stub that downloads the app")
                 z.writestr("assets/util_functions.sh", "")
-            with mock.patch.object(magisk, "ensure_apk", return_value=apk), mock.patch("os.chown"):
+                z.writestr("lib/x86_64/libmagisk.so", bytes(offset) + bytes.fromhex(was) + b"tail")
+                z.writestr("lib/x86/libmagisk.so", "32-bit")
+            with mock.patch.object(magisk, "ensure_apk", return_value=apk), mock.patch("os.chown"), \
+                    mock.patch("platform.machine", return_value="x86_64"):
                 magisk.install(types.SimpleNamespace(dir=os.path.join(t, "inst")))
-            with open(apk, "rb") as a, open(os.path.join(t, "inst/overlay/system/etc/init/magisk/stub.apk"), "rb") as s:
+            mdir = os.path.join(t, "inst/overlay/system/etc/init/magisk")
+            with open(apk, "rb") as a, open(os.path.join(mdir, "stub.apk"), "rb") as s:
                 self.assertEqual(a.read(), s.read())
+            with open(os.path.join(mdir, "magisk"), "rb") as m:
+                self.assertEqual(m.read(), bytes(offset) + bytes.fromhex(becomes) + b"tail")
+            self.assertTrue(os.path.isfile(os.path.join(mdir, "magisk32")))
+            self.assertTrue(os.path.isfile(os.path.join(mdir, "util_functions.sh")))
+
+    def test_pinned_build_matches_patch(self):
+        """The PATCH bytes belong to the pinned APK: a new pin needs new offsets."""
+        apk = magisk.APK_CACHE
+        if not os.access(apk, os.R_OK):
+            self.skipTest("pinned APK not downloaded")
+        with zipfile.ZipFile(apk) as z:
+            for abi, (offset, was, _) in magisk.PATCH.items():
+                lib = z.read("lib/{}/libmagisk.so".format(abi))
+                self.assertEqual(lib[offset:offset + len(was) // 2], bytes.fromhex(was), abi)
 
 
 if __name__ == "__main__":
