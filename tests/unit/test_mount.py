@@ -76,14 +76,19 @@ class MagiskRemoveTest(unittest.TestCase):
             self.assertTrue(os.path.isdir(os.path.join(host, "init/magisk")))
             self.assertFalse(os.path.exists(own))
 
-    def test_install_patches_zygote_check_and_ships_full_app(self):
-        offset, was, becomes = magisk.PATCH["x86_64"]
+    def test_install_patches_selinux_checks_and_ships_full_app(self):
+        patches = magisk.PATCH["x86_64"]
+        lib = bytearray(max(o + len(w) // 2 for o, w, _ in patches) + 4)
+        patched = bytearray(lib)
+        for offset, was, becomes in patches:
+            lib[offset:offset + len(was) // 2] = bytes.fromhex(was)
+            patched[offset:offset + len(becomes) // 2] = bytes.fromhex(becomes)
         with tempfile.TemporaryDirectory() as t:
             apk = os.path.join(t, "magisk.apk")
             with zipfile.ZipFile(apk, "w") as z:
                 z.writestr("assets/stub.apk", "stub that downloads the app")
                 z.writestr("assets/util_functions.sh", "")
-                z.writestr("lib/x86_64/libmagisk.so", bytes(offset) + bytes.fromhex(was) + b"tail")
+                z.writestr("lib/x86_64/libmagisk.so", bytes(lib))
                 z.writestr("lib/x86/libmagisk.so", "32-bit")
             with mock.patch.object(magisk, "ensure_apk", return_value=apk), mock.patch("os.chown"), \
                     mock.patch("platform.machine", return_value="x86_64"):
@@ -92,7 +97,7 @@ class MagiskRemoveTest(unittest.TestCase):
             with open(apk, "rb") as a, open(os.path.join(mdir, "stub.apk"), "rb") as s:
                 self.assertEqual(a.read(), s.read())
             with open(os.path.join(mdir, "magisk"), "rb") as m:
-                self.assertEqual(m.read(), bytes(offset) + bytes.fromhex(becomes) + b"tail")
+                self.assertEqual(m.read(), bytes(patched))
             self.assertTrue(os.path.isfile(os.path.join(mdir, "magisk32")))
             self.assertTrue(os.path.isfile(os.path.join(mdir, "util_functions.sh")))
 
@@ -102,9 +107,10 @@ class MagiskRemoveTest(unittest.TestCase):
         if not os.access(apk, os.R_OK):
             self.skipTest("pinned APK not downloaded")
         with zipfile.ZipFile(apk) as z:
-            for abi, (offset, was, _) in magisk.PATCH.items():
+            for abi, patches in magisk.PATCH.items():
                 lib = z.read("lib/{}/libmagisk.so".format(abi))
-                self.assertEqual(lib[offset:offset + len(was) // 2], bytes.fromhex(was), abi)
+                for offset, was, _ in patches:
+                    self.assertEqual(lib[offset:offset + len(was) // 2], bytes.fromhex(was), abi)
 
 
 if __name__ == "__main__":

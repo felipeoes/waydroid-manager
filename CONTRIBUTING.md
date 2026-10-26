@@ -250,9 +250,10 @@ which Android reads last.
   Waydroid. The per-instance `root` switch is deliberately open to the instance owner (like
   LDPlayer's), so an owner can get root inside Android and, through it, close to host root.
   Keep that in mind when sharing a machine. The switch puts official Magisk (pinned by version
-  and sha256 in `daemon/magisk.py`) into the instance's own overlay layer, with one check patched:
-  its daemon serves Zygisk to root processes instead of to SELinux's zygote label, which Waydroid
-  doesn't have. Magisk then decides which apps get root. Other props that would give root
+  and sha256 in `daemon/magisk.py`) into the instance's own overlay layer, with two SELinux checks
+  patched, since Waydroid has no SELinux: its daemon serves Zygisk to root processes instead of to
+  the zygote label, and treats a socket it can't read a label from as unlabeled. Magisk then decides
+  which apps get root. Other props that would give root
   (`ro.debuggable`, `ro.secure`, `ro.adb.*`, `service.adb.*`, `ro.boot.*`, …; `PROTECTED_PROP_RE`
   in `instance.py`) still can only be set by root and are filtered when props are written.
 - **ARM translation runs third-party binaries in every instance by default.** The Houdini and

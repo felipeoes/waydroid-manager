@@ -18,15 +18,25 @@ APK_SHA256 = "2c8a488b9a5293e578e95ae4f07e3c57aba4feec4a52ca4dd852a2692d6dd4e8"
 APK_CACHE = paths.STATE_DIR + "/magisk-v31.0.apk"
 STAMP = "magisk.sha256"  # in the instance dir: which build its lower layer holds
 ABIS = {"x86_64": ("x86_64", "x86"), "aarch64": ("arm64-v8a", "armeabi-v7a")}
-# magiskd serves Zygisk only to clients whose SELinux label is u:r:zygote:s0, and Waydroid runs
-# Android without SELinux, so every Zygisk request was refused. The label check becomes
-# "uid == 0": zygote and its children before they specialize are root. (offset, was, becomes)
+# Waydroid runs Android without SELinux, which the daemon doesn't expect. (offset, was, becomes)
+# 1. It serves Zygisk only to clients whose SELinux label is u:r:zygote:s0, so every Zygisk request
+#    was refused. The check becomes "uid == 0": zygote's children are root until they specialize.
+# 2. Reading a socket's label fails with an error other than "no label", so zygiskd dropped every
+#    companion connection and modules with a companion hung app startup. Any error means no label.
 PATCH = {
-    # call eq(label, "u:r:zygote:s0"); cmpl $0,uid; mov %al,is_zygote
-    # -> cmpl $0,uid; sete %al; mov %al,is_zygote; nop; nop
-    "x86_64": (0x27b2d, "e84e0d0000837c2410008844240f", "837c2410000f94c08844240f9090"),
-    # bl eq; mov w25, w0 -> cmp w20 (uid), #0; cset w25, eq
-    "arm64-v8a": (0x27b00, "dd020094f903002a", "9f020071f9179f1a"),
+    "x86_64": (
+        # call eq(label, "u:r:zygote:s0"); cmpl $0,uid; mov %al,is_zygote
+        # -> cmpl $0,uid; sete %al; mov %al,is_zygote; nop; nop
+        (0x27b2d, "e84e0d0000837c2410008844240f", "837c2410000f94c08844240f9090"),
+        # fgetxattr failed: cmp $ENODATA,%eax; jne fail -> nop; nop
+        (0x3b232, "7514", "9090"),
+    ),
+    "arm64-v8a": (
+        # bl eq; mov w25, w0 -> cmp w20 (uid), #0; cset w25, eq
+        (0x27b00, "dd020094f903002a", "9f020071f9179f1a"),
+        # fgetxattr failed: cmp w0, #ENODATA; b.ne fail -> nop
+        (0x381e8, "c1000054", "1f2003d5"),
+    ),
 }
 TMP = "/debug_ramdisk"  # Magisk only runs from /debug_ramdisk or /sbin
 MAGISK = "/system/etc/init/magisk"
@@ -162,7 +172,8 @@ def install(inst):
                 _put(z, name, os.path.join(mdir, "magisk32"), 0o755)
             elif name.startswith("assets/") and name.count("/") == 1 and base.endswith(".sh"):
                 _put(z, name, os.path.join(mdir, base), 0o644)
-    _patch(os.path.join(mdir, "magisk"), *PATCH[abi])
+    for patch in PATCH[abi]:
+        _patch(os.path.join(mdir, "magisk"), *patch)
     with open(os.path.join(mdir, "setup.sh"), "w") as f:
         f.write(sh_text)
     # magiskd installs stub.apk when no Magisk app is installed, and trusts apps signed like it.

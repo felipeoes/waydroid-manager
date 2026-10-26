@@ -276,6 +276,11 @@ Same host. Every item below is in the code now.
     is AppArmor's (`android_app//&lxc-waydroid-manager`), so every request got "Accessed denied".
     The patch in `magisk.py` makes that check `uid == 0` (zygote's children are root until they
     specialize).
+  - Zygisk companions: zygiskd runs a module's companion only after `fd_get_attr` on the
+    connection, which reads the socket's `security.selinux` and accepts only ENODATA. Without
+    SELinux that read fails otherwise, so zygiskd dropped the connection without closing it, and
+    each app fork of a companion module (CroakerMOD) waited forever: no `sys.boot_completed`, and
+    zygiskd64 piling up sockets. Patched to treat any error as no label.
   - init's umask is 077: `.magisk/device` came out 0700 and apps' `su` aborted (SIGILL) when it
     couldn't reach the socket.
   - The app asks for a reflash unless `.magisk/device/preinit` is a block device; a 0:0 node does.

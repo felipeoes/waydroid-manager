@@ -11,9 +11,8 @@ follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions f
   enabled" and never loaded into apps. Root now installs official Magisk 31.0 instead of Magisk
   Delta 26.3, which predates the way 14 and newer start apps. Rooted instances switch over at their
   next start, keeping Magisk's settings, root grants and modules; the old Magisk Delta app is
-  replaced by the official Magisk app, which no longer closes as soon as it opens. Modules that
-  never ran on 14+ before may now misbehave there: if a device no longer finishes booting, disable
-  the module with `touch /data/adb/modules/ID/disable` from `waydroid-manager shell N`.
+  replaced by the official Magisk app, which no longer closes as soon as it opens. Zygisk modules
+  with a root companion process (such as CroakerMOD) no longer keep the device from finishing boot.
 - ARM games such as Raid: Shadow Legends close much less often after running for a little while
   on Android 16 and 17, on hosts with more than 15 GB of RAM. The image sized Android's app heap
   for the host's memory rather than the instance's, and that reservation could crowd out the
