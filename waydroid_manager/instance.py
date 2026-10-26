@@ -163,7 +163,7 @@ SETTINGS = {
     "zoom": (_zoom, "auto", "window zoom in % (25-200) or auto (fit the screen)"),
     "close_action": (_choice(ACTIONS), "stop", "what closing the window does: stop|freeze|none"),
     "idle_action": (_choice(ACTIONS), "freeze", "what Android idle-suspend does: freeze|stop|none"),
-    "root": (_bool, "false", "Root: Magisk Delta in the instance (restart)"),
+    "root": (_bool, "false", "Root: Magisk in the instance (restart)"),
     "system_writable": (_bool, "false", "Android system partition is writable (restart)"),
     "arm_translation": (_choice(ARM), "houdini", "runs ARM apps: houdini|libndk|none (restart)"),
     "android": (_choice(tuple(catalog.VERSIONS)), catalog.DEFAULT,

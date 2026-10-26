@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
-"""Root switch: put Magisk Delta into an instance's own overlay layer (Waydroid has no boot image)."""
+"""Root switch: put Magisk into an instance's own overlay layer (Waydroid has no boot image)."""
 import gzip
 import hashlib
 import os
@@ -11,15 +11,24 @@ import zipfile
 from .. import paths
 from .util import CommandError, download
 
-# Same build waydroid_script installs, pinned to a commit and checked by hash
-APK_URL = ("https://github.com/mistrmochov/magiskdeltaorig/raw/"
-           "793a78430bac879b8eb9bf72d03003ebc205c294/app-release.apk")
-APK_SHA256 = "a3c37c4172b6ce7fdfbcccb2a608ef84b0a267d7aaef7c183047adceb8494c80"
-APK_CACHE = paths.STATE_DIR + "/magisk-delta.apk"
+# Official v31.0: Zygisk knows the Zygote signatures of 11 to 17 (Magisk Delta 26.3 stopped at 13,
+# Kitsune 27.2 at 16 QPR1). 31.1 drops the su prompt and the stub, so newer builds need a new look.
+APK_URL = "https://github.com/topjohnwu/Magisk/releases/download/v31.0/Magisk-v31.0.apk"
+APK_SHA256 = "2c8a488b9a5293e578e95ae4f07e3c57aba4feec4a52ca4dd852a2692d6dd4e8"
+APK_CACHE = paths.STATE_DIR + "/magisk-v31.0.apk"
 STAMP = "magisk.sha256"  # in the instance dir: which build its lower layer holds
-ABIS = {"x86_64": "x86_64", "i686": "x86", "aarch64": "arm64-v8a", "armv7l": "armeabi-v7a"}
-ASSETS = ("addon.d.sh", "boot_patch.sh", "util_functions.sh")
-SOCK = "/dev/magisk_iqeoVo2mDrO"
+ABIS = {"x86_64": ("x86_64", "x86"), "aarch64": ("arm64-v8a", "armeabi-v7a")}
+# magiskd serves Zygisk only to clients whose SELinux label is u:r:zygote:s0, and Waydroid runs
+# Android without SELinux, so every Zygisk request was refused. The label check becomes
+# "uid == 0": zygote and its children before they specialize are root. (offset, was, becomes)
+PATCH = {
+    # call eq(label, "u:r:zygote:s0"); cmpl $0,uid; mov %al,is_zygote
+    # -> cmpl $0,uid; sete %al; mov %al,is_zygote; nop; nop
+    "x86_64": (0x27b2d, "e84e0d0000837c2410008844240f", "837c2410000f94c08844240f9090"),
+    # bl eq; mov w25, w0 -> cmp w20 (uid), #0; cset w25, eq
+    "arm64-v8a": (0x27b00, "dd020094f903002a", "9f020071f9179f1a"),
+}
+TMP = "/debug_ramdisk"  # Magisk only runs from /debug_ramdisk or /sbin
 MAGISK = "/system/etc/init/magisk"
 # Paths (below the overlay root) this module owns, in the lower layer and in the instance's upper layer
 OWNED = ("system/etc/init/magisk", "system/etc/init/bootanim.rc", "system/etc/init/bootanim.rc.gz",
@@ -40,40 +49,61 @@ service bootanim /system/bin/bootanimation
     task_profiles MaxPerformance
 
 """
+# Earlier versions installed Magisk Delta, whose app (io.github.huskydg.magisk) the daemon now ignores
 SETUP = """
 on post-fs-data
     start logd
-    exec u:r:su:s0 root root -- {m}/magiskpolicy --live --magisk
-    exec u:r:magisk:s0 root root -- {m}/magiskpolicy --live --magisk
-    exec u:r:update_engine:s0 root root -- {m}/magiskpolicy --live --magisk
-    mkdir {s} 700
-    exec u:r:su:s0 root root -- {m}/{bin} --auto-selinux --setup-sbin {m} {s}
-    exec u:r:su:s0 root root -- /system/bin/sh -c "{cg}; exec {s}/magisk --auto-selinux --post-fs-data"
+    mount tmpfs magisk {t} mode=0755
+    mkdir /data/adb 700
+    exec u:r:su:s0 root root -- /system/bin/sh {m}/setup.sh
+    exec u:r:su:s0 root root -- /system/bin/sh -c "{cg}; exec {t}/magisk --post-fs-data"
 
 on nonencrypted
-    exec u:r:su:s0 root root -- {s}/magisk --auto-selinux --service
+    exec u:r:su:s0 root root -- {t}/magisk --service
 
 on property:vold.decrypt=trigger_restart_framework
-    exec u:r:su:s0 root root -- {s}/magisk --auto-selinux --service
+    exec u:r:su:s0 root root -- {t}/magisk --service
 
 on property:sys.boot_completed=1
-    mkdir /data/adb/magisk 755
-    exec u:r:su:s0 root root -- /system/bin/cp -rf {m}/. /data/adb/magisk/
-    exec u:r:su:s0 root root -- {s}/magisk --auto-selinux --boot-complete
+    exec u:r:su:s0 root root -- /system/bin/sh -c "pm path io.github.huskydg.magisk > /dev/null && pm uninstall io.github.huskydg.magisk"
+    exec u:r:su:s0 root root -- {t}/magisk --boot-complete
 
 on property:init.svc.zygote=restarting
-    exec u:r:su:s0 root root -- {s}/magisk --auto-selinux --zygote-restart
+    exec u:r:su:s0 root root -- {t}/magisk --zygote-restart
 
 on property:init.svc.zygote=stopped
-    exec u:r:su:s0 root root -- {s}/magisk --auto-selinux --zygote-restart
+    exec u:r:su:s0 root root -- {t}/magisk --zygote-restart
+"""
+# What upstream's scripts/avd_setup.sh does before the daemon starts. init's umask is 077, which
+# would keep apps' su off the daemon's socket.
+SETUP_SH = """umask 022
+M={m}
+T={t}
+B=/data/adb/magisk
+rm -rf $B
+mkdir -p $B /data/adb/modules /data/adb/post-fs-data.d /data/adb/service.d
+for f in $M/*; do
+    case ${{f##*/}} in stub.apk|setup.sh) ;; *) cp -af $f $B/ ;; esac
+done
+cp -af $M/magisk $M/magisk32 $M/magiskpolicy $M/stub.apk $T/
+ln -s ./magisk $T/su
+ln -s ./magisk $T/resetprop
+ln -s ./magiskpolicy $T/supolicy
+mkdir -p $T/.magisk/device $T/.magisk/worker
+mount -t tmpfs -o mode=0755 worker $T/.magisk/worker
+$M/busybox mount --make-private $T/.magisk/worker
+touch $T/.magisk/config
+# No partition holds modules' SELinux rules here, but the app asks for a reflash without one.
+# 0:0 is no device: nothing can be mounted or written through it.
+mknod $T/.magisk/device/preinit b 0 0
 """
 
 
-def _abi():
-    abi = ABIS.get(platform.machine())
-    if not abi:
+def _abis():
+    abis = ABIS.get(platform.machine())
+    if not abis:
         raise CommandError("the Root switch does not support the {} architecture".format(platform.machine()))
-    return abi
+    return abis
 
 
 _apk_lock = threading.Lock()
@@ -82,7 +112,7 @@ _apk_lock = threading.Lock()
 def ensure_apk():
     """Download the pinned APK once; returns its path."""
     with _apk_lock:  # parallel starts share the cache and its temp file
-        return download(APK_URL, APK_SHA256, APK_CACHE, "Magisk Delta for the Root switch")
+        return download(APK_URL, APK_SHA256, APK_CACHE, "Magisk for the Root switch")
 
 
 def remove(inst, upper=True):
@@ -106,14 +136,14 @@ def remove(inst, upper=True):
 def install(inst):
     """Put the pinned build in the lower layer; a no-op when it is already there.
     The upper layer is left alone: it holds Magisk's own in-app updates."""
-    abi = _abi()
+    abi, abi32 = _abis()
     root = os.path.join(inst.dir, "overlay")
     mdir = os.path.join(root, MAGISK.lstrip("/"))
     stamp = os.path.join(inst.dir, STAMP)
-    binary = "magisk64" if abi.endswith("64") else "magisk32"
-    rc_text = BOOTANIM + SETUP.format(m=MAGISK, s=SOCK, bin=binary, cg=INIT_CGROUP)
-    # a new init script or file list reinstalls too
-    build = hashlib.sha256((APK_SHA256 + rc_text + " ".join(ASSETS)).encode()).hexdigest()
+    rc_text = BOOTANIM + SETUP.format(m=MAGISK, t=TMP, cg=INIT_CGROUP)
+    sh_text = SETUP_SH.format(m=MAGISK, t=TMP)
+    # a new init script, setup script or patch reinstalls too
+    build = hashlib.sha256((APK_SHA256 + rc_text + sh_text + repr(PATCH)).encode()).hexdigest()
     try:
         with open(stamp) as f:
             if f.read() == build and os.path.isdir(mdir):
@@ -123,19 +153,20 @@ def install(inst):
     apk = ensure_apk()  # before anything is torn down: a failed download changes nothing
     remove(inst, upper=False)
     os.makedirs(mdir)
-    os.makedirs(os.path.join(root, "sbin"), exist_ok=True)
     with zipfile.ZipFile(apk) as z:
         for name in z.namelist():
             base = os.path.basename(name)
-            if name.startswith("lib/" + abi + "/lib") and base.endswith(".so"):
+            if name.startswith("lib/{}/lib".format(abi)) and base.endswith(".so"):
                 _put(z, name, os.path.join(mdir, base[3:-3]), 0o755)
-            elif name.startswith("assets/chromeos/") and not name.endswith("/"):
-                _put(z, name, os.path.join(mdir, name[len("assets/"):]), 0o644)
-            elif name.startswith("assets/") and base in ASSETS:
+            elif name == "lib/{}/libmagisk.so".format(abi32):
+                _put(z, name, os.path.join(mdir, "magisk32"), 0o755)
+            elif name.startswith("assets/") and name.count("/") == 1 and base.endswith(".sh"):
                 _put(z, name, os.path.join(mdir, base), 0o644)
-    shutil.copyfile(apk, os.path.join(mdir, "magisk.apk"))
-    # magiskd installs stub.apk when no Magisk app is installed. The real stub downloads the app
-    # from huskydg.github.io, which is gone (404), and closes: give it the full app instead.
+    _patch(os.path.join(mdir, "magisk"), *PATCH[abi])
+    with open(os.path.join(mdir, "setup.sh"), "w") as f:
+        f.write(sh_text)
+    # magiskd installs stub.apk when no Magisk app is installed, and trusts apps signed like it.
+    # The full app instead of the real stub: no download on first open.
     shutil.copyfile(apk, os.path.join(mdir, "stub.apk"))
     # Magisk's own updater rewrites bootanim.rc, so it keeps a pristine copy next to it
     rc = os.path.join(root, "system/etc/init/bootanim.rc")
@@ -150,6 +181,15 @@ def install(inst):
             os.chown(os.path.join(d, n), 0, 2000)
     with open(stamp, "w") as f:
         f.write(build)
+
+
+def _patch(path, offset, was, becomes):
+    with open(path, "r+b") as f:
+        f.seek(offset)
+        if f.read(len(was) // 2) != bytes.fromhex(was):
+            raise CommandError("unexpected Magisk build: {} doesn't match its patch".format(path))
+        f.seek(offset)
+        f.write(bytes.fromhex(becomes))
 
 
 def _put(z, name, dst, mode):

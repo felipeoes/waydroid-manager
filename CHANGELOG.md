@@ -7,10 +7,13 @@ follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions f
 ## [Unreleased]
 
 ### Fixed
-- The Magisk app no longer closes as soon as it opens on rooted instances. Magisk installed a
-  small placeholder app that downloads the real one from a site that no longer exists; it now
-  installs the full app directly. Instances that already have the placeholder need it replaced
-  once: `waydroid-manager app install N /var/lib/waydroid-manager/magisk-delta.apk`.
+- Zygisk works on Android 14 to 17: Zygisk modules said "Module suspended because Zygisk is not
+  enabled" and never loaded into apps. Root now installs official Magisk 31.0 instead of Magisk
+  Delta 26.3, which predates the way 14 and newer start apps. Rooted instances switch over at their
+  next start, keeping Magisk's settings, root grants and modules; the old Magisk Delta app is
+  replaced by the official Magisk app, which no longer closes as soon as it opens. Modules that
+  never ran on 14+ before may now misbehave there: if a device no longer finishes booting, disable
+  the module with `touch /data/adb/modules/ID/disable` from `waydroid-manager shell N`.
 - ARM games such as Raid: Shadow Legends close much less often after running for a little while
   on Android 16 and 17, on hosts with more than 15 GB of RAM. The image sized Android's app heap
   for the host's memory rather than the instance's, and that reservation could crowd out the

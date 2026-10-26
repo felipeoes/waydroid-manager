@@ -281,7 +281,7 @@ class InstanceDialog(_Dialog):
         self.writable_row.set_active(self.info.get("system_writable", "false") == "true")
         g.add(self.writable_row)
         self.root_row = Adw.SwitchRow(title="Root",
-                                      subtitle="Installs Magisk Delta; needs internet the first time")
+                                      subtitle="Installs Magisk; needs internet the first time")
         self.root_row.set_active(self.info.get("root", "false") == "true")
         g.add(self.root_row)
         self.arm_row = _combo("ARM translation", ARM, subtitle="Runs ARM-only apps; needs internet the first time")

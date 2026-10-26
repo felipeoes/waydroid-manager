@@ -266,7 +266,24 @@ Same host. Every item below is in the code now.
   2.0 allocator) crash-loops. 15 runs on a GPU only; Software is refused.
 - GNOME can't import vkms dmabufs, so the proxy hands the same fd over as a `wl_shm` pool.
 
-## Root (Magisk Delta) on 11 to 17
+## Root (Magisk) on 11 to 17
+- **Zygisk on 14+.** Magisk Delta 26.3 only knew the Zygote JNI signatures of 11 to 13, so it hooked
+  `nativeForkSystemServer` alone and never set `ZYGISK_ENABLED` in the app: every Zygisk module was
+  "suspended". Kitsune 27.2 knows 14's, but not 16 QPR2's `nativeForkAndSpecialize` (one more
+  boolean after `isTopApp`). Official 31.0 knows 11 to 17, and its live setup
+  (`scripts/avd_setup.sh`) needs no boot image. What broke it on Waydroid:
+  - magiskd serves Zygisk only when `SO_PEERSEC` is `u:r:zygote:s0`. Without SELinux the peer label
+    is AppArmor's (`android_app//&lxc-waydroid-manager`), so every request got "Accessed denied".
+    The patch in `magisk.py` makes that check `uid == 0` (zygote's children are root until they
+    specialize).
+  - init's umask is 077: `.magisk/device` came out 0700 and apps' `su` aborted (SIGILL) when it
+    couldn't reach the socket.
+  - The app asks for a reflash unless `.magisk/device/preinit` is a block device; a 0:0 node does.
+  - Magisk only runs from `/debug_ramdisk` or `/sbin`, not Delta's random `/dev` directory.
+  - `/proc/PID/environ` never shows `ZYGISK_ENABLED` (it's `setenv` after start); the Magisk app's
+    "Zygisk: Enabled" or a probe module's log is the test.
+  - magiskd installs its own app as x86_64. `pm install` of the same APK picks arm64 (the instances
+    advertise ARM ABIs only), and its busybox then crashes under the translator.
 Tested on each version: Magisk's daemon runs, an ungranted uid is refused, and uid 2000 gets
 `uid=0` from `su` once it's allowed in Magisk's `policies` table.
 - **16: the daemon died during boot.** Its log stopped at "Loading modules". 16's init runs each
