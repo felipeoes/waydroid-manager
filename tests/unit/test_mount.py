@@ -3,6 +3,7 @@ import os
 import tempfile
 import types
 import unittest
+import zipfile
 from unittest import mock
 
 from waydroid_manager.daemon import armtrans, magisk
@@ -74,6 +75,17 @@ class MagiskRemoveTest(unittest.TestCase):
             magisk.remove(types.SimpleNamespace(dir=os.path.join(t, "inst")))
             self.assertTrue(os.path.isdir(os.path.join(host, "init/magisk")))
             self.assertFalse(os.path.exists(own))
+
+    def test_stub_apk_is_the_full_app(self):
+        with tempfile.TemporaryDirectory() as t:
+            apk = os.path.join(t, "magisk.apk")
+            with zipfile.ZipFile(apk, "w") as z:
+                z.writestr("assets/stub.apk", "stub that downloads from a dead URL")
+                z.writestr("assets/util_functions.sh", "")
+            with mock.patch.object(magisk, "ensure_apk", return_value=apk), mock.patch("os.chown"):
+                magisk.install(types.SimpleNamespace(dir=os.path.join(t, "inst")))
+            with open(apk, "rb") as a, open(os.path.join(t, "inst/overlay/system/etc/init/magisk/stub.apk"), "rb") as s:
+                self.assertEqual(a.read(), s.read())
 
 
 if __name__ == "__main__":
