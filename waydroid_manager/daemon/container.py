@@ -59,6 +59,12 @@ APPARMOR_FILE = os.path.join(paths.RUN_DIR, "apparmor-profile")
 INIT_NNP = bytes.fromhex("bf26000000be01000000")
 # The newer images' vendor init, which sets the Dalvik heap for the RAM it sees
 WAYDROID_INIT_EXEC = b"    exec -- /vendor/bin/waydroid-init\n"
+# A zygote that restarts after boot reads hide_emulator_props' values (no native bridge, ARM-only
+# ABI lists), and the instance loses its network too. Only a full boot brings them back; the
+# daemon starts Android again after a reboot.
+ZYGOTE_RESTART_RC = """on property:sys.boot_completed=1 && property:init.svc.zygote=restarting
+    setprop sys.powerctl reboot,zygote
+"""
 # ponytail: only inspected x86_64 builds before upstream bb49e333f3ab; inspect new builds before adding pins.
 # SHA-256 -> call's file offset.
 HWC_NVIDIA_SHA = "2bac9ae23e4536a1e2a5ea36be25e07d3430e64cfe53668c3ffa5124ec715d24"
@@ -601,6 +607,14 @@ def fix_init(inst):
         log.info("%s: init no longer sets no_new_privs", inst.id)
 
 
+def write_zygote_restart_rc(inst):
+    """In the instance's own lower layer: unlike waydroid-init.rc's contents, it works on every image."""
+    d = os.path.join(inst.dir, "overlay/system/etc/init")
+    os.makedirs(d, exist_ok=True)
+    with open(os.path.join(d, "zygote_restart.rc"), "w") as f:
+        f.write(ZYGOTE_RESTART_RC)
+
+
 def fix_heap(inst):
     """waydroid-init sizes the Dalvik heap from sysinfo(), the host's RAM, not the container's limit:
     over 15 GB it picks 640m. ART's large object space reserves that much again in the low 4 GB,
@@ -904,6 +918,7 @@ def mount_rootfs(inst, images_dir, gpu_layers=()):
     translation layer it mounted, or None."""
     rootfs = inst.rootfs
     sync_root(inst)
+    write_zygote_restart_rc(inst)
     umount_tree(rootfs)
     mount_image(os.path.join(images_dir, "system.img"), rootfs)
     sdk = stock.read_prop_file(rootfs + "/system/build.prop", "ro.build.version.sdk")

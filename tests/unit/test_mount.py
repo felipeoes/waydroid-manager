@@ -77,19 +77,23 @@ class MagiskRemoveTest(unittest.TestCase):
             self.assertFalse(os.path.exists(own))
 
     def test_install_patches_selinux_checks_and_ships_full_app(self):
-        patches = magisk.PATCH["x86_64"]
-        lib = bytearray(max(o + len(w) // 2 for o, w, _ in patches) + 4)
-        patched = bytearray(lib)
-        for offset, was, becomes in patches:
-            lib[offset:offset + len(was) // 2] = bytes.fromhex(was)
-            patched[offset:offset + len(becomes) // 2] = bytes.fromhex(becomes)
+        def lib_for(abi):
+            patches = magisk.PATCH[abi]
+            lib = bytearray(max(o + len(w) // 2 for o, w, _ in patches) + 4)
+            patched = bytearray(lib)
+            for offset, was, becomes in patches:
+                lib[offset:offset + len(was) // 2] = bytes.fromhex(was)
+                patched[offset:offset + len(becomes) // 2] = bytes.fromhex(becomes)
+            return lib, patched
+        lib, patched = lib_for("x86_64")
+        lib32, patched32 = lib_for("x86")
         with tempfile.TemporaryDirectory() as t:
             apk = os.path.join(t, "magisk.apk")
             with zipfile.ZipFile(apk, "w") as z:
                 z.writestr("assets/stub.apk", "stub that downloads the app")
                 z.writestr("assets/util_functions.sh", "")
                 z.writestr("lib/x86_64/libmagisk.so", bytes(lib))
-                z.writestr("lib/x86/libmagisk.so", "32-bit")
+                z.writestr("lib/x86/libmagisk.so", bytes(lib32))
             with mock.patch.object(magisk, "ensure_apk", return_value=apk), mock.patch("os.chown"), \
                     mock.patch("platform.machine", return_value="x86_64"):
                 magisk.install(types.SimpleNamespace(dir=os.path.join(t, "inst")))
@@ -98,7 +102,8 @@ class MagiskRemoveTest(unittest.TestCase):
                 self.assertEqual(a.read(), s.read())
             with open(os.path.join(mdir, "magisk"), "rb") as m:
                 self.assertEqual(m.read(), bytes(patched))
-            self.assertTrue(os.path.isfile(os.path.join(mdir, "magisk32")))
+            with open(os.path.join(mdir, "magisk32"), "rb") as m:
+                self.assertEqual(m.read(), bytes(patched32))
             self.assertTrue(os.path.isfile(os.path.join(mdir, "util_functions.sh")))
 
     def test_pinned_build_matches_patch(self):

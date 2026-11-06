@@ -38,7 +38,7 @@ _ABIS = {
     "ro.dalvik.vm.isa.arm64": "x86_64",
 }
 PROPS = {
-    "houdini": dict(_ABIS, **{"ro.dalvik.vm.native.bridge": "libnb_impl.so"}),
+    "houdini": dict(_ABIS, **{"ro.dalvik.vm.native.bridge": "libhoudini.so"}),
     "libndk": dict(_ABIS, **{"ro.dalvik.vm.native.bridge": "libndk_translation.so",
                              "ro.vendor.enable.native.bridge.exec": "1",
                              "ro.vendor.enable.native.bridge.exec64": "1",
@@ -74,7 +74,7 @@ def layer(kind, sdk):
         return None
     url, sha = build
     # ponytail: layers of older pins are never removed; add cleanup if the pins change often
-    d = os.path.join(paths.STATE_DIR, "arm", "{}-2-{}".format(kind, sha[:12]))
+    d = os.path.join(paths.STATE_DIR, "arm", "{}-3-{}".format(kind, sha[:12]))
     try:
         return layers.layer(d, url, sha, lambda z, tmp: _unpack(z, tmp, kind), kind)
     except (CommandError, OSError, zipfile.BadZipFile) as e:
@@ -98,22 +98,9 @@ def _unpack(zpath, tmp, kind):
         os.makedirs(os.path.join(sysdir, "etc/init"), exist_ok=True)
         with open(os.path.join(sysdir, "etc/init/houdini.rc"), "w") as f:
             f.write(HOUDINI_RC)
-        # Apps scan /proc/self/maps and /system/lib* for libhoudini.so: rename its SONAME and file
-        for lib in ("lib", "lib64"):
-            old = os.path.join(sysdir, lib, "libhoudini.so")
-            if os.path.isfile(old):
-                os.rename(old, os.path.join(sysdir, lib, "libnb_impl.so"))
-            layers.whiteout(old)
-        for root, _, files in os.walk(sysdir):
-            for n in files:
-                p = os.path.join(root, n)
-                if not os.path.isfile(p):
-                    continue
-                with open(p, "rb") as f:
-                    data = f.read()
-                if b"libhoudini.so\0" in data:
-                    with open(p, "wb") as f:
-                        f.write(data.replace(b"libhoudini.so\0", b"libnb_impl.so\0"))
+        # Keep Houdini's file name, even though apps can see it in /proc/self/maps: pairip reads
+        # that file and takes its Houdini path only for exactly "libhoudini.so". Under any other
+        # name it decrypts garbage and every game it protects crashes at launch.
     elif kind == "libndk":
         # Hide any Houdini libraries bundled in the base system.img (Android 14) or stock overlay
         for rel in HOUDINI_WHITEOUTS:
