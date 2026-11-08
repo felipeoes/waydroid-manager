@@ -22,6 +22,15 @@ from .window import ACTIVE  # noqa: E402
 APP_ID = "io.github.waydroidmanager.Settings"     # client.SETTINGS_NAME
 
 
+def present_alone(dlg):
+    """Show dlg as a window of its own. Before libadwaita 1.7 such a dialog never emits closed (only
+    its sheets did): emit it when the window goes, or it'd stay in SettingsApp.windows and the next
+    Settings click would present its destroyed window, showing nothing."""
+    dlg.present(None)
+    if (Adw.get_major_version(), Adw.get_minor_version()) < (1, 7):
+        dlg.get_root().connect("destroy", lambda _w: dlg.emit("closed"))
+
+
 class SettingsApp(Adw.Application):
     def __init__(self):
         super().__init__(application_id=APP_ID, flags=Gio.ApplicationFlags.HANDLES_COMMAND_LINE)
@@ -63,7 +72,7 @@ class SettingsApp(Adw.Application):
         dlg = InstanceDialog("edit", lambda _iid, values: self.save(info, values), info=info)
         self.windows[iid] = dlg
         dlg.connect("closed", lambda *_: (self.windows.pop(iid, None), self.quit_if_idle()))
-        dlg.present(None)          # no parent: shown as its own window
+        present_alone(dlg)
 
     def quit_if_idle(self):
         if self.windows or self.busy:
@@ -85,7 +94,7 @@ class SettingsApp(Adw.Application):
         dlg = Adw.AlertDialog(heading=heading, body=lines[-1] if lines else "")
         dlg.add_response("close", "Close")
         dlg.connect("response", lambda *_: (then and then(), self.done()))
-        dlg.present(None)
+        present_alone(dlg)
 
     def save(self, before, values):
         self.busy += 1
@@ -95,7 +104,7 @@ class SettingsApp(Adw.Application):
     def saved(self, iid, needs_restart):
         def got(info):          # its state now, and its new name
             if info["state"] in ACTIVE:
-                restart_dialog(info["name"], lambda: (self.restart(iid), self.done()), self.done).present(None)
+                present_alone(restart_dialog(info["name"], lambda: (self.restart(iid), self.done()), self.done))
             else:
                 self.done()
         if needs_restart:

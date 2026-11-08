@@ -50,6 +50,9 @@ follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions f
   Arch (#102): the device network's firewall rules went to `iptables-legacy` whenever it was installed,
   while those tools use iptables' nftables backend, whose drop then won. The rules now go where
   the host's `iptables` puts them, and the old rules in the legacy tables are removed.
+- The window toolbar's Settings button opened nothing after the settings window had been closed
+  once, on desktops with libadwaita older than 1.7 (Ubuntu 24.04, and X11 desktops such as
+  ThinLinc). Those versions never report a settings window that closed by itself.
 - Zygisk works on Android 14 to 17: Zygisk modules said "Module suspended because Zygisk is not
   enabled" and never loaded into apps. Root now installs official Magisk 31.0 instead of Magisk
   Delta 26.3, which predates the way 14 and newer start apps. Rooted instances switch over at their
