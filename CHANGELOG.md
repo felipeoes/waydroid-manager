@@ -7,6 +7,8 @@ follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions f
 ## [Unreleased]
 
 ### Fixed
+- On X11 desktops, a landscape app (e.g. a game) left the window black and restarted Android: the
+  window now turns with Android, taking the landscape shape and back.
 - Android notifications without a title, text or button label, which some apps post, never
   reached the desktop: the device's window process dropped them with an error.
 

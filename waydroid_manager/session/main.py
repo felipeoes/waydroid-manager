@@ -159,6 +159,19 @@ class Session:
             time.sleep(0.1)
         return None
 
+    def turn_window(self, rotation):
+        """Android turned its display (nested): Weston's X11 window, which the proxy fills, takes
+        the new shape, its picture area's sides swapped. Not when it has that shape already, is
+        fullscreen, or sizes Android (0x0: a new size there would resize Android, not turn it)."""
+        w, h = int(self.inst.get("width")), int(self.inst.get("height"))
+        size = getattr(self, "xwin", None) and self.x11.size(self.xwin)
+        if not (w and h and size) or self.x11.is_fullscreen(self.xwin):
+            return
+        pw, ph = size[0] - TOOLBAR_W, size[1]
+        if (pw > ph) == ((w > h) != bool(rotation & 1)):
+            return
+        self.x11.resize(self.xwin, *nested_size(ph + TOOLBAR_W, pw))
+
     def report_fullscreen(self, was, deadline):
         """Once the X11 window's fullscreen changed (or not, by the deadline), tell the proxy (it then
         drops or brings back its toolbar), on the pipe that carries Android's rotation (WatchRotation).
@@ -265,6 +278,8 @@ class Session:
                 self.confirm_close()
             else:
                 self._async("ReportClose", self.iid)
+        elif ev.startswith("rotation "):
+            self.turn_window(int(ev.split()[1]))
         elif ev.startswith("zoom "):
             # remember the window size the user picked (debounced)
             self.pending_zoom = ev.split()[1]
