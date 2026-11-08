@@ -545,6 +545,13 @@ class EmulatorStealthTest(unittest.TestCase):
         for token in ("intel", "amd", "hypervisor"):
             self.assertNotIn(token, text.lower())
 
+    def test_houdini_cpuinfo_templates_fit_its_line_buffer(self):
+        # Houdini copies each template line into a 128-byte stack buffer
+        for name, features in container.HOUDINI_FEATURES.items():
+            text = container.cpuinfo_text(8, features)
+            self.assertLess(max(len(line) for line in text.splitlines()), 128, name)
+            self.assertIn("Features\t: " + features + "\n", text)
+
     def test_hide_emulator_props_updates_in_place_and_replaces_dalvik_prop_inode(self):
         with tempfile.TemporaryDirectory() as d:
             props_dir = os.path.join(d, "dev", "__properties__")
