@@ -29,10 +29,10 @@ from gi.repository import GLib
 from .. import __version__, catalog, gpu, paths, stock, stockctl
 from ..instance import (CREATE_ONLY, Instance, SETTINGS, list_ids, validate_adb_key, validate_id, validate_prop,
                         validate_setting)
-from ..netconfig import host_names
+from ..netconfig import describe_blockers, host_names
 from ..registry import allocate_index
 from . import container, images, nvidia, storage
-from .network import Network
+from .network import Network, firewall_consent, set_firewall_consent
 from .util import active_ids, adb_disconnect, container_pid, log, lxc_state, open_in_container
 
 ERR = "io.github.waydroidmanager.Error"
@@ -685,7 +685,25 @@ class Manager(dbus.service.Object):
         warn = stock.check_version() or ""
         return {"version": __version__, "stock_version": stock.version(), "warnings": warn,
                 "subnet": str(self.net.cfg.network), "bridge": self.net.cfg.bridge,
-                "image": images.current_id(), "stock_image": images.stock_image_id()}
+                "image": images.current_id(), "stock_image": images.stock_image_id(),
+                "firewall": describe_blockers(self.net.blockers), "firewall_consent": firewall_consent()}
+
+    @dbus.service.method(paths.DBUS_IFACE, in_signature="s", out_signature="",
+                         sender_keyword="sender", async_callbacks=("reply", "error"))
+    def SetHostFirewall(self, answer, sender, reply, error):
+        """Root only: allow (or deny) adding rules for the bridge to the host's own firewall, where it
+        drops devices' traffic (netconfig.firewall_blockers)."""
+        if self.caller(sender) != 0:
+            return error(Error("only root can change the host's firewall", "AccessDenied"))
+        if answer not in ("allow", "deny"):
+            return error(Error("expected allow or deny", "InvalidArgs"))
+
+        def apply():
+            set_firewall_consent(str(answer))
+            with self.net.lock:
+                if self.net.is_up():
+                    self.net.sync_firewall()
+        self.run_async("__network__", apply, reply, error, lock=False)
 
     @dbus.service.method(paths.DBUS_IFACE, in_signature="", out_signature="aa{ss}", sender_keyword="sender")
     def List(self, sender):

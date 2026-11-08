@@ -16,6 +16,8 @@ RUN_DIR = "/run/waydroid-manager"
 NET_ENV_FILE = RUN_DIR + "/net.env"
 DHCP_HOSTS_FILE = RUN_DIR + "/dhcp-hosts"
 CONFIG_FILE = "/etc/waydroid-manager/daemon.conf"
+# "allow" or "deny" opening the host's own firewall for the bridge (none yet: ask)
+FIREWALL_CONSENT_FILE = STATE_DIR + "/host-firewall"
 
 STOCK_WORK = "/var/lib/waydroid"
 STOCK_CFG = STOCK_WORK + "/waydroid.cfg"

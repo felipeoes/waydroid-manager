@@ -197,6 +197,7 @@ entry it first loaded.
 | `/usr/lib/udev/rules.d/70-waydroid-manager.rules` | keeps GNOME off our vkms device |
 | `/usr/lib/systemd/system/waydroid-manager.service` | the daemon's unit |
 | `/etc/waydroid-manager/daemon.conf` | bridge name, subnet, instance isolation, nftables |
+| `/var/lib/waydroid-manager/host-firewall` | `allow` or `deny`: the admin's answer to opening the host's own firewall for devices |
 | `/var/lib/waydroid-manager/instances/N/` | `instance.cfg`, `data/` (Android `/data`), overlays, generated props, `container.log` |
 | `/var/lib/waydroid-manager/lxc/wdm-N/` | generated LXC config |
 | `/var/lib/waydroid-manager/images/` | image store; `current` is the copy of stock's set |
@@ -215,7 +216,8 @@ are strings (`"1"` … `"240"`). Callers only see and control their own instance
 
 | Method | Signature | Notes |
 |---|---|---|
-| `GetInfo` | `→ a{ss}` | versions, subnet, bridge, image ids, warnings |
+| `GetInfo` | `→ a{ss}` | versions, subnet, bridge, image ids, warnings; `firewall`: the host's nftables tables that drop devices' traffic (as of the last network start), `firewall_consent`: `allow`, `deny` or `ask` |
+| `SetHostFirewall` | `s` | root only: `allow` or `deny` adding rules for the bridge to those tables while devices run (kept in `/var/lib/waydroid-manager/host-firewall`) |
 | `List` | `→ aa{ss}` | the caller's instances with state, IP, memory use |
 | `Get` | `s → a{ss}` | one instance |
 | `Create` | `a{ss} → s` | settings (`android` among them), `prop:<key>`, `clone_from` (`default` or an id), `reset_ids`; returns the new id |

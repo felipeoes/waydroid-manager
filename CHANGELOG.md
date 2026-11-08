@@ -7,6 +7,9 @@ follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions f
 ## [Unreleased]
 
 ### Added
+- When the host's own nftables firewall drops devices' traffic (Arch's default
+  `/etc/nftables.conf` does), `waydroid-manager doctor` names it, and the device's window offers to
+  add rules that let devices through while they run (`sudo waydroid-manager firewall allow`).
 - Devices run on X11 desktops, remote ones such as ThinLinc and VNC included: with no Wayland
   compositor, each device opens in a Weston window of its own (install `weston`, and `xclip` for
   the clipboard). `waydroid-manager doctor` checks for them. Devices render on an NVIDIA card there
@@ -38,6 +41,10 @@ follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions f
   the last of the session's Android services came back when Android's service manager started.
 - Creating an Android 17 device failed with "HTTP Error 404": its image moved to the `a17-qpr0`
   update channel.
+- Devices had no internet on hosts where Docker or ufw drops forwarded traffic by default, such as
+  Arch (#102): the device network's firewall rules went to `iptables-legacy` whenever it was installed,
+  while those tools use iptables' nftables backend, whose drop then won. The rules now go where
+  the host's `iptables` puts them, and the old rules in the legacy tables are removed.
 - Zygisk works on Android 14 to 17: Zygisk modules said "Module suspended because Zygisk is not
   enabled" and never loaded into apps. Root now installs official Magisk 31.0 instead of Magisk
   Delta 26.3, which predates the way 14 and newer start apps. Rooted instances switch over at their
