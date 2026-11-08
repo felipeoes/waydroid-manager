@@ -66,7 +66,8 @@ def cmd_list(o):
     rows = [("#", "NAME", "ANDROID", "STATE", "IP", "SCREEN", "DEVICE", "LIMITS")]
     from . import devices
     for i in items:
-        screen = "{}x{}@{}".format(i["width"], i["height"], i["dpi"])
+        size = "display" if "0" in (i["width"], i["height"]) else "{}x{}".format(i["width"], i["height"])
+        screen = "{}@{}".format(size, i["dpi"])
         lim = "{} cpu, {}".format(i["cpus"], i["memory"])
         pin = i.get("pinned") or i["cpuset"]
         if pin:
@@ -575,8 +576,8 @@ def add_settings(p, create=True):
     if create:
         p.add_argument("--android", choices=tuple(catalog.VERSIONS),
                        help="Android version (default {}; a new version is downloaded first)".format(catalog.DEFAULT))
-    p.add_argument("--width", type=int, help="window width in px")
-    p.add_argument("--height", type=int, help="window height in px")
+    p.add_argument("--width", type=int, help="Android's screen width in px (0 with --height 0: match the display)")
+    p.add_argument("--height", type=int, help="Android's screen height in px")
     p.add_argument("--dpi", type=int, help="screen density")
     p.add_argument("--cpus", help="CPU limit in cores (default 2)")
     p.add_argument("--cpuset", help="pin to host CPUs (e.g. 0-3; all = not pinned)")

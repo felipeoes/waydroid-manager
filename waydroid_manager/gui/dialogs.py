@@ -52,6 +52,8 @@ def resolution_presets(kind):
 
 def classify(width, height, dpi):
     """Which form factor/preset index an existing size belongs to."""
+    if not (width and height):
+        return "display", 0
     for kind in ("tablet", "phone"):
         for i, (_, w, h, d) in enumerate(resolution_presets(kind)):
             if (w, h, d) == (width, height, dpi):
@@ -214,11 +216,13 @@ class InstanceDialog(_Dialog):
         ch = int(self.info.get("height") or setting_default("height"))
         cdpi = int(self.info.get("dpi") or setting_default("dpi"))
         kind, idx = classify(cw, ch, cdpi)
-        type_row = Adw.ActionRow(title="Device type")
-        toggles, self._kind = _toggles((("phone", "Phone"), ("tablet", "Tablet"), ("custom", "Custom")), kind,
-                                       self._kind_changed, self._on)
-        type_row.add_suffix(toggles)
-        g.add(type_row)
+        if kind == "display":       # Custom starts from the default size, not 0
+            cw, ch = int(setting_default("width")), int(setting_default("height"))
+        self.type_row = Adw.ActionRow(title="Device type")
+        toggles, self._kind = _toggles((("phone", "Phone"), ("tablet", "Tablet"), ("custom", "Custom"),
+                                        ("display", "Match display")), kind, self._kind_changed, self._on)
+        self.type_row.add_suffix(toggles)
+        g.add(self.type_row)
         self.res_row = _wrapping(Adw.ComboRow(title="Resolution"))
         g.add(self.res_row)
         self.width_row = _spin("Width", 240, 7680, 2, cw)
@@ -333,11 +337,14 @@ class InstanceDialog(_Dialog):
 
     def _kind_changed(self, select=None):
         kind = self._kind()
-        custom = kind == "custom"
-        self.res_row.set_visible(not custom)
-        for r in (self.width_row, self.height_row, self.dpi_row):
+        custom, display = kind == "custom", kind == "display"
+        self.type_row.set_subtitle("Android takes your monitor's resolution, also when it changes"
+                                   if display else "")
+        self.res_row.set_visible(not (custom or display))
+        for r in (self.width_row, self.height_row):
             r.set_visible(custom)
-        if not custom:
+        self.dpi_row.set_visible(custom or display)
+        if not (custom or display):
             self.presets = resolution_presets(kind)
             self.res_row.set_model(Gtk.StringList.new([p[0] for p in self.presets]))
             if select is None:
@@ -370,6 +377,8 @@ class InstanceDialog(_Dialog):
         if self._kind() == "custom":
             w, h, dpi = (int(self.width_row.get_value()), int(self.height_row.get_value()),
                          int(self.dpi_row.get_value()))
+        elif self._kind() == "display":
+            w, h, dpi = 0, 0, int(self.dpi_row.get_value())
         else:
             _, w, h, dpi = self.presets[self.res_row.get_selected()]
         v["width"], v["height"], v["dpi"] = str(w), str(h), str(dpi)

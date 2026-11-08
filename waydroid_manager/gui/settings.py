@@ -14,6 +14,7 @@ gi.require_version("Adw", "1")
 import dbus.mainloop.glib  # noqa: E402
 from gi.repository import Adw, Gio, GLib  # noqa: E402
 
+from .adwcompat import present_alone  # noqa: E402
 from .backend import Backend  # noqa: E402
 from .confirm import APP_ID as MANAGER_ID  # noqa: E402
 from .dialogs import InstanceDialog, restart_dialog, save_settings  # noqa: E402
@@ -63,7 +64,7 @@ class SettingsApp(Adw.Application):
         dlg = InstanceDialog("edit", lambda _iid, values: self.save(info, values), info=info)
         self.windows[iid] = dlg
         dlg.connect("closed", lambda *_: (self.windows.pop(iid, None), self.quit_if_idle()))
-        dlg.present(None)          # no parent: shown as its own window
+        present_alone(dlg)
 
     def quit_if_idle(self):
         if self.windows or self.busy:
@@ -85,7 +86,7 @@ class SettingsApp(Adw.Application):
         dlg = Adw.AlertDialog(heading=heading, body=lines[-1] if lines else "")
         dlg.add_response("close", "Close")
         dlg.connect("response", lambda *_: (then and then(), self.done()))
-        dlg.present(None)
+        present_alone(dlg)
 
     def save(self, before, values):
         self.busy += 1
@@ -95,7 +96,7 @@ class SettingsApp(Adw.Application):
     def saved(self, iid, needs_restart):
         def got(info):          # its state now, and its new name
             if info["state"] in ACTIVE:
-                restart_dialog(info["name"], lambda: (self.restart(iid), self.done()), self.done).present(None)
+                present_alone(restart_dialog(info["name"], lambda: (self.restart(iid), self.done()), self.done))
             else:
                 self.done()
         if needs_restart:

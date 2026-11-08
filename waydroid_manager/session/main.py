@@ -45,12 +45,16 @@ def wayland_socket():
 
 def nested_size(width, height):
     """Size of the Weston window a device opens in on X11: the device's, shrunk to fit 90% of
-    the X screen (the proxy fits Android into whatever size it gets)."""
+    the X screen (the proxy fits Android into whatever size it gets). A device matching the
+    display (0) gets that 90%, which Android then takes as its size.
+    shortcut: on X11 it doesn't follow later screen changes (Weston's output is this window)."""
     try:
         out = subprocess.run(["xdpyinfo"], capture_output=True, text=True, timeout=3).stdout
         sw, sh = (int(v) for v in re.search(r"dimensions:\s+(\d+)x(\d+)", out).groups())
     except (OSError, subprocess.TimeoutExpired, AttributeError):
-        return width, height
+        return (width, height) if width and height else (1280, 720)
+    if not (width and height):
+        return int(0.9 * sw), int(0.9 * sh)
     f = min(1.0, 0.9 * sw / width, 0.9 * sh / height)
     return int(width * f), int(height * f)
 
@@ -118,7 +122,8 @@ class Session:
                 os.unlink(stale)
         os.makedirs(paths.user_cache_dir(), exist_ok=True)
         log_path = os.path.join(paths.user_cache_dir(), "weston-{}.log".format(self.iid))
-        size = nested_size(int(self.inst.get("width")) + TOOLBAR_W, int(self.inst.get("height")))
+        w, h = int(self.inst.get("width")), int(self.inst.get("height"))
+        size = nested_size(w + TOOLBAR_W, h) if w and h else nested_size(0, 0)
         try:
             self.x11 = x11.Display()
             known = self.x11.weston_windows()

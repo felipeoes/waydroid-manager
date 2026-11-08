@@ -187,7 +187,7 @@ entry it first loaded.
 | `waydroid_manager/daemon/` | root daemon: `main.py` (D-Bus API), `container.py`, `storage.py` (clone, identity reset, APK, screenshot), `images.py`, `layers.py`, `armtrans.py`, `gapps.py`, `webview.py`, `nvidia.py`, `magisk.py`, `network.py`, `binder.py`, `util.py` (mounts, safe opens), `hwhelper.py` |
 | `waydroid_manager/session/` | user session, Wayland proxy, frame drawing, desktop launchers; `gbm.py` reads another GPU's buffers |
 | `waydroid_manager/session/protocols/` | vendored Wayland protocol XML (MIT, see its README) |
-| `waydroid_manager/gui/` | GTK4/libadwaita manager app; `confirm.py` is the close confirmation, `settings.py` the instance windows' Settings (one background process, reached over D-Bus) |
+| `waydroid_manager/gui/` | GTK4/libadwaita manager app; `confirm.py` is the close confirmation, `settings.py` the instance windows' Settings (one background process, reached over D-Bus), `adwcompat.py` dialogs shown as windows of their own on libadwaita 1.5 |
 | `data/` | network script, LXC hooks, D-Bus policy and activation, systemd unit, OpenRC and runit services, desktop file |
 | `scripts/` | `install.sh` (the installed file layout), `uninstall.sh`, `spike/` (original feasibility scripts) |
 | `packaging/deb/` | `.deb` build script, control template and maintainer scripts |
@@ -502,7 +502,11 @@ are easy to break:
   from the HWC.
 - **Never forward a real configure size.** Every `xdg_toplevel.configure` with a non-zero size
   makes the HWC hotplug Android's display. The proxy always forwards 0×0 and does the window
-  geometry itself.
+  geometry itself. One exception, on purpose: a device sized 0×0 (Match display) gets one sized
+  configure of its own when its window's monitor changes mode (`Session.follow_display`), so
+  Android resizes with the monitor. It waits until the new mode has held for a second, since
+  hotplugs in quick succession crash Android 13's SurfaceFlinger. After it, the HWC no longer
+  follows `wl_output` modes.
 - **Don't forward `xdg_toplevel.close`.** The HWC then wipes all Android recent tasks. The frame's
   close button reports `close` to the session instead. With `close_action=stop`, the session
   asks for confirmation (`gui/confirm.py`) and then calls `ReportClose`.

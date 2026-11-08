@@ -23,6 +23,10 @@ follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions f
   sessions, #0's pause of stock Waydroid and `waydroid-manager log` work there too, and the daemon
   logs to `/var/log/waydroid-manager.log`. It needs cgroup v2, which `waydroid-manager doctor`
   checks. The `.deb` no longer depends on systemd.
+- A device can match the display (#84): Settings › Display › Device type › Match display, or
+  `waydroid-manager config N set width 0 height 0`. Android takes the resolution of the monitor its
+  window is on, and resizes with it while running, e.g. when a Moonlight client sets the host's
+  resolution. Fullscreen is then pixel for pixel. On X11 it takes 90% of the screen at start.
 
 ### Fixed
 - Games protected by AppGuard, such as Let's Go Legends, no longer crash at launch on Houdini.
@@ -30,6 +34,8 @@ follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions f
   read, and it aborted when an app checked the CPU's features. Houdini now gets its own feature
   lists, the ones it can run, so ARM apps no longer pick code paths it can't run; `/proc/cpuinfo`
   is unchanged.
+- A device set to width and height 0 (match the display) became 240×240 when its settings were
+  saved in the app, and didn't start on X11 desktops.
 - Games protected by Google's pairip, such as Frog's Kitchen, Mergedom and Tower War, no longer
   crash at launch with a black screen on Houdini. Their protection only accepts Houdini under its
   real file name, so Houdini is no longer renamed `libnb_impl`; `libhoudini.so` shows in an app's
@@ -50,6 +56,10 @@ follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions f
   Arch (#102): the device network's firewall rules went to `iptables-legacy` whenever it was installed,
   while those tools use iptables' nftables backend, whose drop then won. The rules now go where
   the host's `iptables` puts them, and the old rules in the legacy tables are removed.
+- The window toolbar's Settings button opened nothing after the settings window had been closed
+  once, on desktops with libadwaita older than 1.7 (Ubuntu 24.04, and X11 desktops such as
+  ThinLinc). Those versions never report a settings window that closed by itself. Closing the
+  stop confirmation with its window's close button left its device waiting there for good.
 - Zygisk works on Android 14 to 17: Zygisk modules said "Module suspended because Zygisk is not
   enabled" and never loaded into apps. Root now installs official Magisk 31.0 instead of Magisk
   Delta 26.3, which predates the way 14 and newer start apps. Rooted instances switch over at their
