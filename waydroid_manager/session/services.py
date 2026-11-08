@@ -197,10 +197,12 @@ class Notifications:
             w, h, stride, alpha, data = image
             hints["image-data"] = dbus.Struct([w, h, stride, alpha, 8, 4 if alpha else 3,
                                                dbus.Array(data, signature="y")])
-        flat = [s for a in actions for s in a]
-        label = "{} ({})".format(app_name or package_name, self.inst_name)
+        # Android sends null for a missing title, text or action label; a D-Bus string can't be
+        flat = [s or "" for a in actions for s in a]
+        label = "{} ({})".format(app_name or package_name or "Android", self.inst_name)
         try:
-            return int(self.proxy.Notify(label, replaces_id, "", summary, body, flat, hints, expire_timeout))
+            return int(self.proxy.Notify(label, replaces_id, "", summary or "", body or "", flat, hints,
+                                         expire_timeout))
         except dbus.DBusException as e:
             log.warning("failed to post notification: %s", e)
             return self.I.ID_NONE

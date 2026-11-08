@@ -6,6 +6,10 @@ follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions f
 
 ## [Unreleased]
 
+### Fixed
+- Android notifications without a title, text or button label, which some apps post, never
+  reached the desktop: the device's window process dropped them with an error.
+
 ## [1.5.0] - 2026-11-08
 
 ### Added
