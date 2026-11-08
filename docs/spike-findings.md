@@ -266,7 +266,29 @@ Same host. Every item below is in the code now.
   2.0 allocator) crash-loops. 15 runs on a GPU only; Software is refused.
 - GNOME can't import vkms dmabufs, so the proxy hands the same fd over as a `wl_shm` pool.
 
-## Root (Magisk Delta) on 11 to 17
+## Root (Magisk) on 11 to 17
+- **Zygisk on 14+.** Magisk Delta 26.3 only knew the Zygote JNI signatures of 11 to 13, so it hooked
+  `nativeForkSystemServer` alone and never set `ZYGISK_ENABLED` in the app: every Zygisk module was
+  "suspended". Kitsune 27.2 knows 14's, but not 16 QPR2's `nativeForkAndSpecialize` (one more
+  boolean after `isTopApp`). Official 31.0 knows 11 to 17, and its live setup
+  (`scripts/avd_setup.sh`) needs no boot image. What broke it on Waydroid:
+  - magiskd serves Zygisk only when `SO_PEERSEC` is `u:r:zygote:s0`. Without SELinux the peer label
+    is AppArmor's (`android_app//&lxc-waydroid-manager`), so every request got "Accessed denied".
+    The patch in `magisk.py` makes that check `uid == 0` (zygote's children are root until they
+    specialize).
+  - Zygisk companions: zygiskd runs a module's companion only after `fd_get_attr` on the
+    connection, which reads the socket's `security.selinux` and accepts only ENODATA. Without
+    SELinux that read fails otherwise, so zygiskd dropped the connection without closing it, and
+    each app fork of a companion module (CroakerMOD) waited forever: no `sys.boot_completed`, and
+    zygiskd64 piling up sockets. Patched to treat any error as no label.
+  - init's umask is 077: `.magisk/device` came out 0700 and apps' `su` aborted (SIGILL) when it
+    couldn't reach the socket.
+  - The app asks for a reflash unless `.magisk/device/preinit` is a block device; a 0:0 node does.
+  - Magisk only runs from `/debug_ramdisk` or `/sbin`, not Delta's random `/dev` directory.
+  - `/proc/PID/environ` never shows `ZYGISK_ENABLED` (it's `setenv` after start); the Magisk app's
+    "Zygisk: Enabled" or a probe module's log is the test.
+  - magiskd installs its own app as x86_64. `pm install` of the same APK picks arm64 (the instances
+    advertise ARM ABIs only), and its busybox then crashes under the translator.
 Tested on each version: Magisk's daemon runs, an ungranted uid is refused, and uid 2000 gets
 `uid=0` from `su` once it's allowed in Magisk's `policies` table.
 - **16: the daemon died during boot.** Its log stopped at "Loading modules". 16's init runs each
@@ -372,6 +394,43 @@ in syscall nr=0x175`, then "Render process ...'s crash wasn't handled by all ass
   made before the layer stay 32-bit. `ro.oem.build.fingerprint` is part of that digest, and
   there's no oem partition: setting it (to the build's own fingerprint, as the other partitions
   have) re-derives the ABI once (x86_64, with x86 secondary).
+
+## Unity ad initialization and video on Android 16 (2026-10-21)
+Airship Knights 1.1.6 from Google Play reproduced both failures on the 2026-07-17 image,
+with root disabled and the system read-only. Reinstalling the app did not fix them.
+
+- **Ad initialization deadlock:** the main thread waits in Unity's Google Ads initialization
+  callback while UnityMain calls IronSource, then `WebSettings.getDefaultUserAgent`, which waits
+  for Chromium startup on the main thread. Chromium 150 already has a nonblocking path gated by
+  `WebViewFasterGetDefaultUserAgent`, disabled by default. Its
+  [SharedStatics.java](https://github.com/chromium/chromium/blob/150.0.7871.63/android_webview/glue/java/src/com/android/webview/chromium/SharedStatics.java)
+  schedules startup and returns the UA without that wait.
+- The WebView layer enables that existing path in `StaticsAdapter.getDefaultUserAgent`.
+  The whole DEX must match the recorded SHA-256 before changing one instruction; unknown builds
+  keep their bytecode and log a warning. DEX checksums and the APK signature are rebuilt.
+  This is a pinned workaround for 150.0.7871.63, to revalidate or remove on WebView upgrades.
+  Per-app cached flags are unsuitable: Chromium consumes them on startup and rewrites them.
+  `webview-2` preserves old mounted layers, and the OEM fingerprint includes the layer revision
+  so PackageManager rescans the replacement without clearing app data.
+- **Video decoder failure:** the vendor forces `debug.ffmpeg-codec2.pixel_format=RGBX_8888`.
+  Unity asks for planar YUV ByteBuffers, producing `unrecognized color format ... for RGB layout`,
+  then Codec2 errors. Setting `YUV_420` restores the decoder's normal YUV negotiation. A 90-frame
+  H.264 sample fails with RGBX and decodes all frames with YUV, including after instance restart.
+  Lowering FFmpeg's priority does not help: this image's `Codec2InfoBuilder` omits Android's
+  software video decoders when gralloc is `minigbm_gbm_mesa`.
+- The original game reaches its title and opening tutorial with both fixes. No APK or game
+  data patch is needed. Long gameplay and rewarded ads require further testing.
+
+Reproduce independently of the game with an unlocked instance, JDK, SDK platform 35 and
+build-tools 36.0.0:
+
+```sh
+tests/integration/webview-video.sh waydroid-nonroot-dev:5555 "$HOME/Android/Sdk" /path/to/short-h264.mp4
+```
+
+The probe makes a background UA request while its UI thread waits, then decodes the supplied
+video into planar YUV ByteBuffers. It installs and removes only its own test app; no game assets
+are bundled. Omit the sample to test WebView alone.
 
 ## Measuring
 - `dumpsys SurfaceFlinger --latency` is empty on 16 and newer. `dumpsys SurfaceFlinger --timestats

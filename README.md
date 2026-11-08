@@ -9,7 +9,8 @@ in a container, not an emulator.
   proprietary driver
 - **As many devices as your PC can handle**, side by side, each with its own apps, accounts,
   settings, window and network address
-- **Per device:** phone or tablet resolution, CPU and memory, the device model apps see
+- **Per device:** phone or tablet resolution, or your monitor's (Match display: Android
+  resizes with it, e.g. when a Moonlight client sets it), CPU and memory, the device model apps see
   (Samsung, Pixel, Xiaomi, …), ARM translation for ARM-only apps, and root
 - **Clone** a device, your normal Waydroid included, to copy its apps and logins
 - Your normal Waydroid keeps working, and shows up as device **#0**
@@ -32,8 +33,15 @@ Android 15 needs a GPU: it can't render in software.
 
 ## Requirements
 
-- An x86_64 PC running Linux with a Wayland desktop (GNOME, KDE Plasma, …)
+- An x86_64 PC running Linux with a Wayland desktop (GNOME, KDE Plasma, …), or an X11 one with
+  [Weston](https://wayland.pages.freedesktop.org/weston/) installed (`sudo apt install weston xclip`),
+  remote desktops such as ThinLinc or VNC included. On X11 each device opens in a Weston window of
+  its own, with your desktop's title bar and the usual toolbar.
+  Android renders on an NVIDIA card there too, monitor or not.
 - **Waydroid installed and set up**: you can already run `waydroid show-full-ui`
+- **systemd, OpenRC or runit** (any other init starts the daemon on its first use), with
+  elogind or another provider of `/run/user/<uid>`, and the unified cgroup hierarchy (cgroup v2;
+  on OpenRC, `rc_cgroup_mode="unified"` in `/etc/rc.conf`)
 - **On NVIDIA:** NVIDIA's proprietary driver and **Linux 6.19 or newer** (Ubuntu 26.04's kernel;
   Ubuntu 24.04's and Debian 13's are older). Rendering 14 or 17 in software needs it too.
   Devices on other GPUs work on any of them.
@@ -82,9 +90,9 @@ Then open **Waydroid Manager** from your app grid.
   Inside Android, each device's own hostname resolves locally, without waiting on DNS.
 - Mouse clicks reach apps as touches, as on a phone, so touch-only games respond to them. To
   get plain mouse input in a device: `waydroid-manager config N prop persist.waydroid.fake_touch none`.
-- **Root** (Magisk Delta): turn it on in Settings, then install the Magisk app with
-  `waydroid-manager app install N /var/lib/waydroid-manager/magisk-delta.apk`. Root in Android is
-  close to root on your PC: only use it on machines you trust.
+- **Root** (Magisk, with Zygisk): turn it on in Settings; the Magisk app appears once Android has
+  booted.
+  Root in Android is close to root on your PC: only use it on machines you trust.
 - **A clone is a new device to Google:** register it once at
   <https://www.google.com/android/uncertified> with the number `waydroid-manager gsf-id N` prints.
 - **#0 and plain `waydroid` share your Waydroid's data**, so only one of them runs at a time.
@@ -105,13 +113,30 @@ Each device's **Graphics** setting decides where Android draws:
 
 | Choice | Where Android draws |
 |---|---|
-| **Automatic** (default) | on your NVIDIA card when it shows your desktop; otherwise on the GPU your normal Waydroid uses; in software when neither can |
+| **Automatic** (default) | on your NVIDIA card when it shows your desktop, or when no card does (a server's remote desktop); otherwise on the GPU your normal Waydroid uses; in software when neither can |
 | **Software** | on the CPU: slower, above all in 3D games, but it works on any PC |
 | **GPU 0, GPU 1, …** | on that card, e.g. your integrated GPU while the desktop runs on NVIDIA |
 
 On NVIDIA, RAID: Shadow Legends runs at 60 fps, against 9 in software. The first start there
 downloads [waydroid-nvidia](https://github.com/quinovax/waydroid-nvidia)'s renderer (about 25 MB).
 It's young (0.1): a game may hit a driver error.
+
+## No internet in a device
+
+Devices share a network (`wdm0`) whose firewall rules go where your other tools put theirs
+(Docker, ufw, libvirt). Some firewalls also drop all traffic they don't allow themselves, and no
+rule elsewhere can override that: Arch's default `/etc/nftables.conf` does. Once a device has
+started, `waydroid-manager doctor` names the firewall table that blocks it, and the device's window
+offers to let devices through:
+
+```sh
+sudo waydroid-manager firewall allow   # add rules for wdm0 to that table while devices run
+sudo waydroid-manager firewall deny    # leave the firewall alone, and stop asking
+```
+
+The rules are never written to your firewall's configuration. To allow devices there yourself,
+add `iifname "wdm0" udp dport { 53, 67 } accept` and `iifname "wdm0" tcp dport { 53, 67 } accept`
+to its input chain, and `iifname "wdm0" accept` and `oifname "wdm0" accept` to its forward chain.
 
 ## Uninstall
 

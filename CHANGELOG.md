@@ -6,6 +6,108 @@ follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions f
 
 ## [Unreleased]
 
+## [1.5.0] - 2026-11-08
+
+### Added
+- When the host's own nftables firewall drops devices' traffic (Arch's default
+  `/etc/nftables.conf` does), `waydroid-manager doctor` names it, and the device's window offers to
+  add rules that let devices through while they run (`sudo waydroid-manager firewall allow`).
+- Devices run on X11 desktops, remote ones such as ThinLinc and VNC included: with no Wayland
+  compositor, each device opens in a Weston window of its own (install `weston`, and `xclip` for
+  the clipboard). `waydroid-manager doctor` checks for them. Devices render on an NVIDIA card there
+  as well, including on servers whose NVIDIA cards drive no monitor. The window has the desktop's
+  own title bar and the usual toolbar, which hides in fullscreen. Text copied on either side can be
+  pasted on the other (Android 13; Android 14's image has no clipboard sharing on any desktop).
+- Automatic graphics renders on NVIDIA on a server whose NVIDIA cards drive no monitor (a remote
+  desktop), instead of in software.
+- Waydroid Manager runs without systemd (#87). `scripts/install.sh` installs an OpenRC or runit
+  service for the daemon, and with any other init D-Bus starts it on first use. dnsmasq, device
+  sessions, #0's pause of stock Waydroid and `waydroid-manager log` work there too, and the daemon
+  logs to `/var/log/waydroid-manager.log`. It needs cgroup v2, which `waydroid-manager doctor`
+  checks. The `.deb` no longer depends on systemd.
+- A device can match the display (#84): Settings › Display › Device type › Match display, or
+  `waydroid-manager config N set width 0 height 0`. Android takes the resolution of the monitor its
+  window is on, and resizes with it while running, e.g. when a Moonlight client sets the host's
+  resolution. Fullscreen is then pixel for pixel. On X11 it takes 90% of the screen at start.
+
+### Fixed
+- Games protected by AppGuard, such as Let's Go Legends, no longer crash at launch on Houdini.
+  The phone CPU description an instance shows apps had a feature list longer than Houdini can
+  read, and it aborted when an app checked the CPU's features. Houdini now gets its own feature
+  lists, the ones it can run, so ARM apps no longer pick code paths it can't run; `/proc/cpuinfo`
+  is unchanged.
+- A device set to width and height 0 (match the display) became 240×240 when its settings were
+  saved in the app, and didn't start on X11 desktops.
+- Games protected by Google's pairip, such as Frog's Kitchen, Mergedom and Tower War, no longer
+  crash at launch with a black screen on Houdini. Their protection only accepts Houdini under its
+  real file name, so Houdini is no longer renamed `libnb_impl`; `libhoudini.so` shows in an app's
+  memory map again. Existing instances pick this up at their next start.
+- Rooted instances on Android 14 no longer restart Android about a minute after an app opens a
+  WebView, such as a game showing an ad. The fix for Zygisk modules with a root companion process
+  only covered 64-bit apps, and this image's WebView is 32-bit.
+- An instance now reboots cleanly when Android's core process restarts on its own. It used to stay
+  up with no ARM translation and no network until it was restarted by hand.
+- Devices had no network with firewalld running (Fedora, and Ubuntu with firewalld enabled): its
+  default zone rejected the bridge's DHCP, DNS and forwarding. The bridge is now in firewalld's
+  `trusted` zone while devices run.
+- Clipboard sharing and Android notifications on the desktop could stay off for a whole run: only
+  the last of the session's Android services came back when Android's service manager started.
+- Creating an Android 17 device failed with "HTTP Error 404": its image moved to the `a17-qpr0`
+  update channel.
+- Devices had no internet on hosts where Docker or ufw drops forwarded traffic by default, such as
+  Arch (#102): the device network's firewall rules went to `iptables-legacy` whenever it was installed,
+  while those tools use iptables' nftables backend, whose drop then won. The rules now go where
+  the host's `iptables` puts them, and the old rules in the legacy tables are removed.
+- The window toolbar's Settings button opened nothing after the settings window had been closed
+  once, on desktops with libadwaita older than 1.7 (Ubuntu 24.04, and X11 desktops such as
+  ThinLinc). Those versions never report a settings window that closed by itself. Closing the
+  stop confirmation with its window's close button left its device waiting there for good.
+- Zygisk works on Android 14 to 17: Zygisk modules said "Module suspended because Zygisk is not
+  enabled" and never loaded into apps. Root now installs official Magisk 31.0 instead of Magisk
+  Delta 26.3, which predates the way 14 and newer start apps. Rooted instances switch over at their
+  next start, keeping Magisk's settings, root grants and modules; the old Magisk Delta app is
+  replaced by the official Magisk app, which no longer closes as soon as it opens. Zygisk modules
+  with a root companion process (such as CroakerMOD) no longer keep the device from finishing boot.
+- ARM games such as Raid: Shadow Legends close much less often after running for a little while
+  on Android 16 and 17, on hosts with more than 15 GB of RAM. The image sized Android's app heap
+  for the host's memory rather than the instance's, and that reservation could crowd out the
+  memory range where ARM translation keeps its translated code. The heap is now capped at 512 MB,
+  as on smaller hosts. Some restarts can still hit it, but rarely.
+- Airship Knights startup on Android 16: use YUV video output instead of the image's forced
+  RGBX output, and enable WebView 150.0.7871.63's asynchronous user-agent lookup to avoid a
+  Unity/ad-SDK deadlock. Existing instances receive the updated compatibility layer on restart.
+- Long-running instances no longer freeze from recursive 32-bit crash reporters after their
+  process/thread IDs exceed 65,535. On Linux 6.14+, each instance caps its own PID range without
+  lowering the host's limit. Older kernels lack this isolation and are left unchanged.
+- The manager no longer freezes for every instance while one of them starts or installs an APK
+  and its window is resized: saving the window size waited for that instance's operation.
+- An APK install or screenshot that hangs inside Android no longer blocks its instance until the
+  manager restarts. It fails after 15 minutes (a screenshot after one), and Stop, Start and
+  settings work again.
+- An Android reboot is no longer sometimes taken for a shutdown, and an instance that stops on
+  its own is always cleaned up. Before, a check landing mid-stop, or any error while checking,
+  could miss it, the latter until the manager restarted.
+- Settings, New Instance and Clone dialogs, and the rows of deleted instances, are freed when
+  closed. Each one used to keep 2–3 MB of memory until the app quit.
+- An instance whose window process ends unexpectedly is stopped, with a notification, instead of
+  running on with no window; the window process itself no longer ends on a failing tooltip or
+  message.
+- Enabling app shortcuts no longer removes the instance's own launcher from the app grid.
+  Turning them off removes them while the instance runs, a rename updates them, and a Play Store
+  update of many apps rewrites them once instead of once per app.
+- The adb server the first instance starts no longer stops with that instance, taking other
+  devices and IDEs with it.
+- Copying more than 128 KiB of text in Android reaches the desktop clipboard, and Android
+  notifications keep working after the desktop's notification service restarts.
+- A failed stock image sync is retried when stock's images change, not every 30 seconds with a
+  full copy; a failed start no longer leaves the network or session sockets set up; a cloned
+  instance's identity reset is retried when it didn't run.
+- When the desktop can't take Android's buffers directly (another GPU under GNOME on NVIDIA),
+  copying each frame takes a quarter of the time (1.15 ms to 0.34 ms for 900×1600).
+- Lower idle cost: Android no longer reports its display rotation twice a second when it hasn't
+  changed, the manager doesn't poll stopped instances or ask for the instance list while nothing
+  runs, and listing instances doesn't run a command per instance.
+
 ## [1.4.0] - 2026-10-23
 
 ### Changed
@@ -324,7 +426,8 @@ First release.
 - Root daemon hardened against symlink and race attacks, root-enabling Android properties,
   and misuse of passed file descriptors. Each user sees and controls only their own instances.
 
-[Unreleased]: https://github.com/felipeoes/waydroid-manager/compare/v1.4.0...HEAD
+[Unreleased]: https://github.com/felipeoes/waydroid-manager/compare/v1.5.0...HEAD
+[1.5.0]: https://github.com/felipeoes/waydroid-manager/compare/v1.4.0...v1.5.0
 [1.4.0]: https://github.com/felipeoes/waydroid-manager/compare/v1.3.6...v1.4.0
 [1.3.6]: https://github.com/felipeoes/waydroid-manager/compare/v1.3.5...v1.3.6
 [1.3.5]: https://github.com/felipeoes/waydroid-manager/compare/v1.3.4...v1.3.5

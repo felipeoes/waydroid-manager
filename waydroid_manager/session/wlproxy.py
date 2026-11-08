@@ -10,6 +10,8 @@ It gives every instance window an identity and a frame:
   scaled and input coordinates are scaled back. The HWC scale is normalised
   to 1 (``wl_output.scale`` and fractional scale are rewritten), and configure
   sizes are hidden from it (any real size triggers an Android display hotplug).
+  A device sized 0x0 (match the display) is the one exception: it gets one sized
+  configure whenever its window's monitor changes mode (follow_display).
 * **Frame** (full-UI window only): a title bar (move, minimize, close), an
   attached side toolbar (Settings, Restart, Back, Home, Recents, volume, screenshot,
   Install APK, fullscreen) with tooltips, and an invisible resize border. These are proxy-owned
@@ -36,13 +38,16 @@ and the window turn with it (wl_surface.set_buffer_transform), input is turned b
 import argparse
 import array
 import collections
+import gc
 import math
 import mmap
 import os
+import select
 import selectors
 import signal
 import socket
 import struct
+import subprocess
 import sys
 import threading
 import time
@@ -58,6 +63,7 @@ MAX_FDS_PER_MSG = 28        # libwayland's MAX_FDS_OUT; receivers truncate beyon
 RECV_SIZE = 65536
 HIGH_WATER = 4 * 1024 * 1024
 FULL_UI_APP_ID = "Waydroid"
+OWN_DMABUF_NAME = 0xfff00000  # registry name of the zwp_linux_dmabuf_v1 we serve ourselves (Session.own_dmabuf)
 MY_ID_BASE = 0xfe000000      # proxy-created objects in client space (mapped to real ids by Translator)
 FULL_DAMAGE = 0x7fffffff
 GRIP_KINDS = ("grip_left", "grip_bottom")   # our resize strips inside the picture's edges
@@ -67,6 +73,13 @@ PANEL_ALLOWANCE = 64          # room for a desktop panel when fitting to the scr
 CLIP_TYPES = ("text/plain;charset=utf-8", "UTF8_STRING", "text/plain", "TEXT", "STRING")
 CLIP_WAIT = 1.0               # longest the HWC waits on a slow clipboard owner (GNOME pings time out at 5 s)
 CLIP_MAX = 1 << 20            # more text than this is not passed to Android
+# An owner that sends nothing for this long is stuck: its reader gives up. Far above CLIP_WAIT, so a
+# slow owner still finishes in time for the next paste.
+CLIP_IDLE = 30
+# Nested (an X11 desktop): Weston keeps a clipboard of its own, so the proxy takes the HWC's text to
+# X11's and answers the HWC's reads from it
+X11_COPY = ("xclip", "-selection", "clipboard", "-in", "-target", "UTF8_STRING")
+X11_PASTE = ("xclip", "-selection", "clipboard", "-out", "-target", "UTF8_STRING")
 URI_LIST = "text/uri-list"    # what file managers offer when files are dragged
 
 
@@ -266,12 +279,14 @@ def flush(sock, stream):
         ready = stream.fds[:stream.out_fds] if stream.count_fds else stream.fds
         fds = ready[:MAX_FDS_PER_MSG]
         # With more fds than one message may carry, send one byte per batch
-        chunk = bytes(stream.out[:1] if len(ready) > MAX_FDS_PER_MSG else stream.out[:RECV_SIZE])
+        size = 1 if len(ready) > MAX_FDS_PER_MSG else RECV_SIZE
         anc = [(socket.SOL_SOCKET, socket.SCM_RIGHTS, array.array("i", fds))] if fds else []
-        try:
-            n = sock.sendmsg([chunk], anc)
-        except (BlockingIOError, InterruptedError):
-            return False
+        # A view, not a copy; released before the bytearray is trimmed (it can't resize while viewed)
+        with memoryview(stream.out) as view, view[:size] as chunk:
+            try:
+                n = sock.sendmsg([chunk], anc)
+            except (BlockingIOError, InterruptedError):
+                return False
         for fd in fds:
             os.close(fd)
         del stream.fds[:len(fds)]
@@ -350,6 +365,9 @@ class Translator:
         p = bytearray(data)
         struct.pack_into("=I", p, 0, sobj)
         off = 8
+        # New ids are mapped only once every argument translated: a dropped request mustn't take a
+        # compositor id, or the next one skips it ("invalid new id") or names a phantom object
+        binds = []
         try:
             for arg in iface.requests[op]:
                 t = arg.type
@@ -367,13 +385,15 @@ class Translator:
                         name = bytes(p[off + 4:off + 4 + n - 1]).decode("utf-8", "replace")
                         off += 4 + ((n + 3) & ~3) + 4
                         (cid,) = struct.unpack_from("=I", p, off)
-                        struct.pack_into("=I", p, off, self._bind_new(cid, name))
+                        binds.append((off, cid, name))
                     else:
                         (cid,) = struct.unpack_from("=I", p, off)
-                        struct.pack_into("=I", p, off, self._bind_new(cid, arg.interface))
+                        binds.append((off, cid, arg.interface))
                 off = self._skip(p, off, t)
         except struct.error:
             return None
+        for off, cid, name in binds:
+            struct.pack_into("=I", p, off, self._bind_new(cid, name))
         return bytes(p)
 
     def event(self, obj, op, payload):
@@ -446,8 +466,12 @@ class Clip:
 
     def _read(self, fd):
         chunks, size = [], 0
+        ready = select.poll()
+        ready.register(fd, select.POLLIN)
         try:
             while size <= CLIP_MAX:
+                if not ready.poll(CLIP_IDLE * 1000):
+                    break
                 b = os.read(fd, 65536)
                 if not b:
                     self.data = b"".join(chunks)
@@ -514,19 +538,33 @@ class Window:
         self.frame = None        # dict of our objects once created
         self.saved_zoom = None
         self.own_vp = None       # our wp_viewport on the surface, when the HWC has none (Android 11)
+        self.raw_states = b""    # the states of the last configure the HWC got
 
 
 TRACE = os.environ.get("WDM_PROXY_TRACE") == "1"
-RECENT = collections.deque(maxlen=300)     # last messages, dumped with any error
+# (direction, interface, id, opcode, length) of the last messages, dumped with any error: formatted
+# only then, as every message goes through here
+RECENT = collections.deque(maxlen=300)
 LOG_PATH = None
+LOG_ERRORS_MAX = 50       # tracebacks logged per process: a handler failing on every message fills no disk
+errors_seen = 0
 
 
-def log_error(what):
-    """Append a traceback and the recent message history to the proxy log."""
+def recent_lines():
+    return ["  {} {}@{}.{} len={}".format(*r) for r in RECENT]
+
+
+def log_error(what, always=False):
+    """Append a traceback and the recent message history to the proxy log (the first LOG_ERRORS_MAX)."""
+    global errors_seen
     import traceback
+    errors_seen += 1
+    if errors_seen > LOG_ERRORS_MAX and not always:
+        return
     text = "{} {}\n{}recent messages (oldest first):\n{}\n\n".format(
-        time.strftime("%Y-%m-%d %H:%M:%S"), what, traceback.format_exc(),
-        "\n".join("  " + r for r in RECENT))
+        time.strftime("%Y-%m-%d %H:%M:%S"), what, traceback.format_exc(), "\n".join(recent_lines()))
+    if errors_seen == LOG_ERRORS_MAX:
+        text += "(further errors are only counted, see the state dump)\n\n"
     sys.stderr.write("wlproxy: " + what + "\n")
     if LOG_PATH:
         try:
@@ -570,16 +608,18 @@ class Session:
         self.window = None
         self.zoom = None         # current zoom factor (float), None until known
         self.res = (cfg.width, cfg.height) if cfg.width and cfg.height else None
+        self.match = self.res is None    # 0x0: Android's display matches the monitor (follow_display)
         # proxy-owned objects
         self.next_id = MY_ID_BASE
         self.mine = {}           # id -> kind
         self.my_globals = {}     # interface -> our bound object id
-        self.buffers = {}        # our buffer id -> ("shm"|"pixel")
         self.shm = None          # the HWC's wl_shm, and the formats the compositor takes through it
         self.shm_formats = set()
         self.dmabuf_planes = {}  # cpu_buffers: params id -> [(fd copy, offset, stride, modifier)]
         self.copies = {}         # cpu_buffers through a GPU: buffer id -> (gbm buffer, width, height, our memory, stride)
         self.dmabuf_kept = set()  # (planes, modifier, format) passed on as dmabufs, noted once each
+        self.own_dmabuf = set()   # zwp_linux_dmabuf_v1 and params ids served here, not by the compositor
+        self.tr = None            # the connection's Translator
         # input routing
         self.last_serial = 0
         self.ptr_focus = None    # ("mine", surface) | ("tree", surface) | None
@@ -593,6 +633,7 @@ class Session:
         self.pressed = None      # (surface kind, action)
         self.last_title_click = 0.0
         self.tip_due = None      # (monotonic time, toolbar action) to show a tooltip at
+        self.follow_due = None   # (monotonic time, monitor mode) to give Android at (follow_display)
         self.tip_shown = None    # toolbar action whose tooltip is up
         self.tb_scroll = 0       # how far the toolbar's entries are scrolled up (short windows)
         self.cursor_dev = None
@@ -604,6 +645,10 @@ class Session:
         self.clips = {}           # selection offer id -> Clip
         self.clip_stats = {"answered": 0, "late": 0}
         self.own_source = None    # the HWC's wl_data_source while it owns the selection
+        self.source_types = {}    # the HWC's wl_data_source id -> mime types it offers
+        self.data_device = None   # (wl_data_device_manager, wl_data_device) of the HWC
+        self.clip_source = None   # nested: our latest wl_data_source (_offer_x11_clipboard)
+        self.fresh_copy = False   # nested: the next selection is the HWC's new copy (not X11's)
         self.dnd_version = 1      # of the HWC's wl_data_device_manager (actions and finish need 3)
         self.file_drag = None     # offer of the file drag over the window, kept from the HWC
         self.drag_action = 0      # what the compositor chose for it
@@ -622,11 +667,11 @@ class Session:
             trace(">>+", o, w & 0xffff, self.objs.get(o) or self.mine.get(o), "injected")
         self.c2s.inject(data, fds)
 
-    def to_client(self, data):
+    def to_client(self, data, fds=()):
         if TRACE:
             o, w = HEADER.unpack_from(data)
             trace("<<+", o, w & 0xffff, self.objs.get(o) or self.mine.get(o), "injected")
-        self.s2c.inject(data)
+        self.s2c.inject(data, fds)
 
     def in_tree(self, sid):
         """Is the surface the full-UI toplevel or one of the HWC's subsurfaces of it?"""
@@ -641,10 +686,19 @@ class Session:
     # -- geometry model -------------------------------------------------------------
     @property
     def framed(self):
-        return bool(self.cfg.frame and self.window and self.window.frame and not self.window.fullscreen)
+        return bool(self.cfg.frame and self.window and self.window.frame and not self.fullscreen)
+
+    @property
+    def fullscreen(self):
+        """The toplevel is, or (nested) the session's X11 window is: no frame."""
+        return bool(self.window and (self.window.fullscreen or self.cfg.x11_fullscreen))
+
+    @property
+    def title_h(self):
+        return 0 if self.cfg.nested else fr.TITLE_H
 
     def frame_extent(self):
-        return (fr.TOOLBAR_W, fr.TITLE_H) if self.framed else (0, 0)
+        return (fr.TOOLBAR_W, self.title_h) if self.framed else (0, 0)
 
     @property
     def turn(self):
@@ -693,7 +747,7 @@ class Session:
         if w.fullscreen and w.fs_size:
             return w.fs_size
         if w.fill_size:
-            b, t = (fr.TOOLBAR_W, fr.TITLE_H) if self.framed else (0, 0)
+            b, t = self.frame_extent()
             return max(1, w.fill_size[0] - b), max(1, w.fill_size[1] - t)
         return None
 
@@ -733,7 +787,7 @@ class Session:
     def fit_zoom(self, avail_w, avail_h):
         if not self.res:
             return 1.0
-        b, t = (fr.TOOLBAR_W, fr.TITLE_H) if (self.cfg.frame and not (self.window and self.window.fullscreen)) else (0, 0)
+        b, t = (fr.TOOLBAR_W, self.title_h) if (self.cfg.frame and not self.fullscreen) else (0, 0)
         vw, vh = self.view()
         z = min((avail_w - b) / vw, (avail_h - t) / vh)
         return max(ZOOM_MIN, min(ZOOM_MAX, z))
@@ -782,7 +836,9 @@ class Session:
         x, y = x / z, y / z
         if self.turn and self.res and not (pointer and self.cfg.logical_pointer):
             # back to Android's natural orientation: its input reader turns touches itself
-            size = self.surfaces[sid].req_dest if sid != self.window.surface else None
+            # the focus or drag surface may be gone already (destroyed before its leave)
+            size = None if self.window and sid == self.window.surface else \
+                getattr(self.surfaces.get(sid), "req_dest", None)
             rw, rh = size or self.res     # HWC adds the layer's offset after receiving local input
             if self.turn & 1:
                 rw, rh = rh, rw
@@ -791,7 +847,7 @@ class Session:
 
     # -- client -> server -------------------------------------------------------------
     def on_request(self, obj, op, payload):
-        RECENT.append(">> {}@{}.{} len={}".format(self.objs.get(obj) or self.mine.get(obj), obj, op, len(payload)))
+        RECENT.append((">>", self.objs.get(obj) or self.mine.get(obj), obj, op, len(payload)))
         try:
             res = self._on_request(obj, op, payload)
         except Exception:  # noqa: BLE001  fail open: forward the request unchanged
@@ -810,17 +866,21 @@ class Session:
                 rid = r.n()
                 self.objs[rid] = "wl_registry"
                 self.registries.add(rid)
+                if self.pending_outputs is None and self.serve_dmabuf():
+                    self.to_client(self.own_dmabuf_global(rid))
             elif op == P.WL_DISPLAY_SYNC and self.initial_sync is None and self.pending_outputs is not None:
                 self.initial_sync = r.n()
             return None
         if iface is None:
             return None
         if iface == "wl_registry" and op == P.WL_REGISTRY_BIND:
-            r.u()
+            name = r.u()
             name_iface = r.s()
             version = r.u()
             new = r.n()
             self.objs[new] = name_iface
+            if name == OWN_DMABUF_NAME:
+                return self._own_dmabuf_bind(new, version)
             if name_iface == "wl_data_device_manager":
                 self.dnd_version = version
             elif name_iface == "wl_seat":
@@ -899,12 +959,22 @@ class Session:
             return None
         if iface == "wl_data_device_manager":
             if op == P.WL_DATA_DEVICE_MANAGER_GET_DATA_DEVICE:
-                self.objs[r.n()] = "wl_data_device"
+                did = r.n()
+                self.objs[did] = "wl_data_device"
+                self.data_device = (obj, did)
             elif op == P.WL_DATA_DEVICE_MANAGER_CREATE_DATA_SOURCE:
-                self.objs[r.n()] = "wl_data_source"
+                sid = r.n()
+                self.objs[sid] = "wl_data_source"
+                self.source_types[sid] = []
+            return None
+        if iface == "wl_data_source" and op == P.WL_DATA_SOURCE_OFFER and obj in self.source_types:
+            self.source_types[obj].append(r.s())
             return None
         if iface == "wl_data_device" and op == P.WL_DATA_DEVICE_SET_SELECTION:
             self.own_source = r.o() or None
+            if self.cfg.nested and self.own_source:
+                self.fresh_copy = True
+                self._copy_to_x11(self.own_source)
             return None
         if iface == "wl_data_offer":
             return self._offer_request(obj, op)
@@ -914,9 +984,56 @@ class Session:
             return self._viewport_request(obj, op, r)
         if iface == "wl_subsurface":
             return self._subsurface_request(obj, op, r)
+        if obj in self.own_dmabuf:
+            return self._own_dmabuf_request(obj, iface, op, r)
         if self.cfg.cpu_buffers and iface in ("zwp_linux_dmabuf_v1", "zwp_linux_buffer_params_v1"):
             return self._dmabuf_request(obj, iface, op, r)
         return None
+
+    # -- linux-dmabuf served here ---------------------------------------------------------
+    # cpu_buffers with a compositor that offers no linux-dmabuf (Weston drawing in software, on an
+    # X11 desktop): the HWC still needs one for Android's buffers. We serve it, and its buffers
+    # reach the compositor as shared memory (_dmabuf_request), so nothing of it goes upstream.
+
+    def serve_dmabuf(self):
+        return bool(self.cfg.cpu_buffers) and all(g != "zwp_linux_dmabuf_v1" for g, _ in self.globals.values())
+
+    @staticmethod
+    def own_dmabuf_global(rid):
+        return msg(rid, P.WL_REGISTRY_EV_GLOBAL, "usu", OWN_DMABUF_NAME, "zwp_linux_dmabuf_v1", 3)
+
+    def _own(self, oid, iface):
+        self.objs[oid] = iface
+        self.own_dmabuf.add(oid)
+        self.tr.iface[oid] = iface      # so the Stream counts the fds of its requests
+
+    def _own_dmabuf_bind(self, new, version):
+        self._own(new, "zwp_linux_dmabuf_v1")
+        # formats wl_shm takes as they are; LINEAR, since each frame is read through the CPU
+        for fmt in (P.DRM_FORMAT_ARGB8888, P.DRM_FORMAT_XRGB8888, P.DRM_FORMAT_ABGR8888, P.DRM_FORMAT_XBGR8888):
+            self.to_client(msg(new, P.ZWP_LINUX_DMABUF_EV_FORMAT, "u", fmt))
+            if version >= 3:
+                self.to_client(msg(new, P.ZWP_LINUX_DMABUF_EV_MODIFIER, "uuu", fmt, 0, P.DRM_FORMAT_MOD_LINEAR))
+        return []
+
+    def _own_dmabuf_request(self, obj, iface, op, r):
+        if iface == "zwp_linux_dmabuf_v1":
+            if op == P.ZWP_LINUX_DMABUF_CREATE_PARAMS:
+                self._own(r.n(), "zwp_linux_buffer_params_v1")
+            out = None
+        elif op == P.ZWP_LINUX_BUFFER_PARAMS_CREATE:      # the HWC creates immed; refuse the rest
+            for plane in self.dmabuf_planes.pop(obj, []):
+                os.close(plane[0])
+            self.to_client(msg(obj, P.ZWP_LINUX_BUFFER_PARAMS_EV_FAILED))
+            out = None
+        else:
+            out = self._dmabuf_request(obj, iface, op, r)
+        if op == (P.ZWP_LINUX_DMABUF_DESTROY if iface == "zwp_linux_dmabuf_v1" else P.ZWP_LINUX_BUFFER_PARAMS_DESTROY):
+            self.own_dmabuf.discard(obj)
+            self.objs.pop(obj, None)
+            self.tr.iface.pop(obj, None)
+            self.to_client(msg(1, P.WL_DISPLAY_EV_DELETE_ID, "u", obj))
+        return out or []
 
     def _dmabuf_request(self, obj, iface, op, r):
         """cpu_buffers: Android's dmabufs reach the compositor as shared memory. A compositor may
@@ -949,6 +1066,9 @@ class Session:
                 return None
             fd, offset, stride, modifier = planes[0]
             code = {P.DRM_FORMAT_ARGB8888: 0, P.DRM_FORMAT_XRGB8888: 1}.get(fmt, fmt)
+            if getattr(self.cfg.gpu, "rgba", False):   # read back as RGBA bytes, whatever its format
+                code = P.DRM_FORMAT_XBGR8888 if fmt in (P.DRM_FORMAT_XRGB8888, P.DRM_FORMAT_XBGR8888) \
+                    else P.DRM_FORMAT_ABGR8888
             size = offset + stride * height
             pool_fd = None
             if code not in self.shm_formats:
@@ -956,9 +1076,19 @@ class Session:
             elif self.cfg.gpu:
                 bo = self.cfg.gpu.import_buffer(fd, width, height, fmt, offset, stride, modifier)
                 if bo:
-                    pool_fd, offset, size = os.memfd_create("waydroid-frame", os.MFD_CLOEXEC), 0, stride * height
-                    os.ftruncate(pool_fd, size)
-                    self.copies[buf] = (bo, width, height, mmap.mmap(pool_fd, size), stride)
+                    # Our rows as Mesa maps the buffer's, so each attach copies the frame in one go
+                    # (row by row it took 1.15 ms for 900x1600 instead of 0.34)
+                    stride = self.cfg.gpu.map_stride(bo, width, height) or stride
+                    offset, size = 0, stride * height
+                    try:
+                        pool_fd = os.memfd_create("waydroid-frame", os.MFD_CLOEXEC)
+                        os.ftruncate(pool_fd, size)
+                        self.copies[buf] = (bo, width, height, mmap.mmap(pool_fd, size), stride)
+                    except OSError:
+                        self.cfg.gpu.free(bo)
+                        if pool_fd is not None:
+                            os.close(pool_fd)
+                        raise
             elif modifier in (P.DRM_FORMAT_MOD_LINEAR, P.DRM_FORMAT_MOD_INVALID) and \
                     os.lseek(fd, 0, os.SEEK_END) >= size:
                 pool_fd = fd
@@ -1059,6 +1189,14 @@ class Session:
         sid = self.subsurfaces.get(subid)
         if op == P.WL_SUBSURFACE_DESTROY:
             self.subsurfaces.pop(subid, None)
+            # The surface loses its role: no stale set_position for it, no duplicate child when
+            # the HWC makes it a subsurface again
+            s = self.surfaces.get(sid)
+            if s and s.sub == subid:
+                parent = self.surfaces.get(s.parent)
+                if parent and sid in parent.children:
+                    parent.children.remove(sid)
+                s.parent = s.sub = None
             return None
         if op != P.WL_SUBSURFACE_SET_POSITION or not self.window or sid is None:
             return None
@@ -1148,7 +1286,7 @@ class Session:
                     bad, self.objs.get(bad) or self.mine.get(bad), code, text))
             except ProtocolError:
                 pass
-        RECENT.append("<< {}@{}.{} len={}".format(self.objs.get(obj) or self.mine.get(obj), obj, op, len(payload)))
+        RECENT.append(("<<", self.objs.get(obj) or self.mine.get(obj), obj, op, len(payload)))
         try:
             res = self._on_event(obj, op, payload)
         except Exception:  # noqa: BLE001  fail open: forward the event unchanged
@@ -1166,6 +1304,8 @@ class Session:
         if obj == self.initial_sync and op == P.WL_CALLBACK_EV_DONE:
             pending, self.pending_outputs = self.pending_outputs, None
             self.initial_sync = None
+            if self.serve_dmabuf():
+                pending = [self.own_dmabuf_global(rid) for rid in self.registries] + pending
             return pending + [build_message(obj, op, payload)] if pending else None
         iface = self.objs.get(obj)
         r = Reader(payload)
@@ -1174,7 +1314,6 @@ class Session:
                 dead = r.u()
                 if dead in self.mine:
                     del self.mine[dead]
-                    self.buffers.pop(dead, None)
                     return []
                 self._forget(dead)
             return None
@@ -1208,11 +1347,14 @@ class Session:
                 flags, w, h = r.u(), r.i(), r.i()
                 if flags & 1:
                     out["mode"] = (w, h)
+            elif op == P.WL_OUTPUT_EV_DONE and obj == self.surface_output:
+                self.follow_display()       # once per change: done ends a burst of output events
             return None
         if iface == "wp_fractional_scale_v1" and op == P.WP_FRACTIONAL_SCALE_EV_PREFERRED:
             return [msg(obj, op, "u", 120)]
         if iface == "wl_surface" and op == 0 and self.window and obj == self.window.surface:
             self.surface_output = r.o()             # wl_surface.enter(output)
+            self.follow_display()
             return None
         if iface == "xdg_wm_base" and op == 0:          # ping
             self.ping_stats["pings"] += 1
@@ -1245,6 +1387,8 @@ class Session:
     def _keyboard_event(self, kid, op, r):
         if op == P.WL_KEYBOARD_EV_ENTER:
             self.last_serial, self.kbd_focus = r.u(), r.o()
+            if self.cfg.nested and self.data_device:
+                self._offer_x11_clipboard()
         elif op == 2:                                     # leave
             self.last_serial = r.u()
             self.kbd_focus = None
@@ -1259,7 +1403,7 @@ class Session:
                 swallowed.discard(key)
                 return []
             if (state == 1 and w and getattr(self, "kbd_focus", None) == w.surface
-                    and (key == self.KEY_F11 or (key == self.KEY_ESC and w.fullscreen))):
+                    and (key == self.KEY_F11 or (key == self.KEY_ESC and self.fullscreen))):
                 swallowed.add(key)
                 self.swallowed_keys = swallowed
                 self.toggle_fullscreen(leave_only=(key == self.KEY_ESC))
@@ -1281,6 +1425,7 @@ class Session:
         raw_states = r.a()
         states = set(struct.unpack("={}I".format(len(raw_states) // 4), raw_states))
         self._configure(width, height, states)
+        w.raw_states = raw_states
         # The HWC would hotplug Android's display on any real size: hide it
         return [msg(tid, op, "iia", 0, 0, raw_states)]
 
@@ -1300,6 +1445,8 @@ class Session:
 
     def _configure(self, width, height, states):
         w = self.window
+        if self.cfg.nested and P.XDG_TOPLEVEL_STATE_FULLSCREEN in states:
+            states = (states - {P.XDG_TOPLEVEL_STATE_FULLSCREEN}) | {P.XDG_TOPLEVEL_STATE_MAXIMIZED}
         was_fs, was_fill, was_resizing = w.fullscreen, w.fill_size is not None, w.resizing
         w.fullscreen = P.XDG_TOPLEVEL_STATE_FULLSCREEN in states
         w.maximized = P.XDG_TOPLEVEL_STATE_MAXIMIZED in states
@@ -1446,9 +1593,10 @@ class Session:
         if op in (P.WL_TOUCH_EV_FRAME, P.WL_TOUCH_EV_CANCEL):
             fwd, drop = self.touch_group
             self.touch_group = [False, False]
+            others = any(v[0] != "mine" for v in self.touches.values())
             if op == P.WL_TOUCH_EV_CANCEL:
-                self.touches = {k: v for k, v in self.touches.items() if v[0] != "mine"}
-            if drop and not fwd and not any(v[0] != "mine" for v in self.touches.values()):
+                self.touches = {}       # every point is cancelled, ours and the HWC's
+            if drop and not fwd and not others:
                 return []
             return None
         return None
@@ -1460,7 +1608,12 @@ class Session:
             self.offers[offer] = []
             return None
         if op == P.WL_DATA_DEVICE_EV_SELECTION:
-            self._clip_selection(r.o())
+            offer = r.o()
+            if self.cfg.nested and offer and self.clip_source and not self.offers.get(offer):
+                self.offers[offer] = [CLIP_TYPES[0]]      # our source's (_offer_x11_clipboard)
+                self._clip_selection(offer)
+                return [msg(offer, P.WL_DATA_OFFER_EV_OFFER, "s", CLIP_TYPES[0]), build_message(did, op, payload)]
+            self._clip_selection(offer)
             return None
         if op == P.WL_DATA_DEVICE_EV_ENTER:
             serial, sid, x, y, offer = r.u(), r.o(), r.f(), r.f(), r.o()
@@ -1518,13 +1671,56 @@ class Session:
         mime = next((m for m in CLIP_TYPES if m in self.offers.get(offer, ())), None)
         if not offer or mime is None:
             return
-        if self.own_source:
+        if self.own_source and (self.fresh_copy or not self.cfg.nested):
             # The HWC's own text: fetching it would wait on the HWC, which is busy reading
+            self.fresh_copy = False
             self.clips[offer] = Clip(None, self.clip_stats)
             return
         rfd, wfd = os.pipe()
-        self.to_server(msg(offer, P.WL_DATA_OFFER_RECEIVE, "s", mime), fds=[wfd])
+        if self.cfg.nested:
+            # X11's clipboard is the one shared with the desktop (Weston's offer: on each focus)
+            try:
+                paste = subprocess.Popen(X11_PASTE, stdin=subprocess.DEVNULL, stdout=wfd, stderr=subprocess.DEVNULL)
+                threading.Thread(target=paste.wait, daemon=True, name="clip-x11").start()   # reaped
+            except OSError:
+                pass
+            os.close(wfd)
+        else:
+            self.to_server(msg(offer, P.WL_DATA_OFFER_RECEIVE, "s", mime), fds=[wfd])
         self.clips[offer] = Clip(rfd, self.clip_stats)
+
+    def _offer_x11_clipboard(self):
+        """Nested, on each focus: a new selection of ours, so Weston offers it to the HWC, which
+        reads the clipboard only then, and gets X11's text (_clip_selection). Weston itself
+        offers nothing on an X11 focus. Our source offers no type: Weston's clipboard would read
+        it (and our source can't take the fd); the type is added to the offer the HWC gets."""
+        manager, device = self.data_device
+        old, src = self.clip_source, self.new_id("clip_source")
+        self.clip_source = src
+        self.to_server(msg(manager, P.WL_DATA_DEVICE_MANAGER_CREATE_DATA_SOURCE, "n", src))
+        self.to_server(msg(device, P.WL_DATA_DEVICE_SET_SELECTION, "ou", src, self.last_serial))
+        # Only now, replaced: Weston also cancels a source whose offer the HWC destroys (after
+        # each read), and a destroyed selection becomes none, which empties the HWC's copy
+        if old:
+            self.to_server(msg(old, P.WL_DATA_SOURCE_DESTROY))
+
+    def _copy_to_x11(self, source):
+        """Nested: Android copied: ask the HWC's source for the text and put it in X11's clipboard."""
+        mime = next((m for m in CLIP_TYPES if m in self.source_types.get(source, ())), None)
+        if mime is None:
+            return
+        rfd, wfd = os.pipe()
+        self.to_client(msg(source, P.WL_DATA_SOURCE_EV_SEND, "s", mime), fds=[wfd])
+
+        def copy(data):
+            def run():
+                try:
+                    subprocess.run(X11_COPY, input=data, timeout=2, check=False,
+                                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                except (OSError, subprocess.TimeoutExpired):
+                    pass
+            threading.Thread(target=run, daemon=True, name="clip-x11").start()
+        self.watch(rfd, copy)
 
     def _offer_request(self, offer, op):
         if op == P.WL_DATA_OFFER_RECEIVE and offer in self.clips:
@@ -1541,6 +1737,7 @@ class Session:
         kind = self.mine.get(obj)
         if kind in ("buffer_shm", "buffer_pixel") and op == 0:     # wl_buffer.release
             self.to_server(msg(obj, P.WL_BUFFER_DESTROY))
+
 
     # -- applying geometry ----------------------------------------------------------------
     def _apply_messages(self, commit=True):
@@ -1627,6 +1824,45 @@ class Session:
         if self.cfg.frame and self._can_frame():
             self._create_frame()
         self.request_apply()
+        self.follow_display()
+
+    FOLLOW_DELAY = 1.0
+
+    def follow_display(self):
+        """A match-display device: Android's display takes the mode of its window's monitor, and
+        follows it (a Moonlight client setting the host's resolution, say). The HWC hotplugs its
+        display at the size of any sized configure, so it gets one once a new mode has held for
+        FOLLOW_DELAY, with the states it last had: hotplugs in quick succession crash Android 13's
+        SurfaceFlinger. From then on the HWC ignores wl_output modes, so on several monitors it's
+        the window's that counts. Not nested: Weston's output is our own window there.
+        shortcut: a monitor turned to portrait still gives its landscape mode; swap the mode by
+        its wl_output transform if users ask."""
+        mode = self.display_mode()
+        if not mode or mode == self.res:
+            self.follow_due = None
+        elif not self.follow_due or self.follow_due[1] != mode:
+            self.follow_due = (time.monotonic() + self.FOLLOW_DELAY, mode)
+
+    def display_mode(self):
+        w = self.window
+        if self.match and w and w.committed and not self.cfg.nested:
+            return self.outputs.get(self.surface_output, {}).get("mode")
+        return None
+
+    def _follow_now(self):
+        """follow_display's change, once due. True if messages were queued."""
+        w, mode = self.window, self.display_mode()
+        if not mode or mode == self.res:
+            return False
+        self.res = mode
+        self.to_client(msg(w.toplevel, P.XDG_TOPLEVEL_EV_CONFIGURE, "iia", mode[0], mode[1], w.raw_states))
+        # refit as for a new window, or to the size the compositor gives; never saved as the zoom
+        if w.fs_size or w.fill_size:
+            self.zoom = self.fit_zoom(*(w.fs_size or w.fill_size))
+        else:
+            self.zoom = self.initial_zoom()
+        self.request_apply()
+        return True
 
     def request_apply(self):
         """Bring geometry/frame up to date, as soon as the HWC's stream allows."""
@@ -1670,12 +1906,26 @@ class Session:
 
     def _forget(self, oid):
         iface = self.objs.pop(oid, None)
+        self.source_types.pop(oid, None)
+        if self.data_device and oid in self.data_device:
+            self.data_device = None
         copy = self.copies.pop(oid, None)
         if copy:
             self.cfg.gpu.free(copy[0])
             copy[3].close()
         if iface == "wl_surface":
             self._forget_surface(oid)
+        # libwayland-client reuses ids: a stale one would name an object of another interface
+        if oid == self.pointer and self.cursor_dev is not None:
+            self.to_server(msg(self.cursor_dev, 0))     # wp_cursor_shape_device_v1.destroy: made for it
+            self.cursor_dev = None
+        for attr in ("seat", "shm", "pointer", "keyboard", "touch", "cursor_surface", "own_source"):
+            if getattr(self, attr) == oid:
+                setattr(self, attr, None)
+        if getattr(self, "_dnd_surface", None) == oid:
+            self._dnd_surface = None
+        if self.ptr_focus and self.ptr_focus[1] == oid:
+            self.ptr_focus = None
         self.viewports.pop(oid, None)
         self.subsurfaces.pop(oid, None)
         self.xdg_surfaces.pop(oid, None)
@@ -1684,9 +1934,13 @@ class Session:
         self.registries.discard(oid)
 
     def close(self):
-        """The connection is gone: let go of the GPU's buffers."""
+        """The connection is gone: let go of the GPU's buffers and the dmabuf fds kept for params."""
         for oid in list(self.copies):
             self._forget(oid)
+        for planes in self.dmabuf_planes.values():
+            for plane in planes:
+                os.close(plane[0])
+        self.dmabuf_planes.clear()
 
     # -- frame ------------------------------------------------------------------------------
     def _global(self, interface):
@@ -1781,8 +2035,12 @@ class Session:
             f["sizes"]["backdrop"] = backdrop
             out.extend(self._backdrop_messages(backdrop))
         out.append(msg(f["backdrop_sub"], P.WL_SUBSURFACE_SET_POSITION, "ii", ox, oy))
-        hidden = w.fullscreen or not self.cfg.frame
-        b, t, m = fr.TOOLBAR_W, fr.TITLE_H, fr.BORDER
+        hidden = self.fullscreen or not self.cfg.frame
+        b, t, m = fr.TOOLBAR_W, self.title_h, fr.BORDER
+        if self.cfg.nested and f["sizes"].get("title") != "hidden":
+            out.append(msg(f["title"], P.WL_SURFACE_ATTACH, "oii", 0, 0, 0))
+            out.append(msg(f["title"], P.WL_SURFACE_COMMIT))
+            f["sizes"]["title"] = "hidden"
         if hidden:
             self._tip(None)
             for kind in ("title", "toolbar", "border") + GRIP_KINDS:
@@ -1792,10 +2050,11 @@ class Session:
                     f["sizes"][kind] = "hidden"
             return out
         dw, dh = self.area() or (dw, dh)     # maximized/tiled: frame hugs the window, content centred
-        out.append(msg(f["title_sub"], P.WL_SUBSURFACE_SET_POSITION, "ii", ox, oy - t))
+        if not self.cfg.nested:
+            out.append(msg(f["title_sub"], P.WL_SUBSURFACE_SET_POSITION, "ii", ox, oy - t))
         out.append(msg(f["toolbar_sub"], P.WL_SUBSURFACE_SET_POSITION, "ii", ox + dw, oy))
         out.append(msg(f["border_sub"], P.WL_SUBSURFACE_SET_POSITION, "ii", ox - m, oy - t - m))
-        if f["sizes"].get("title") != (dw + b, t):
+        if not self.cfg.nested and f["sizes"].get("title") != (dw + b, t):
             f["sizes"]["title"] = (dw + b, t)
             self._draw("title")
         if f["sizes"].get("toolbar") != (b, dh):
@@ -1831,7 +2090,7 @@ class Session:
         hover = self.hover.get(kind)
         pressed = self.pressed[1] if self.pressed and self.pressed[0] == kind else None
         if kind == "title":
-            data, pw, ph, stride = fr.render_title(size[0], scale, "{} · #{}".format(self.cfg.name, self.cfg.id),
+            data, pw, ph, stride = fr.render_title(size[0], scale, fr.title_text(self.cfg.name, self.cfg.id),
                                                    self.cfg.theme, hover, pressed)
         else:
             self.tb_scroll = min(self.tb_scroll, fr.toolbar_scroll_max(size[1]))
@@ -1877,11 +2136,16 @@ class Session:
                 self.tip_due = (time.monotonic() + self.TIP_DELAY, action)
 
     def tick(self):
-        """From the main loop: show a tooltip whose delay has passed. True if messages were queued."""
-        if not self.tip_due or time.monotonic() < self.tip_due[0]:
-            return False
-        action, self.tip_due = self.tip_due[1], None
-        return self._show_tip(action)
+        """From the main loop: follow the monitor or show a tooltip, once their delay has passed.
+        True if messages were queued."""
+        now, queued = time.monotonic(), False
+        if self.follow_due and now >= self.follow_due[0]:
+            self.follow_due = None
+            queued = self._follow_now()
+        if self.tip_due and now >= self.tip_due[0]:
+            action, self.tip_due = self.tip_due[1], None
+            queued = self._show_tip(action) or queued
+        return queued
 
     def _show_tip(self, action):
         f = self.window.frame if self.window else None
@@ -2054,6 +2318,10 @@ class Session:
         w = self.window
         if not w:
             return
+        if self.cfg.nested:
+            if not leave_only or self.cfg.x11_fullscreen:
+                self.emit("fullscreen")         # the session's X11 window
+            return
         if w.fullscreen:
             self.to_server(msg(w.toplevel, P.XDG_TOPLEVEL_UNSET_FULLSCREEN))
         elif not leave_only:
@@ -2140,6 +2408,7 @@ class Connection:
                           count_fds=self.tr.request_fds)
         self.s2c = Stream(self._event)
         self.session.c2s, self.session.s2c = self.c2s, self.s2c
+        self.session.tr = self.tr
         self.session.watch = lambda fd, done: PipeReader(self, fd, done)
         self.closed = False
 
@@ -2153,7 +2422,7 @@ class Connection:
         if t is HIDDEN:
             return []
         if t is None:
-            RECENT.append("<< dropped untranslatable event on {}.{}".format(obj, op))
+            RECENT.append(("<<", "untranslatable, dropped", obj, op, len(payload)))
             self.drops = getattr(self, "drops", 0) + 1
             if self.drops <= 20:
                 sys.stderr.write("wlproxy: dropped untranslatable event on {}.{}\n".format(obj, op))
@@ -2207,6 +2476,8 @@ class Connection:
         self.update_interest()
 
     def on_event(self, sock, mask):
+        if self.closed:         # both sockets were ready in one select, and the first closed them
+            return
         src_is_client = sock is self.client
         if mask & selectors.EVENT_READ:
             stream = self.c2s if src_is_client else self.s2c
@@ -2254,7 +2525,12 @@ class Config:
         # the compositor can't import Android's dmabufs: show them as shm ("shared", or the render
         # node of the GPU to copy them through; Session._dmabuf_request)
         self.cpu_buffers = cpu_buffers
-        self.gpu = gbm.Device(cpu_buffers) if cpu_buffers not in (None, "shared") else None
+        self.gpu = gbm.open_device(cpu_buffers) if cpu_buffers not in (None, "shared") else None
+        # the compositor is a Weston of our own in an X11 window (kiosk: always "fullscreen"). The
+        # X11 window manager's title bar moves and resizes it: we draw no title bar, keep the
+        # toolbar, and the session takes fullscreen to X11
+        self.nested = False
+        self.x11_fullscreen = False   # nested: that window is fullscreen (stdin, from the session)
 
 
 class Proxy:
@@ -2268,7 +2544,8 @@ class Proxy:
         self.conns = []
 
     def watch_rotation(self, fd):
-        """Android's display rotation arrives on fd, a digit per line (session/main.py)."""
+        """Android's display rotation arrives on fd, a digit per line (session/main.py); nested,
+        also "fullscreen 0|1" (Config.x11_fullscreen)."""
         os.set_blocking(fd, False)
         self.rot_fd, self.rot_buf = fd, b""
         self.sel.register(fd, selectors.EVENT_READ, self)
@@ -2284,10 +2561,14 @@ class Proxy:
             self.sel.unregister(self.rot_fd)
             return
         *lines, self.rot_buf = (self.rot_buf + data).split(b"\n")
-        last = lines[-1].strip() if lines else b""
-        if last not in (b"0", b"1", b"2", b"3") or int(last) == self.cfg.rotation:
+        changed = False
+        for line in (l.strip() for l in lines):
+            if line in (b"0", b"1", b"2", b"3") and int(line) != self.cfg.rotation:
+                self.cfg.rotation, changed = int(line), True
+            elif line in (b"fullscreen 0", b"fullscreen 1") and (line[-1:] == b"1") != self.cfg.x11_fullscreen:
+                self.cfg.x11_fullscreen, changed = line[-1:] == b"1", True
+        if not changed:
             return
-        self.cfg.rotation = int(last)
         for c in self.conns:
             try:
                 c.session.rotated()
@@ -2351,26 +2632,42 @@ class Proxy:
                 len(c.c2s.out), len(c.c2s.deferred), len(c.c2s.inbuf), len(c.c2s.fds),
                 len(c.s2c.out), len(c.s2c.deferred), len(c.s2c.inbuf), len(c.s2c.fds)))
             lines.append("  dropped events={} ids mapped={}".format(getattr(c, "drops", 0), len(c.tr.c2s)))
+            lines.append("  objs={} copies={} offers={} clips={} surfaces={} mine={}".format(
+                len(se.objs), len(se.copies), len(se.offers), len(se.clips), len(se.surfaces), len(se.mine)))
+        # Small Python numbers next to a large RSS: the memory is native (Mesa, cairo), not ours
+        types = collections.Counter(type(o).__name__ for o in gc.get_objects())
+        lines.append("errors={} threads={} python blocks={} objects={} top={}".format(
+            errors_seen, threading.active_count(), sys.getallocatedblocks(), sum(types.values()),
+            ", ".join("{} {}".format(n, k) for k, n in types.most_common(8))))
         lines.append("recent messages (oldest first):")
-        lines.extend("  " + r for r in RECENT)
+        lines.extend(recent_lines())
         if LOG_PATH:
-            with open(LOG_PATH, "a") as f:
-                f.write("\n".join(lines) + "\n\n")
+            try:
+                with open(LOG_PATH, "a") as f:
+                    f.write("\n".join(lines) + "\n\n")
+            except OSError:
+                pass
 
     def run(self):
         if self.server is None:
             self.bind()
         self.emit("ready")
         while True:
-            due = [c.session.tip_due[0] for c in self.conns if c.session.tip_due]
+            due = [d[0] for c in self.conns for d in (c.session.tip_due, c.session.follow_due) if d]
             for key, mask in self.sel.select(max(0.0, min(due) - time.monotonic()) if due else None):
                 if key.data is None:
                     self.accept()
-                else:
+                    continue
+                try:
                     key.data.on_event(key.fileobj, mask)
+                except Exception:  # noqa: BLE001  fail open like the handlers: a dead proxy leaves Android windowless
+                    log_error("error handling an event")
             for c in list(self.conns):
-                if c.session.tick():
-                    c.pump()
+                try:
+                    if c.session.tick():
+                        c.pump()
+                except Exception:  # noqa: BLE001  same: a tooltip or a resize mustn't end the window
+                    log_error("error in a delayed action")
 
 
 def main(argv=None):
@@ -2386,9 +2683,11 @@ def main(argv=None):
     p.add_argument("--close-action", default="stop", choices=("stop", "freeze", "none"))
     p.add_argument("--cpu-buffers", help='"shared" or a render node (Config)')
     p.add_argument("--logical-pointer", action="store_true", help="Android 11: pointer positions stay turned")
+    p.add_argument("--nested", action="store_true", help="upstream is the session's Weston on X11 (Config.nested)")
     o = p.parse_args(argv)
     cfg = Config(o.id, o.name, o.width, o.height, o.zoom, True, o.theme, o.close_action, o.cpu_buffers)
     cfg.logical_pointer = o.logical_pointer
+    cfg.nested = o.nested
     global LOG_PATH
     cache = os.environ.get("XDG_CACHE_HOME") or os.path.expanduser("~/.cache")
     os.makedirs(os.path.join(cache, "waydroid-manager"), exist_ok=True)
@@ -2408,7 +2707,7 @@ def main(argv=None):
     except SystemExit:
         raise
     except BaseException:
-        log_error("proxy crashed")
+        log_error("proxy crashed", always=True)
         raise
 
 

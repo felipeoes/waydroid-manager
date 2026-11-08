@@ -108,7 +108,8 @@ def reset_ids_online(iid):
     """After boot: new legacy android_id and fresh Google Services identity."""
     out = []
     new_id = secrets.token_hex(8)
-    attach(iid, ["/system/bin/settings", "put", "secure", "android_id", new_id], check=False)
+    # must work: a reset marked done that never ran leaves a clone with its source's identity
+    attach(iid, ["/system/bin/settings", "put", "secure", "android_id", new_id])
     out.append("android_id={}".format(new_id))
     pkgs = attach(iid, ["/system/bin/pm", "list", "packages"], check=False).stdout
     for pkg in GMS_PACKAGES:
@@ -206,10 +207,74 @@ def _install_xapk(inst, src):
             raise
 
 
+PM_TIMEOUT = 900       # seconds a pm command may take, its APK's streaming included
+
+
+def _pump(p, src, sinks, timeout):
+    """Feed src (a file object, or None) into p's stdin and each of p's output pipes into its sink
+    (a function taking bytes) until they close, then reap p. Past timeout, p is killed and our
+    ends of the pipes are closed; 5 s after p exits too.
+
+    One thread and select: lxc-attach hands its pipes straight to the command in the container
+    (there's no tty), so killing it closes none of them, and a read or write blocked on a hung pm
+    or screencap would outlive any kill (and hold the instance lock)."""
+    import selectors
+    import subprocess
+    import time
+    deadline = time.monotonic() + timeout
+    sel = selectors.DefaultSelector()
+    for f, sink in sinks.items():
+        sel.register(f, selectors.EVENT_READ, sink)
+    if src is not None:
+        os.set_blocking(p.stdin.fileno(), False)
+        sel.register(p.stdin, selectors.EVENT_WRITE)
+    elif p.stdin:
+        p.stdin.close()
+    chunk = b""
+    try:
+        while sel.get_map():
+            if p.poll() is not None:    # what it left holding our pipes (system_server) gets 5 s
+                deadline = min(deadline, time.monotonic() + 5)
+            left = deadline - time.monotonic()
+            if left <= 0:
+                p.kill()
+                break
+            for key, _ in sel.select(min(left, 1)):
+                if key.fileobj is p.stdin:
+                    chunk = chunk or memoryview(src.read(1024 * 1024))
+                    try:
+                        if chunk:
+                            chunk = chunk[os.write(key.fd, chunk):]
+                            continue
+                    except BlockingIOError:
+                        continue
+                    except OSError:
+                        pass    # pm exited early; its output says why
+                else:
+                    data = os.read(key.fd, 1024 * 1024)
+                    if data:
+                        key.data(data)
+                        continue
+                sel.unregister(key.fileobj)
+                key.fileobj.close()
+    except BaseException:
+        p.kill()                # a source or write error: don't leave lxc-attach behind
+        raise
+    finally:
+        sel.close()
+        for f in (p.stdin, *sinks):
+            if f:
+                f.close()
+        try:
+            p.wait(max(deadline - time.monotonic(), 0))
+        except subprocess.TimeoutExpired:
+            p.kill()
+            p.wait()
+
+
 def _pm(inst, args, src=None, check=True):
     """Run 'pm ARGS' in the instance, src (a file object) on its stdin; returns its output."""
     import subprocess
-    import threading
     from .util import android_attach_env
     # lxc-attach chowns/chmods its stdio, so it must never get the caller's
     # file descriptor directly: feed the APK through a pipe instead.
@@ -219,32 +284,9 @@ def _pm(inst, args, src=None, check=True):
         cmd += ["--set-var", "{}={}".format(k, v)]
     cmd += ["--", "/system/bin/pm"] + args
     p = subprocess.Popen(cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-    chunks = {"out": b"", "err": b""}
-
-    def drain(stream, key):
-        chunks[key] = stream.read()
-    readers = [threading.Thread(target=drain, args=(p.stdout, "out"), daemon=True),
-               threading.Thread(target=drain, args=(p.stderr, "err"), daemon=True)]
-    for t in readers:
-        t.start()
-    try:
-        if src is not None:
-            shutil.copyfileobj(src, p.stdin, 1024 * 1024)
-    except (BrokenPipeError, OSError):
-        pass  # pm exited early; its output says why
-    finally:
-        try:
-            p.stdin.close()
-        except OSError:
-            pass
-    try:
-        p.wait(timeout=900)
-    except subprocess.TimeoutExpired:
-        p.kill()
-        p.wait()
-    for t in readers:
-        t.join(5)
-    out = (chunks["out"] + chunks["err"]).decode("utf-8", "replace").strip()
+    out, err = [], []
+    _pump(p, src, {p.stdout: out.append, p.stderr: err.append}, PM_TIMEOUT)
+    out = b"".join(out + err).decode("utf-8", "replace").strip()
     if check and (p.returncode != 0 or "Success" not in out):
         raise RuntimeError("install failed: " + out[-500:])
     return out
@@ -260,10 +302,12 @@ def screenshot(inst, fd):
                "/system/bin/screencap", "-p"]
         p = subprocess.Popen(cmd, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
         size = 0
-        for chunk in iter(lambda: p.stdout.read(1024 * 1024), b""):
+
+        def write(chunk):
+            nonlocal size
             out.write(chunk)
             size += len(chunk)
-        p.wait(timeout=30)
+        _pump(p, None, {p.stdout: write}, 60)   # a hung screencap (e.g. re-frozen) would block the read
         if p.returncode != 0 or size == 0:
             raise RuntimeError("screencap failed")
         return size

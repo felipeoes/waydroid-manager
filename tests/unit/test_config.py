@@ -6,7 +6,8 @@ import unittest
 from waydroid_manager import lxcconfig
 from waydroid_manager.instance import (Instance, mac_for_index, validate_id, validate_prop,
                                      validate_setting)
-from waydroid_manager.netconfig import HOSTS_BEGIN, HOSTS_END, NetConfig, dhcp_hosts_text, etc_hosts_text, host_names
+from waydroid_manager.netconfig import (HOSTS_BEGIN, HOSTS_END, NetConfig, describe_blockers, dhcp_hosts_text,
+                                        etc_hosts_text, firewall_blockers, host_names, opening_rules)
 from waydroid_manager.registry import allocate_index
 
 # Shapes of the stock snippets (config_base + config_3 + config_4)
@@ -41,6 +42,8 @@ def build(base, **kw):
     args = dict(rootfs="/var/lib/waydroid-manager/instances/t1/rootfs",
                 lxc_dir="/var/lib/waydroid-manager/lxc/wdm-t1", bridge="wdm0",
                 mac="02:57:44:4d:00:01", veth="wdm1v", uts_name="waydroid-t1", arch="x86_64",
+                kernel_release="7.0.0-38-generic",
+                pidlimit_hook="/x/pidlimit.sh",
                 apparmor_profile="lxc-waydroid", poststop_hook="/x/poststop.sh",
                 netup_hook="/x/netup.sh", limits=["lxc.cgroup2.memory.high = 4G"])
     args.update(kw)
@@ -75,6 +78,20 @@ class LxcConfigTest(unittest.TestCase):
 
     def test_stock_163_poststop_placeholder(self):
         self.check_common(build(BASE_163))
+
+    def test_android_pids_fit_in_32_bit_bionic_mutexes(self):
+        for release in ("6.14.0", "6.14.0-rc2", "7.0.0-38-generic"):
+            with self.subTest(release=release):
+                text = build(BASE_162 + "lxc.sysctl.kernel.pid_max = 4194304\n", kernel_release=release)
+                self.assertEqual(values(text, "lxc.hook.start-host"), ["/x/pidlimit.sh"])
+                self.assertEqual(values(text, "lxc.sysctl.kernel.pid_max"), [])
+
+    def test_older_kernels_do_not_change_host_pid_limit(self):
+        for release in ("5.15.0", "6.8.0-90-generic", "6.13.12", "unknown"):
+            with self.subTest(release=release):
+                text = build(BASE_162 + "lxc.sysctl.kernel.pid_max = 65535\n", kernel_release=release)
+                self.assertEqual(values(text, "lxc.sysctl.kernel.pid_max"), [])
+                self.assertEqual(values(text, "lxc.hook.start-host"), [])
 
     def test_apparmor_unloaded_falls_back_to_unconfined(self):
         self.assertEqual(values(build(BASE_162, apparmor_profile=None), "lxc.apparmor.profile"), ["unconfined"])
@@ -155,6 +172,7 @@ class InstanceTest(unittest.TestCase):
         self.assertEqual(validate_setting("zoom", "75%"), "75")
         self.assertEqual(validate_setting("zoom", "AUTO"), "auto")
         self.assertEqual(validate_setting("device_model", "pixel_7"), "pixel_7")
+        self.assertEqual(validate_setting("width", "0"), "0")      # match the display
         for k, v in (("width", "-1"), ("cpuset", "0-3;rm"), ("memory", "lots"), ("close_action", "explode"),
                      ("name", "a\nb"), ("bogus", "1"), ("cpus", ""), ("memory", ""), ("memory", "100M"),
                      ("zoom", "10"), ("device_model", "nokia3310")):
@@ -308,6 +326,70 @@ class NetConfigTest(unittest.TestCase):
     def test_hosts_file(self):
         self.assertEqual(dhcp_hosts_text([("02:..:02", "10.0.0.12"), ("02:..:01", "10.0.0.11")]),
                          "02:..:01,10.0.0.11\n02:..:02,10.0.0.12\n")
+
+
+def _chain(family, table, name, hook, policy):
+    return {"chain": {"family": family, "table": table, "name": name, "handle": 1, "type": "filter",
+                      "hook": hook, "prio": 0, "policy": policy}}
+
+
+# `nft -j list ruleset` (nft 1.1.7) on Artix with Docker's FORWARD DROP in iptables-nft, Arch's
+# default /etc/nftables.conf, our own table, a firewalld table, an IPv6-only table, and one rule we added
+RULESET = {"nftables": [
+    {"metainfo": {"version": "1.1.7", "release_name": "Commodore Bullmoose #8", "json_schema_version": 1}},
+    {"table": {"family": "ip", "name": "filter", "handle": 1}},
+    _chain("ip", "filter", "FORWARD", "forward", "drop"),
+    _chain("ip", "filter", "INPUT", "input", "accept"),
+    {"chain": {"family": "ip", "table": "nat", "name": "POSTROUTING", "handle": 1, "type": "nat",
+               "hook": "postrouting", "prio": 100, "policy": "accept"}},
+    {"table": {"family": "inet", "name": "filter", "handle": 8}},
+    _chain("inet", "filter", "input", "input", "drop"),
+    _chain("inet", "filter", "forward", "forward", "drop"),
+    {"chain": {"family": "inet", "table": "filter", "name": "helper", "handle": 3}},    # not a base chain
+    _chain("inet", "waydroid_manager", "forward", "forward", "drop"),
+    _chain("inet", "firewalld", "filter_FORWARD", "forward", "accept"),
+    _chain("ip6", "filter6", "forward6", "forward", "drop"),
+    {"rule": {"family": "inet", "table": "filter", "chain": "input", "handle": 9, "comment": "allow sshd",
+              "expr": [{"match": {"op": "==", "left": {"payload": {"protocol": "tcp", "field": "dport"}},
+                                  "right": 22}}, {"accept": None}]}},
+    {"rule": {"family": "inet", "table": "filter", "chain": "forward", "handle": 12, "comment": "waydroid-manager",
+              "expr": [{"match": {"op": "==", "left": {"meta": {"key": "iifname"}}, "right": "wdm0"}},
+                       {"accept": None}]}},
+]}
+
+
+class HostFirewallTest(unittest.TestCase):
+    ARCH = [("inet", "filter", "input", "input"), ("inet", "filter", "forward", "forward")]
+
+    def test_drop_policies_of_other_tables_block(self):
+        # our iptables-nft rules come first in ip filter, so Docker's FORWARD DROP there is no blocker
+        self.assertEqual(firewall_blockers(RULESET, "iptables-nft"), self.ARCH)
+
+    def test_ip_filter_blocks_when_our_rules_are_elsewhere(self):
+        for backend in ("nft", "iptables-legacy", ""):
+            with self.subTest(backend=backend):
+                self.assertEqual(firewall_blockers(RULESET, backend),
+                                 [("ip", "filter", "FORWARD", "forward")] + self.ARCH)
+
+    def test_no_nftables_rules(self):
+        self.assertEqual(firewall_blockers({}, "iptables-nft"), [])
+        self.assertEqual(firewall_blockers({"nftables": [{"metainfo": {}}]}, "nft"), [])
+
+    def test_opening_rules(self):
+        tag = ["comment", '"waydroid-manager"']
+        self.assertEqual(opening_rules(self.ARCH, "wdm0"), [
+            ["nft", "insert", "rule", "inet", "filter", "input", "iifname", '"wdm0"', "udp", "dport", "{ 53, 67 }",
+             "accept"] + tag,
+            ["nft", "insert", "rule", "inet", "filter", "input", "iifname", '"wdm0"', "tcp", "dport", "{ 53, 67 }",
+             "accept"] + tag,
+            ["nft", "insert", "rule", "inet", "filter", "forward", "iifname", '"wdm0"', "accept"] + tag,
+            ["nft", "insert", "rule", "inet", "filter", "forward", "oifname", '"wdm0"', "accept"] + tag,
+        ])
+
+    def test_description(self):
+        self.assertEqual(describe_blockers(self.ARCH), "table inet filter (input, forward)")
+        self.assertEqual(describe_blockers([("ip", "filter", "FORWARD", "forward")] + self.ARCH),
+                         "table ip filter (FORWARD)\ntable inet filter (input, forward)")
 
 
 class RegistryTest(unittest.TestCase):

@@ -27,10 +27,11 @@ class BinderService:
         self.name = name
         self.handler = handler
         self.obj = sm.new_local_object(iface, self._handle)
-        self.hid = sm.add_presence_handler(self._presence)
-        self._presence()
+        self.register()
 
-    def _presence(self):
+    def register(self):
+        """Also on each start of Android's service manager: the session's one presence handler
+        calls it (gbinder keeps one handler per ServiceManager, the last one added)."""
         if self.sm.is_present():
             status = self.sm.add_service_sync(self.name, self.obj)
             if status:
@@ -50,7 +51,6 @@ class BinderService:
 
     def close(self):
         try:
-            self.sm.remove_handler(self.hid)
             self.obj.drop()
         except Exception:  # noqa: BLE001
             pass
@@ -58,9 +58,17 @@ class BinderService:
 
 # -- clipboard ------------------------------------------------------------------
 
-def clipboard_service(sm):
-    if not (shutil.which("wl-copy") and shutil.which("wl-paste")):
-        log.info("wl-clipboard not installed: clipboard sharing disabled")
+def clipboard_service(sm, x11=False):
+    """x11: the desktop is X11 (the device's window is a Weston of its own, whose clipboard
+    wl-copy would reach): share X11's clipboard through xclip."""
+    if x11:
+        copy = ["xclip", "-selection", "clipboard", "-in", "-target", "UTF8_STRING"]
+        paste = ["xclip", "-selection", "clipboard", "-out", "-target", "UTF8_STRING"]
+    else:
+        copy = ["wl-copy", "--type", "text/plain;charset=utf-8"]
+        paste = ["wl-paste", "--no-newline", "--type", "text/plain;charset=utf-8"]
+    if not (shutil.which(copy[0]) and shutil.which(paste[0])):
+        log.info("%s not installed: clipboard sharing disabled", "xclip" if x11 else "wl-clipboard")
         return None
     I = stock.tools().interfaces.IClipboard
 
@@ -68,7 +76,10 @@ def clipboard_service(sm):
         if code == I.TRANSACTION_sendClipboardData:
             text = reader.read_string16() or ""
             try:
-                subprocess.run(["wl-copy", "--", text], timeout=2, check=False,
+                # On stdin: as an argument, text over 128 KiB exceeds the kernel's limit and fails.
+                # The type is explicit, or wl-copy would guess it from what stdin looks like.
+                subprocess.run(copy, input=text.encode(),
+                               timeout=2, check=False,
                                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
             except subprocess.TimeoutExpired:
                 pass
@@ -76,8 +87,7 @@ def clipboard_service(sm):
             return True
         if code == I.TRANSACTION_getClipboardData:
             try:
-                r = subprocess.run(["wl-paste", "--no-newline", "--type", "text/plain;charset=utf-8"],
-                                   capture_output=True, timeout=2)
+                r = subprocess.run(paste, capture_output=True, timeout=2)
                 text = r.stdout.decode("utf-8", "replace") if r.returncode == 0 else ""
             except subprocess.TimeoutExpired:
                 text = ""
@@ -103,8 +113,10 @@ class Notifications:
         self.signals = []
         self.service = None
         try:
+            # follow: bound to the server's current connection, a restarted notification server
+            # (plasmashell, gnome-shell) would leave every later notification failing
             self.proxy = dbus.Interface(dbus.SessionBus().get_object(
-                "org.freedesktop.Notifications", "/org/freedesktop/Notifications"),
+                "org.freedesktop.Notifications", "/org/freedesktop/Notifications", follow_name_owner_changes=True),
                 "org.freedesktop.Notifications")
         except dbus.DBusException as e:
             log.info("no notification server: %s", e)

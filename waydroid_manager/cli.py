@@ -9,7 +9,8 @@ import sys
 import time
 
 from . import __version__, catalog, paths
-from .client import Daemon, DaemonError, platform_service, start_session, statusbar_service, stop_session, session_active
+from .client import (Daemon, DaemonError, daemon_command, platform_service, start_session, statusbar_service,
+                     stop_session, session_active)
 from .instance import SETTINGS, RESTART_SETTINGS
 
 ACTIVE = ("RUNNING", "FROZEN")
@@ -24,7 +25,8 @@ def daemon():
     try:
         return Daemon()
     except DaemonError as e:
-        die("{}\nIs it installed and running? (sudo systemctl start waydroid-manager)".format(e))
+        cmd = daemon_command("start")
+        die("{}\nIs it installed and running?{}".format(e, " (sudo {})".format(" ".join(cmd)) if cmd else ""))
 
 
 def wait_state(d, iid, wanted, timeout=120):
@@ -64,7 +66,8 @@ def cmd_list(o):
     rows = [("#", "NAME", "ANDROID", "STATE", "IP", "SCREEN", "DEVICE", "LIMITS")]
     from . import devices
     for i in items:
-        screen = "{}x{}@{}".format(i["width"], i["height"], i["dpi"])
+        size = "display" if "0" in (i["width"], i["height"]) else "{}x{}".format(i["width"], i["height"])
+        screen = "{}@{}".format(size, i["dpi"])
         lim = "{} cpu, {}".format(i["cpus"], i["memory"])
         pin = i.get("pinned") or i["cpuset"]
         if pin:
@@ -233,8 +236,7 @@ def ensure_running(d, iid, background=False):
     start_session(iid, background=background)
     st = wait_state(d, iid, ACTIVE)
     if st not in ACTIVE:
-        die("instance #{} failed to start (state {}). See: journalctl --user -u {}"
-            .format(iid, st, "waydroid-manager-session-{}".format(iid)))
+        die("instance #{} failed to start (state {}). See: waydroid-manager log {}".format(iid, st, iid))
     return True
 
 
@@ -254,6 +256,10 @@ def cmd_start(o):
     if not o.background:
         show_full_ui(o.id, timeout=o.timeout)
     print("#{} is running (IP {}).".format(o.id, info["ip"]))
+    blocked = d.info()
+    if blocked.get("firewall") and blocked.get("firewall_consent") == "ask":
+        print("Your firewall blocks devices' network ({}).\n{}".format(blocked["firewall"].replace("\n", "; "),
+                                                                    FIREWALL_HINT))
     if o.wait:
         cmd_wait(o)
 
@@ -293,6 +299,30 @@ def cmd_status(o):
     info = d.get(o.id)
     for k in sorted(info):
         print("{:26} {}".format(k, info[k]))
+
+
+FIREWALL_HINT = "To let devices through, run: sudo waydroid-manager firewall allow"
+
+
+def cmd_firewall(o):
+    d = daemon()
+    if o.answer:
+        if os.geteuid() != 0:
+            die("changing your firewall needs root: sudo waydroid-manager firewall " + o.answer)
+        try:
+            d.set_host_firewall(o.answer)
+        except DaemonError as e:
+            die(e)
+    info = d.info()
+    consent = info.get("firewall_consent", "ask")
+    print("Adding rules for devices to your firewall: " +
+          {"allow": "allowed", "deny": "denied", "ask": "not decided yet"}[consent])
+    if info.get("firewall"):
+        print("Your firewall blocks devices' network:\n  " + info["firewall"].replace("\n", "\n  "))
+        if consent != "allow":
+            print(FIREWALL_HINT)
+    else:
+        print("Nothing in your firewall blocks devices' network (checked whenever devices start).")
 
 
 def cmd_wait(o):
@@ -426,6 +456,9 @@ def cmd_log(o):
         if not os.path.exists(path):
             die("no window log for #{} (has it been started?)".format(o.id))
         os.execvp("tail", ["tail", "-n", str(max(o.lines, 400)), path])
+    if not paths.systemd_booted():      # no journal: the session's log (client.run_unit) or the daemon's
+        path = os.path.join(paths.user_cache_dir(), "session-{}.log".format(o.id)) if o.id else paths.DAEMON_LOG
+        os.execvp("tail", ["tail", "-n", str(o.lines)] + (["-f"] if o.follow else []) + [path])
     if o.id:
         os.execvp("journalctl", ["journalctl", "--user", "-u", "waydroid-manager-session-{}".format(o.id),
                                  "-n", str(o.lines)] + (["-f"] if o.follow else []))
@@ -478,21 +511,28 @@ def cmd_doctor(o):
           "libgbinder ({}) speaks Android 15-17's protocols".format("shipped" if shipped else "system"),
           "libgbinder lacks Android 15-17's protocols: apps can't be installed there "
           "(run packaging/build-libgbinder.sh, then scripts/install.sh)")
+    check(os.path.exists("/sys/fs/cgroup/cgroup.controllers"), "cgroup v2", paths.CGROUP_V2_NEEDED)
     check(shutil.which("lxc-start"), "LXC installed", "LXC not installed")
     check(shutil.which("dnsmasq"), "dnsmasq installed", "dnsmasq not installed")
     check(shutil.which("openssl"), "openssl installed",
           "openssl missing: apps with web content can crash on Android 16 and 17")
-    check(shutil.which("wl-copy"), "wl-clipboard installed", "wl-clipboard missing: no clipboard sharing")
-    check(os.environ.get("WAYLAND_DISPLAY"), "Wayland session", "WAYLAND_DISPLAY not set")
+    if not os.environ.get("WAYLAND_DISPLAY") and os.environ.get("DISPLAY"):
+        check(shutil.which("weston"), "X11 session: devices open in a Weston window",
+              "X11 session: install weston to run devices")
+        check(shutil.which("xclip"), "xclip installed", "xclip missing: no clipboard sharing")
+    else:
+        check(os.environ.get("WAYLAND_DISPLAY"), "Wayland session", "WAYLAND_DISPLAY not set")
+        check(shutil.which("wl-copy"), "wl-clipboard installed", "wl-clipboard missing: no clipboard sharing")
     from ctypes.util import find_library
     from . import gpu
-    if gpu.nvidia_display():
-        check(os.path.exists("/dev/nvidiactl"), "the desktop is on NVIDIA: devices render there (Graphics: auto)",
-              "the desktop is on an NVIDIA GPU without NVIDIA's proprietary driver: devices render in software")
+    node = gpu.host_gpu()
+    if gpu.nvidia_display() or (not node and any(g.driver == "nvidia" for g in gpu.gpus())):
+        where = "the desktop is on NVIDIA" if gpu.nvidia_display() else "no GPU shows the desktop"
+        check(os.path.exists("/dev/nvidiactl"), where + ": devices render on NVIDIA (Graphics: auto)",
+              where + ", and NVIDIA's proprietary driver is missing: devices render in software")
         check(find_library("epoxy") and find_library("gbm"), "libepoxy and libgbm (NVIDIA's renderer, other GPUs' frames)",
               "libepoxy or libgbm missing: NVIDIA's renderer can't run, nor another GPU's frames show")
     else:
-        node = gpu.host_gpu()
         check(True, "devices render on {} (Graphics: auto)".format(node) if node else
               "no usable GPU: devices render in software", "")
     for g in gpu.gpus():
@@ -511,6 +551,9 @@ def cmd_doctor(o):
         from .netconfig import NetConfig
         bad = NetConfig.load().overlapping_routes()
         check(not bad, "subnet {} is free".format(info["subnet"]), "subnet overlaps: " + ", ".join(bad))
+        check(not info.get("firewall"), "your firewall lets devices through (checked whenever devices start)",
+              "your firewall blocks devices' network ({}). {}".format(info.get("firewall", "").replace("\n", "; "),
+                                                                      FIREWALL_HINT))
     except DaemonError as e:
         check(False, "", "daemon not reachable: {}".format(e))
     sys.exit(0 if ok else 1)
@@ -533,8 +576,8 @@ def add_settings(p, create=True):
     if create:
         p.add_argument("--android", choices=tuple(catalog.VERSIONS),
                        help="Android version (default {}; a new version is downloaded first)".format(catalog.DEFAULT))
-    p.add_argument("--width", type=int, help="window width in px")
-    p.add_argument("--height", type=int, help="window height in px")
+    p.add_argument("--width", type=int, help="Android's screen width in px (0 with --height 0: match the display)")
+    p.add_argument("--height", type=int, help="Android's screen height in px")
     p.add_argument("--dpi", type=int, help="screen density")
     p.add_argument("--cpus", help="CPU limit in cores (default 2)")
     p.add_argument("--cpuset", help="pin to host CPUs (e.g. 0-3; all = not pinned)")
@@ -663,6 +706,10 @@ def parser():
     c.set_defaults(fn=cmd_gsf)
 
     sub.add_parser("doctor", help="check the host setup").set_defaults(fn=cmd_doctor)
+    c = sub.add_parser("firewall", help="whether your firewall blocks devices' network; allow (or deny) adding "
+                                         "rules that let them through (needs root)")
+    c.add_argument("answer", nargs="?", choices=("allow", "deny"))
+    c.set_defaults(fn=cmd_firewall)
     sub.add_parser("devices", help="list device model presets").set_defaults(fn=cmd_devices)
 
     c = sub.add_parser("session", help=argparse.SUPPRESS)

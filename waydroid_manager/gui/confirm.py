@@ -12,6 +12,8 @@ gi.require_version("Gtk", "4.0")
 gi.require_version("Adw", "1")
 from gi.repository import Adw, Gio, GLib  # noqa: E402
 
+from .adwcompat import present_alone  # noqa: E402
+
 # The manager's app id (NON_UNIQUE, so it never talks to a running manager)
 APP_ID = "io.github.waydroidmanager"
 
@@ -40,7 +42,7 @@ def main(argv=None):
             answer[0] = resp
             app.quit()
         dlg.connect("response", respond)
-        dlg.present(None)          # no parent: shown as its own small window
+        present_alone(dlg)          # no parent: shown as its own small window
 
     app.connect("activate", activate)
     app.run(sys.argv[:1])

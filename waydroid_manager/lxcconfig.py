@@ -27,7 +27,7 @@ def _split(line):
     return key.strip(), val.strip()
 
 
-def build_config(snippets, *, rootfs, lxc_dir, bridge, mac, veth, uts_name, arch,
+def build_config(snippets, *, rootfs, lxc_dir, bridge, mac, veth, uts_name, arch, kernel_release, pidlimit_hook,
                  apparmor_profile=None, poststop_hook=None, netup_hook=None, limits=()):
     """Return the main LXC config text for one instance.
 
@@ -61,6 +61,8 @@ def build_config(snippets, *, rootfs, lxc_dir, bridge, mac, veth, uts_name, arch
             # Android never runs with no_new_privs; pairip-protected apps read it from
             # /proc/self/status and crash on purpose when it is set
             line = key + " = 0"
+        elif key == "lxc.sysctl.kernel.pid_max":
+            continue  # apply only where the kernel isolates it from the host
         line = line.replace("LXCARCH", arch)
         out.append(line)
 
@@ -68,6 +70,10 @@ def build_config(snippets, *, rootfs, lxc_dir, bridge, mac, veth, uts_name, arch
         out.append("lxc.net.0.veth.pair = " + veth)
         if netup_hook:
             out.append("lxc.net.0.script.up = " + netup_hook)
+    # 32-bit bionic stores mutex owner TIDs in 16 bits; pid_max is namespaced since Linux 6.14.
+    version = re.match(r"(\d+)\.(\d+)", kernel_release)
+    if version and tuple(map(int, version.groups())) >= (6, 14):
+        out.append("lxc.hook.start-host = " + pidlimit_hook)
     out.extend(limits)
     text = "\n".join(out).rstrip("\n") + "\n"
     check(text)

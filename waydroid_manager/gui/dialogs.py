@@ -52,6 +52,8 @@ def resolution_presets(kind):
 
 def classify(width, height, dpi):
     """Which form factor/preset index an existing size belongs to."""
+    if not (width and height):
+        return "display", 0
     for kind in ("tablet", "phone"):
         for i, (_, w, h, d) in enumerate(resolution_presets(kind)):
             if (w, h, d) == (width, height, dpi):
@@ -92,15 +94,16 @@ def _with_current(options, value, fmt):
     return options
 
 
-def _toggles(options, active, changed):
+def _toggles(options, active, changed, on):
     """Toggle buttons for [(name, label)], returned with a function giving the active name. They are an
-    Adw.ToggleGroup on libadwaita 1.7+, and linked GTK toggle buttons before that (Ubuntu 24.04 has 1.5)."""
+    Adw.ToggleGroup on libadwaita 1.7+, and linked GTK toggle buttons before that (Ubuntu 24.04 has 1.5).
+    on(obj, signal, handler) connects their handlers (_Dialog._on)."""
     if hasattr(Adw, "ToggleGroup"):
         group = Adw.ToggleGroup(valign=Gtk.Align.CENTER)
         for name, label in options:
             group.add(Adw.Toggle(name=name, label=label))
         group.set_active_name(active)
-        group.connect("notify::active-name", lambda *_: changed())
+        on(group, "notify::active-name", lambda *_: changed())
         return group, group.get_active_name
     box = Gtk.Box(valign=Gtk.Align.CENTER, css_classes=["linked"])
     buttons = {}
@@ -109,7 +112,7 @@ def _toggles(options, active, changed):
         box.append(buttons[name])
     buttons[active].set_active(True)
     for b in buttons.values():
-        b.connect("toggled", lambda b: b.get_active() and changed())
+        on(b, "toggled", lambda b: b.get_active() and changed())
     return box, lambda: next(name for name, b in buttons.items() if b.get_active())
 
 
@@ -122,6 +125,18 @@ def _spin(title, lo, hi, step, value, digits=0, subtitle=None):
 
 
 class _Dialog(Adw.Dialog):
+    def _on(self, obj, signal, handler):
+        """obj.connect, undone when the dialog closes. Handlers on our widgets hold self: a cycle
+        through GTK that Python's gc can't see, so a closed dialog (megabytes of widgets) would
+        never be freed. A weak self (window.BaseRow) isn't enough here: handlers hold other
+        widgets of the dialog too (a property's remove button, its row)."""
+        self.__dict__.setdefault("_handlers", []).append((obj, obj.connect(signal, handler)))
+
+    def _disconnect(self):
+        for obj, handler in self.__dict__.pop("_handlers", []):
+            obj.disconnect(handler)
+        return False
+
     def _frame(self, title, submit_label, content):
         self.set_title(title)
         view = Adw.ToolbarView()
@@ -129,14 +144,15 @@ class _Dialog(Adw.Dialog):
         header.set_show_end_title_buttons(False)
         header.set_show_start_title_buttons(False)
         cancel = Gtk.Button(label="Cancel")
-        cancel.connect("clicked", lambda *_: self.close())
+        self._on(cancel, "clicked", lambda *_: self.close())
         header.pack_start(cancel)
         self.submit = Gtk.Button(label=submit_label, css_classes=["suggested-action"])
-        self.submit.connect("clicked", self._on_submit)
+        self._on(self.submit, "clicked", self._on_submit)
         header.pack_end(self.submit)
         view.add_top_bar(header)
         view.set_content(content)
         self.set_child(view)
+        self.connect("closed", lambda d: GLib.idle_add(d._disconnect))
 
 
 class InstanceDialog(_Dialog):
@@ -153,7 +169,7 @@ class InstanceDialog(_Dialog):
         # A sidebar of sections, each its own short page
         self.stack = Gtk.Stack(hexpand=True)
         self.nav = Gtk.ListBox(css_classes=["navigation-sidebar"])
-        self.nav.connect("row-selected", lambda _l, row: row and self.stack.set_visible_child_name(row.get_name()))
+        self._on(self.nav, "row-selected", lambda _l, row: row and self.stack.set_visible_child_name(row.get_name()))
         content = Gtk.Box()
         content.append(Gtk.ScrolledWindow(child=self.nav, hscrollbar_policy=Gtk.PolicyType.NEVER, width_request=180))
         content.append(Gtk.Separator(orientation=Gtk.Orientation.VERTICAL))
@@ -174,7 +190,7 @@ class InstanceDialog(_Dialog):
                               "To copy an existing instance, use Clone.")
             self.android_row = _combo("Android version", ANDROID)
             _select(self.android_row, ANDROID, catalog.DEFAULT)
-            self.android_row.connect("notify::selected", lambda *_: self._android_changed())
+            self._on(self.android_row, "notify::selected", lambda *_: self._android_changed())
             g.add(self.android_row)
         else:
             g.add(Adw.ActionRow(title="Android version", subtitle=catalog.label(self.info["android"])
@@ -200,11 +216,13 @@ class InstanceDialog(_Dialog):
         ch = int(self.info.get("height") or setting_default("height"))
         cdpi = int(self.info.get("dpi") or setting_default("dpi"))
         kind, idx = classify(cw, ch, cdpi)
-        type_row = Adw.ActionRow(title="Device type")
-        toggles, self._kind = _toggles((("phone", "Phone"), ("tablet", "Tablet"), ("custom", "Custom")), kind,
-                                       self._kind_changed)
-        type_row.add_suffix(toggles)
-        g.add(type_row)
+        if kind == "display":       # Custom starts from the default size, not 0
+            cw, ch = int(setting_default("width")), int(setting_default("height"))
+        self.type_row = Adw.ActionRow(title="Device type")
+        toggles, self._kind = _toggles((("phone", "Phone"), ("tablet", "Tablet"), ("custom", "Custom"),
+                                        ("display", "Match display")), kind, self._kind_changed, self._on)
+        self.type_row.add_suffix(toggles)
+        g.add(self.type_row)
         self.res_row = _wrapping(Adw.ComboRow(title="Resolution"))
         g.add(self.res_row)
         self.width_row = _spin("Width", 240, 7680, 2, cw)
@@ -230,7 +248,7 @@ class InstanceDialog(_Dialog):
             r.set_text(self.info.get("prop:ro.product.waydroid." + f, ""))
             g.add(r)
             self.custom_rows[f] = r
-        self.device_row.connect("notify::selected", lambda *_: self._device_changed())
+        self._on(self.device_row, "notify::selected", lambda *_: self._device_changed())
         self._device_changed()
 
         # -- performance
@@ -267,7 +285,7 @@ class InstanceDialog(_Dialog):
         self.writable_row.set_active(self.info.get("system_writable", "false") == "true")
         g.add(self.writable_row)
         self.root_row = Adw.SwitchRow(title="Root",
-                                      subtitle="Installs Magisk Delta; needs internet the first time")
+                                      subtitle="Installs Magisk; needs internet the first time")
         self.root_row.set_active(self.info.get("root", "false") == "true")
         g.add(self.root_row)
         self.arm_row = _combo("ARM translation", ARM, subtitle="Runs ARM-only apps; needs internet the first time")
@@ -282,7 +300,7 @@ class InstanceDialog(_Dialog):
                                                    description="Overrides for vendor/waydroid.prop (next start)")
             add = Gtk.Button(icon_name="list-add-symbolic", valign=Gtk.Align.CENTER, tooltip_text="Add property",
                              css_classes=["flat"])
-            add.connect("clicked", lambda *_: self._add_prop_row("", ""))
+            self._on(add, "clicked", lambda *_: self._add_prop_row("", ""))
             self.prop_group.set_header_suffix(add)
             page.add(self.prop_group)
             self.prop_rows = []
@@ -313,17 +331,20 @@ class InstanceDialog(_Dialog):
         box.append(v)
         box.append(rm)
         entry = (row, k, v)
-        rm.connect("clicked", lambda *_: (self.prop_group.remove(row), self.prop_rows.remove(entry)))
+        self._on(rm, "clicked", lambda *_: (self.prop_group.remove(row), self.prop_rows.remove(entry)))
         self.prop_group.add(row)
         self.prop_rows.append(entry)
 
     def _kind_changed(self, select=None):
         kind = self._kind()
-        custom = kind == "custom"
-        self.res_row.set_visible(not custom)
-        for r in (self.width_row, self.height_row, self.dpi_row):
+        custom, display = kind == "custom", kind == "display"
+        self.type_row.set_subtitle("Android takes your monitor's resolution, also when it changes"
+                                   if display else "")
+        self.res_row.set_visible(not (custom or display))
+        for r in (self.width_row, self.height_row):
             r.set_visible(custom)
-        if not custom:
+        self.dpi_row.set_visible(custom or display)
+        if not (custom or display):
             self.presets = resolution_presets(kind)
             self.res_row.set_model(Gtk.StringList.new([p[0] for p in self.presets]))
             if select is None:
@@ -356,6 +377,8 @@ class InstanceDialog(_Dialog):
         if self._kind() == "custom":
             w, h, dpi = (int(self.width_row.get_value()), int(self.height_row.get_value()),
                          int(self.dpi_row.get_value()))
+        elif self._kind() == "display":
+            w, h, dpi = 0, 0, int(self.dpi_row.get_value())
         else:
             _, w, h, dpi = self.presets[self.res_row.get_selected()]
         v["width"], v["height"], v["dpi"] = str(w), str(h), str(dpi)

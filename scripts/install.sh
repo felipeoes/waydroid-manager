@@ -28,6 +28,29 @@ UNITDIR="$PREFIX/lib/systemd/system"
 SRC="$(cd "$(dirname "$0")/.." && pwd)"
 D="$DESTDIR"
 
+# What starts the daemon: systemd, OpenRC or runit at boot; any other init, D-Bus on the first
+# call. Only one of them may: a D-Bus-started daemon would make the init's own exit and respawn.
+if [ -n "$DESTDIR" ]; then
+    INIT=package    # a systemd unit, which systemd prefers to the D-Bus Exec others use
+elif [ -d /run/systemd/system ]; then
+    INIT=systemd
+elif [ -d /run/openrc ]; then
+    INIT=openrc
+elif [ -d /run/runit ]; then
+    INIT=runit
+else
+    INIT=other
+fi
+case "$INIT" in
+    systemd|openrc|runit) DBUS_EXEC=/bin/false ;;
+    *) DBUS_EXEC="$BINDIR/waydroid-manager-daemon" ;;
+esac
+if [ -d /etc/runit/sv ]; then
+    SV_DIR=/etc/runit/sv; SV_LINKS=/run/runit/service       # Artix
+else
+    SV_DIR=/etc/sv; SV_LINKS=/var/service                   # Void
+fi
+
 if [ -z "$DESTDIR" ]; then
     [ "$(id -u)" = 0 ] || { echo "run as root: sudo $0" >&2; exit 1; }
     command -v waydroid >/dev/null || { echo "stock Waydroid must be installed first" >&2; exit 1; }
@@ -65,8 +88,11 @@ for tool in waydroid-manager:waydroid_manager waydroid-manager-gui:"waydroid_man
             waydroid-manager-daemon:waydroid_manager.daemon.main; do
     name="${tool%%:*}"
     module="${tool#*:}"
+    # D-Bus starts the daemon with an empty environment (no init does it): without PATH,
+    # Python has no sys.executable to start its helpers with
     cat > "$D$BINDIR/$name" <<EOF
 #!/bin/sh
+export PATH="\${PATH:-/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin}"
 PYTHONPATH="$LIBDIR\${PYTHONPATH:+:\$PYTHONPATH}" exec python3 -m $module "\$@"
 EOF
     chmod 755 "$D$BINDIR/$name"
@@ -74,11 +100,21 @@ done
 
 install -Dm644 "$SRC/data/dbus/io.github.waydroidmanager.Manager.conf" \
     "$D/usr/share/dbus-1/system.d/io.github.waydroidmanager.Manager.conf"
-install -Dm644 "$SRC/data/dbus/system-services/io.github.waydroidmanager.Manager.service" \
-    "$D/usr/share/dbus-1/system-services/io.github.waydroidmanager.Manager.service"
+mkdir -p "$D/usr/share/dbus-1/system-services"
+sed "s|@DBUS_EXEC@|$DBUS_EXEC|" "$SRC/data/dbus/system-services/io.github.waydroidmanager.Manager.service" \
+    > "$D/usr/share/dbus-1/system-services/io.github.waydroidmanager.Manager.service"
+chmod 644 "$D/usr/share/dbus-1/system-services/io.github.waydroidmanager.Manager.service"
 mkdir -p "$D$UNITDIR"
 sed "s|@BINDIR@|$BINDIR|g" "$SRC/data/systemd/waydroid-manager.service" > "$D$UNITDIR/waydroid-manager.service"
 chmod 644 "$D$UNITDIR/waydroid-manager.service"
+if [ "$INIT" = openrc ]; then
+    sed "s|@BINDIR@|$BINDIR|g" "$SRC/data/openrc/waydroid-manager" > /etc/init.d/waydroid-manager
+    chmod 755 /etc/init.d/waydroid-manager
+elif [ "$INIT" = runit ]; then
+    mkdir -p "$SV_DIR/waydroid-manager"
+    sed "s|@BINDIR@|$BINDIR|g" "$SRC/data/runit/waydroid-manager/run" > "$SV_DIR/waydroid-manager/run"
+    chmod 755 "$SV_DIR/waydroid-manager/run"
+fi
 install -Dm644 "$SRC/data/udev/70-waydroid-manager.rules" "$D/usr/lib/udev/rules.d/70-waydroid-manager.rules"
 install -Dm644 "$SRC/data/applications/io.github.waydroidmanager.desktop" \
     "$D/usr/share/applications/io.github.waydroidmanager.desktop"
@@ -90,11 +126,44 @@ fi
 [ "$ACTIVATE" = 1 ] || exit 0
 
 "$LIBDIR/migrate-from-waydroid-multi.sh"
-systemctl daemon-reload
-systemctl reload dbus 2>/dev/null || true
-systemctl enable waydroid-manager.service
 # (re)start: a restarted daemon adopts running instances
-systemctl restart waydroid-manager.service
+if [ "$INIT" = systemd ]; then
+    systemctl daemon-reload
+    systemctl reload dbus 2>/dev/null || true
+    systemctl enable waydroid-manager.service
+    systemctl restart waydroid-manager.service
+else
+    dbus-send --system --type=method_call --dest=org.freedesktop.DBus / org.freedesktop.DBus.ReloadConfig
+    case "$INIT" in
+        openrc)
+            rc-update add waydroid-manager default >/dev/null
+            rc-service waydroid-manager restart ;;
+        runit)
+            if [ -e "$SV_LINKS/waydroid-manager" ]; then
+                sv restart "$SV_LINKS/waydroid-manager"
+            else
+                ln -s "$SV_DIR/waydroid-manager" "$SV_LINKS/"      # runsvdir starts it within 5 s
+            fi ;;
+        *)
+            # D-Bus starts the new one; the old one stops on SIGTERM
+            if pkill -f -- '-m waydroid_manager\.daemon\.main'; then
+                for _ in 1 2 3 4 5 6 7 8 9 10; do
+                    pgrep -f -- '-m waydroid_manager\.daemon\.main' >/dev/null || break
+                    sleep 1
+                done
+            fi
+            dbus-send --system --type=method_call --print-reply=literal --dest=org.freedesktop.DBus / \
+                org.freedesktop.DBus.StartServiceByName string:io.github.waydroidmanager.Manager uint32:0 \
+                >/dev/null ;;
+    esac
+    # OpenRC and runit return before it's on the bus (systemd's Type=dbus waits): don't let the
+    # first command after this fail
+    for _ in $(seq 1 20); do
+        dbus-send --system --print-reply --dest=org.freedesktop.DBus / org.freedesktop.DBus.NameHasOwner \
+            string:io.github.waydroidmanager.Manager 2>/dev/null | grep -q true && break
+        sleep 0.5
+    done
+fi
 echo "Done. Open 'Waydroid Manager' from your app grid, or:"
 echo "  waydroid-manager create --name \"Account 1\"    # create an instance (prints its number)"
 echo "  waydroid-manager start 1                       # start it and open its window"

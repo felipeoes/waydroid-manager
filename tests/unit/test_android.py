@@ -326,13 +326,13 @@ class GpuTest(unittest.TestCase):
     NV = gpu.Gpu("0000:01:00.0", "GPU 0: NVIDIA GeForce RTX 5060 Ti", "nvidia", "/dev/dri/renderD128")
     AMD = gpu.Gpu("0000:11:00.0", "GPU 1: AMD Radeon Graphics", "amdgpu", "/dev/dri/renderD129")
 
-    def modes(self, android, nvidia_desktop, igpu, settings=("auto", "software")):
-        exists = os.path.exists
+    def modes(self, android, nvidia_desktop, igpu, settings=("auto", "software"), driver=None):
+        exists, driver = os.path.exists, nvidia_desktop if driver is None else driver
         with mock.patch.multiple(gpu, nvidia_display=lambda: nvidia_desktop,
                                  host_gpu=lambda: self.AMD.node if igpu else None,
                                  gpus=lambda: [self.NV, self.AMD]), \
                 mock.patch.object(gpu.os.path, "exists",
-                                  lambda p: nvidia_desktop if p == "/dev/nvidiactl" else exists(p)):
+                                  lambda p: driver if p == "/dev/nvidiactl" else exists(p)):
             return [gpu.mode(android, s) for s in settings]
 
     def test_desktop_on_nvidia(self):
@@ -344,6 +344,12 @@ class GpuTest(unittest.TestCase):
         self.assertEqual(self.modes("16", False, True)[0], ("gpu", None))       # stock Waydroid's pick
         self.assertEqual(self.modes("17", False, False)[0], ("vkms", None))
         self.assertEqual(self.modes(None, False, False)[0], ("software", None))  # stock on 10
+
+    def test_server_without_a_screen_renders_on_nvidia(self):
+        self.assertEqual(self.modes("17", False, False, driver=True)[0], ("nvidia", None))
+        self.assertEqual(self.modes("13", False, False, driver=True)[0], ("nvidia", None))
+        self.assertEqual(self.modes(None, False, False, driver=True)[0], ("software", None))  # no build
+        self.assertEqual(self.modes("16", False, True, driver=True)[0], ("gpu", None))  # a laptop's iGPU
 
     def test_picked_gpu(self):
         self.assertEqual(self.modes("16", True, True, ("0000:11:00.0", "0000:01:00.0")),
@@ -434,6 +440,13 @@ class StockPropsTest(unittest.TestCase):
         self.STOCK = dict(self.STOCK, **{"persist.waydroid.fake_touch": "com.example.game"})
         self.assertEqual(self.props(3, "13")["persist.waydroid.fake_touch"], "com.example.game")
 
+    def test_size_props_dropped_when_matching_the_display(self):
+        self.STOCK = dict(self.STOCK, **{"persist.waydroid.width": "1920", "persist.waydroid.height": "1080"})
+        self.assertEqual(self.props(3, "13")["persist.waydroid.width"], "1920")
+        props = self.props(3, "13", width="0", height="0")
+        self.assertNotIn("persist.waydroid.width", props)
+        self.assertNotIn("persist.waydroid.height", props)
+
     def test_stock_graphics_choice_only_for_0_as_stock_renders(self):
         self.assertIn("ro.hardware.gralloc", self.props(0, "13"))
         self.assertNotIn("ro.hardware.gralloc", self.props(0, "13", mode="nvidia"))
@@ -511,7 +524,7 @@ class EmulatorStealthTest(unittest.TestCase):
         length = struct.unpack_from("<I", data, idx - 96)[0] >> 24
         return data[idx - 92:idx - 92 + length].decode()
 
-    def test_armtrans_renames_houdini_and_whiteouts_base_houdini(self):
+    def test_armtrans_keeps_houdinis_name_and_whiteouts_it_for_libndk(self):
         from waydroid_manager.daemon import armtrans
         with tempfile.TemporaryDirectory() as d:
             zpath = os.path.join(d, "arm.zip")
@@ -522,13 +535,13 @@ class EmulatorStealthTest(unittest.TestCase):
             with mock.patch.object(layers, "whiteout", side_effect=whiteouts.append):
                 h_dir = os.path.join(d, "houdini")
                 armtrans._unpack(zpath, h_dir, "houdini")
-                self.assertEqual(armtrans.PROPS["houdini"]["ro.dalvik.vm.native.bridge"], "libnb_impl.so")
-                with open(os.path.join(h_dir, "system/lib64/libnb_impl.so"), "rb") as f:
-                    self.assertEqual(f.read(), b"ELF\0libnb_impl.so\0")
+                # pairip takes its Houdini path only for this exact mapped file name
+                self.assertEqual(armtrans.PROPS["houdini"]["ro.dalvik.vm.native.bridge"], "libhoudini.so")
+                with open(os.path.join(h_dir, "system/lib64/libhoudini.so"), "rb") as f:
+                    self.assertEqual(f.read(), b"ELF\0libhoudini.so\0")
                 with open(os.path.join(h_dir, "system/lib64/arm64/nb/libtcb.so"), "rb") as f:
-                    self.assertEqual(f.read(), b"NEEDED\0libnb_impl.so\0")
-                self.assertIn(os.path.join(h_dir, "system/lib64/libhoudini.so"), whiteouts)
-                whiteouts.clear()
+                    self.assertEqual(f.read(), b"NEEDED\0libhoudini.so\0")
+                self.assertEqual(whiteouts, [])
                 n_dir = os.path.join(d, "libndk")
                 armtrans._unpack(zpath, n_dir, "libndk")
                 self.assertIn(os.path.join(n_dir, "system/lib64/libhoudini.so"), whiteouts)
@@ -538,6 +551,13 @@ class EmulatorStealthTest(unittest.TestCase):
         self.assertEqual(text.count("processor\t:"), 4)
         for token in ("intel", "amd", "hypervisor"):
             self.assertNotIn(token, text.lower())
+
+    def test_houdini_cpuinfo_templates_fit_its_line_buffer(self):
+        # Houdini copies each template line into a 128-byte stack buffer
+        for name, features in container.HOUDINI_FEATURES.items():
+            text = container.cpuinfo_text(8, features)
+            self.assertLess(max(len(line) for line in text.splitlines()), 128, name)
+            self.assertIn("Features\t: " + features + "\n", text)
 
     def test_hide_emulator_props_updates_in_place_and_replaces_dalvik_prop_inode(self):
         with tempfile.TemporaryDirectory() as d:
@@ -672,6 +692,38 @@ class EmulatorStealthTest(unittest.TestCase):
                 with open(os.path.join(d, "libndk_translation.so"), "rb") as f:
                     patched = f.read()
                 self.assertEqual(patched[0x10:0x15], bytes.fromhex("4885db7407"))
+
+    def test_zygote_restart_rc_reboots_android_after_boot_only(self):
+        with tempfile.TemporaryDirectory() as d:
+            inst = Instance.new("4", 4, 1000, "", {}, {})
+            with mock.patch.object(Instance, "dir", d):
+                container.write_zygote_restart_rc(inst)
+            with open(os.path.join(d, "overlay/system/etc/init/zygote_restart.rc")) as f:
+                rc = f.read()
+        # during boot Magisk restarts zygote on purpose, and the props aren't scrubbed yet
+        self.assertIn("property:sys.boot_completed=1 && property:init.svc.zygote=restarting", rc)
+        # the daemon only starts Android again for a reason that begins with "reboot"
+        self.assertIn("setprop sys.powerctl reboot,", rc)
+
+    def test_fix_heap_caps_waydroid_init_heap(self):
+        with tempfile.TemporaryDirectory() as d:
+            inst = Instance.new("4", 4, 1000, "", {}, {})
+            rc = os.path.join(d, "rootfs/vendor/etc/init/waydroid-init.rc")
+            os.makedirs(os.path.dirname(rc))
+            with open(rc, "wb") as f:
+                f.write(b"on post-fs-data\n" + container.WAYDROID_INIT_EXEC)
+            with mock.patch.object(Instance, "dir", d), \
+                    mock.patch.object(Instance, "rootfs", os.path.join(d, "rootfs")), \
+                    mock.patch.object(container, "bind_mount") as bm:
+                container.fix_heap(inst)
+                bm.assert_called_once()
+                with open(os.path.join(d, "waydroid-init.rc"), "rb") as f:
+                    self.assertEqual(f.read(), b"on post-fs-data\n" + container.WAYDROID_INIT_EXEC +
+                                     b"    setprop dalvik.vm.heapsize 512m\n")
+                with open(rc, "w") as f:
+                    f.write("on post-fs-data\n    start something_else\n")
+                container.fix_heap(inst)
+                bm.assert_called_once()     # an rc it doesn't know is left alone
 
 
 if __name__ == "__main__":

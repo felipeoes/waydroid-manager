@@ -12,11 +12,15 @@ import platform
 import pwd
 import select
 import shutil
+import signal
 import stat
 import struct
 import subprocess
 import threading
 import time
+
+import dbus
+import dbus.service
 
 from .. import catalog, devices, gpu, lxcconfig, paths, stock, stockctl
 from ..instance import PROTECTED_PROP_RE, Instance
@@ -48,6 +52,9 @@ def stock_args(inst, config=None):
 
 STOCK_UNIT = "waydroid-container.service"
 STOCK_WAS_ACTIVE = os.path.join(paths.RUN_DIR, "stock-was-active")  # release_stock starts it again
+STOCK_BUS_NAME = "id.waydro.Container"
+RUNIT_DIRS = ("/run/runit/service", "/var/service", "/etc/service", "/service")    # Artix, Void, others
+_stock_name = []    # without systemd: our hold on STOCK_BUS_NAME while #0 runs (hold_stock)
 # No device-mapper: Android 14 and 15's apexd maps its APEXes there when it can, and those
 # mappings belong to the host: they outlive the container and collide between devices. Without
 # it apexd mounts its loop devices directly, as 16 and 17 do.
@@ -57,6 +64,14 @@ APPARMOR_PROFILE = "lxc-waydroid-manager"   # lxc-start may only switch to lxc-*
 APPARMOR_FILE = os.path.join(paths.RUN_DIR, "apparmor-profile")
 # mov edi, PR_SET_NO_NEW_PRIVS; mov esi, 1 (x86_64), in Waydroid's first-stage init on Android 16+
 INIT_NNP = bytes.fromhex("bf26000000be01000000")
+# The newer images' vendor init, which sets the Dalvik heap for the RAM it sees
+WAYDROID_INIT_EXEC = b"    exec -- /vendor/bin/waydroid-init\n"
+# A zygote that restarts after boot reads hide_emulator_props' values (no native bridge, ARM-only
+# ABI lists), and the instance loses its network too. Only a full boot brings them back; the
+# daemon starts Android again after a reboot.
+ZYGOTE_RESTART_RC = """on property:sys.boot_completed=1 && property:init.svc.zygote=restarting
+    setprop sys.powerctl reboot,zygote
+"""
 # ponytail: only inspected x86_64 builds before upstream bb49e333f3ab; inspect new builds before adding pins.
 # SHA-256 -> call's file offset.
 HWC_NVIDIA_SHA = "2bac9ae23e4536a1e2a5ea36be25e07d3430e64cfe53668c3ffa5124ec715d24"
@@ -147,15 +162,58 @@ def _stock_stopped():
         raise RuntimeError("stock Waydroid is running; stop it first ('waydroid session stop')")
 
 
+def _stock_service(action):
+    """Stop or start stock's container service through OpenRC or runit when one of them runs it
+    (they'd respawn it after a plain SIGTERM); False when neither does."""
+    if os.path.isfile("/etc/init.d/waydroid-container") and shutil.which("rc-service"):
+        if action == "stop" and run(["rc-service", "waydroid-container", "status"], check=False).returncode:
+            return False    # not started by OpenRC: D-Bus activated
+        return run(["rc-service", "waydroid-container", action], check=False).returncode == 0
+    for d in RUNIT_DIRS:
+        sv = os.path.join(d, "waydroid-container")
+        if os.path.isdir(sv) and shutil.which("sv"):
+            return run(["sv", action, sv], check=False).returncode == 0
+    return False
+
+
+def hold_stock():
+    """Without systemd nothing masks stock's container service: hold its bus name instead while
+    #0 runs. Its service and its D-Bus activation both use do_not_queue, so neither can start
+    stock Waydroid on #0's data then. Its idle service is stopped first, as the mask would."""
+    if _stock_name:
+        return
+    bus = dbus.SystemBus()
+    if bus.name_has_owner(STOCK_BUS_NAME):
+        _stock_stopped()    # its idle service may go, not a running container
+        open(STOCK_WAS_ACTIVE, "w").close()
+        if not _stock_service("stop"):
+            daemon = dbus.Interface(bus.get_object("org.freedesktop.DBus", "/org/freedesktop/DBus"),
+                                    "org.freedesktop.DBus")
+            try:
+                os.kill(int(daemon.GetConnectionUnixProcessID(STOCK_BUS_NAME)), signal.SIGTERM)
+            except (dbus.exceptions.DBusException, ProcessLookupError):
+                pass        # it just went
+        deadline = time.monotonic() + 10
+        while bus.name_has_owner(STOCK_BUS_NAME) and time.monotonic() < deadline:
+            time.sleep(0.2)
+    try:
+        _stock_name.append(dbus.service.BusName(STOCK_BUS_NAME, bus, do_not_queue=True))
+    except dbus.exceptions.NameExistsException:
+        raise RuntimeError("stock Waydroid's container service didn't stop; stop it first") from None
+
+
 def mount_stock_data(inst):
     """#0 runs on stock Waydroid's own data, bind-mounted in place (never copied or
     changed by us). Stock's container service is masked until #0 stops, so stock
     Waydroid can't boot the same data alongside it; the mask is --runtime, so a
-    reboot clears it even if we never get to."""
-    if run(["systemctl", "is-active", STOCK_UNIT], check=False).stdout.strip() == "active":
-        open(STOCK_WAS_ACTIVE, "w").close()
-    run(["systemctl", "mask", "--runtime", STOCK_UNIT])
-    run(["systemctl", "stop", STOCK_UNIT], check=False)
+    reboot clears it even if we never get to. Without systemd, hold_stock does that."""
+    if not paths.systemd_booted():
+        hold_stock()
+    else:
+        if run(["systemctl", "is-active", STOCK_UNIT], check=False).stdout.strip() == "active":
+            open(STOCK_WAS_ACTIVE, "w").close()
+        run(["systemctl", "mask", "--runtime", STOCK_UNIT])
+        run(["systemctl", "stop", STOCK_UNIT], check=False)
     _stock_stopped()  # also catches a start between start()'s check and the mask
     umount_tree(inst.data_dir)
     fd = storage.open_stock_data(inst.owner_uid)
@@ -166,16 +224,24 @@ def mount_stock_data(inst):
 
 
 def release_stock():
-    """Undo mount_stock_data's mask (only if it is ours) and start stock's service again if
-    it was running before."""
-    if run(["systemctl", "is-enabled", STOCK_UNIT], check=False).stdout.strip() != "masked-runtime":
+    """Undo mount_stock_data's mask (only if it is ours) or hold_stock's hold, and start stock's
+    service again if it was running before."""
+    if not paths.systemd_booted():
+        _stock_name.clear()     # the BusName going releases the name
+    elif run(["systemctl", "is-enabled", STOCK_UNIT], check=False).stdout.strip() != "masked-runtime":
         return
-    run(["systemctl", "unmask", "--runtime", STOCK_UNIT], check=False)
+    else:
+        run(["systemctl", "unmask", "--runtime", STOCK_UNIT], check=False)
     try:
         os.remove(STOCK_WAS_ACTIVE)
     except FileNotFoundError:
         return
-    run(["systemctl", "start", STOCK_UNIT], check=False)
+    if paths.systemd_booted():
+        run(["systemctl", "start", STOCK_UNIT], check=False)
+    elif not _stock_service("start"):
+        # its own Exec, as D-Bus would; no --print-reply: doesn't wait for it to start
+        run(["dbus-send", "--system", "--type=method_call", "--dest=org.freedesktop.DBus", "/",
+             "org.freedesktop.DBus.StartServiceByName", "string:" + STOCK_BUS_NAME, "uint32:0"], check=False)
 
 
 def ensure_dirs(inst):
@@ -259,6 +325,19 @@ def _read(path):
         return f.read()
 
 
+def enable_controllers():
+    """An instance's cpu.max and memory.high need these controllers for the root cgroup's
+    children: systemd enables them, OpenRC doesn't, and lxc-start fails without them. Enabling
+    one changes no other cgroup's limits."""
+    for c in ("cpu", "memory"):
+        try:
+            if c not in _read("/sys/fs/cgroup/cgroup.subtree_control").split():
+                with open("/sys/fs/cgroup/cgroup.subtree_control", "w") as f:
+                    f.write("+" + c)
+        except OSError as e:
+            log.warning("cannot enable the cgroup %s controller: %s", c, e)
+
+
 def host_cpus():
     """CPUs the containers' cgroups (children of the root one) can be pinned to, without the
     isolated ones (isolcpus=: no load balancing there); [] when the cpuset controller can't be
@@ -301,12 +380,20 @@ def pinned_cpus(inst):
         return []
 
 
+CPUINFO_FEATURES = ("fp asimd evtstrm aes pmull sha1 sha2 crc32 atomics fphp asimdhp cpuid asimdrdm "
+                    "jscvt fcma lrcpc dcpop sha3 sm3 sm4 asimddp sha512 asimdfhm dit uscat ilrcpc "
+                    "flagm ssbs sb paca pacg dcpodp flagm2 frint")
+# Houdini sets ARM code's HWCAPs from its /system/etc templates' Features line, copied into a
+# 128-byte stack buffer: a longer line aborts it (0xdead1001) in apps that read them (AppGuard).
+# Its own templates' lists: what it translates.
+HOUDINI_FEATURES = {
+    "cpuinfo.arm.txt": "neon vfp half thumb fastmult edsp vfpv3 vfpv4 idiva idivt tls aes sha1 sha2 crc32",
+    "cpuinfo.arm64.txt": "fp asimd aes pmull sha1 sha2 crc32 atomics",
+}
 CPUINFO_CORE = (
-    "processor\t: {}\n"
+    "processor\t: {n}\n"
     "BogoMIPS\t: 38.40\n"
-    "Features\t: fp asimd evtstrm aes pmull sha1 sha2 crc32 atomics fphp asimdhp cpuid asimdrdm "
-    "jscvt fcma lrcpc dcpop sha3 sm3 sm4 asimddp sha512 asimdfhm dit uscat ilrcpc flagm ssbs sb "
-    "paca pacg dcpodp flagm2 frint\n"
+    "Features\t: {features}\n"
     "CPU implementer\t: 0x41\n"
     "CPU architecture: 8\n"
     "CPU variant\t: 0x2\n"
@@ -328,8 +415,9 @@ def cpu_count(inst, cpuset=""):
         return 4
 
 
-def cpuinfo_text(count):
-    return "".join(CPUINFO_CORE.format(n) for n in range(max(1, count))) + CPUINFO_FOOTER
+def cpuinfo_text(count, features=CPUINFO_FEATURES):
+    return "".join(CPUINFO_CORE.format(n=n, features=features)
+                   for n in range(max(1, count))) + CPUINFO_FOOTER
 
 
 def write_cpuinfo(inst, count):
@@ -350,10 +438,13 @@ def write_lxc_config(inst, net, cpus_busy=(), render=("gpu", None)):
         if inst.get("cpus") and not cpuset:
             cpuset = lxcconfig.pick_cpus(inst.get("cpus"), cpus, cpus_busy, host_cores(cpus))
     limits = lxcconfig.cgroup_limits(inst.get("cpus"), cpuset, inst.get("memory"))
+    if limits:
+        enable_controllers()
     text = lxcconfig.build_config(
         stock.lxc_snippets(),
         rootfs=inst.rootfs, lxc_dir=inst.lxc_dir, bridge=net.cfg.bridge, mac=inst.mac,
         veth=inst.veth, uts_name="waydroid-" + inst.id.replace("_", "-"), arch=platform.machine(),
+        kernel_release=platform.release(), pidlimit_hook=paths.PIDLIMIT_SCRIPT,
         apparmor_profile=load_apparmor_profile(),
         poststop_hook=paths.POSTSTOP_SCRIPT,
         netup_hook=paths.NET_UP_SCRIPT if net.cfg.isolate else None, limits=limits)
@@ -416,7 +507,15 @@ def load_apparmor_profile():
     if not apparmor_profile_loaded(name):
         return None
     with open(os.path.join("/etc/apparmor.d/lxc", name)) as f:
-        _write(APPARMOR_FILE, apparmor_profile(f.read(), name))
+        text = apparmor_profile(f.read(), name)
+    try:
+        with open(APPARMOR_FILE) as f:
+            # loaded this boot (the file is on tmpfs) and unchanged: skip the parser, slow under _pin_lock
+            if f.read() == text and apparmor_profile_loaded(APPARMOR_PROFILE):
+                return APPARMOR_PROFILE
+    except OSError:
+        pass
+    _write(APPARMOR_FILE, text)
     run(["apparmor_parser", "--replace", "--skip-cache", APPARMOR_FILE])
     return APPARMOR_PROFILE
 
@@ -478,7 +577,8 @@ def vkms_card():
             if not gpu.vkms_supported():
                 raise RuntimeError("rendering on NVIDIA or in software (Android 14, 17) needs Linux 6.19 or "
                                    "newer: older kernels' vkms can't make the hidden device Android draws into")
-            run(["udevadm", "control", "--reload"])
+            if shutil.which("udevadm"):     # loads our rule; with no udev there's no desktop to hide from
+                run(["udevadm", "control", "--reload"], check=False)
             run(["modprobe", "vkms", "create_default_dev=0"])
             # each step is skipped when done: this also completes a setup that failed partway
             for group in ("planes/plane", "crtcs/crtc", "encoders/encoder", "connectors/connector"):
@@ -529,7 +629,7 @@ def ensure_overcommit():
 
 
 def sync_root(inst):
-    """Root switch: Magisk Delta in the instance's own lower layer (removed when off)."""
+    """Root switch: Magisk in the instance's own lower layer (removed when off)."""
     if inst.getbool("root") and not android_of(inst):
         log.warning("%s: root needs an Android version Waydroid Manager knows; starting without it", inst.id)
     elif inst.getbool("root"):
@@ -588,6 +688,36 @@ def fix_init(inst):
             return
         bind_patched(inst, src, data, "init", 0o755)
         log.info("%s: init no longer sets no_new_privs", inst.id)
+
+
+def write_zygote_restart_rc(inst):
+    """In the instance's own lower layer: unlike waydroid-init.rc's contents, it works on every image."""
+    d = os.path.join(inst.dir, "overlay/system/etc/init")
+    os.makedirs(d, exist_ok=True)
+    with open(os.path.join(d, "zygote_restart.rc"), "w") as f:
+        f.write(ZYGOTE_RESTART_RC)
+
+
+def fix_heap(inst):
+    """waydroid-init sizes the Dalvik heap from sysinfo(), the host's RAM, not the container's limit:
+    over 15 GB it picks 640m. ART's large object space reserves that much again in the low 4 GB,
+    at a random spot that can fill the 1-2 GB range where Berberis maps translated code, and ARM
+    games abort once that fills. Cap it at 512m, its pick for 3 to 15 GB, right after it runs.
+    For this mount only."""
+    # ponytail: 512m only makes that rarer (the space can still land in the range); the full fix is
+    # -XX:LargeObjectSpace=map in dalvik.vm.extra-opts if it still happens (=disabled crashes zygote).
+    try:
+        fd = open_beneath(inst.rootfs, "vendor/etc/init/waydroid-init.rc", os.O_RDONLY | os.O_NONBLOCK)
+    except FileNotFoundError:
+        return
+    with os.fdopen(fd, "rb") as src:
+        if not stat.S_ISREG(os.fstat(src.fileno()).st_mode):
+            raise RuntimeError("waydroid-init.rc is not a regular file")
+        data = src.read(64 << 10)
+        if data.count(WAYDROID_INIT_EXEC) != 1:
+            return
+        data = data.replace(WAYDROID_INIT_EXEC, WAYDROID_INIT_EXEC + b"    setprop dalvik.vm.heapsize 512m\n")
+        bind_patched(inst, src, data, "waydroid-init.rc", 0o644)
 
 
 def fix_angle(inst):
@@ -676,8 +806,8 @@ def fix_property_contexts(inst):
 
 def fix_cpuinfo(inst):
     """Bind the fake ARM64 cpuinfo over any static cpuinfo templates in /system/etc."""
-    data = cpuinfo_text(cpu_count(inst)).encode()
-    for name in ("cpuinfo.arm.txt", "cpuinfo.arm64.txt"):
+    for name, features in HOUDINI_FEATURES.items():
+        data = cpuinfo_text(cpu_count(inst), features).encode()
         try:
             fd = open_beneath(inst.rootfs, "system/etc/" + name, os.O_RDONLY | os.O_NONBLOCK)
         except FileNotFoundError:
@@ -871,11 +1001,12 @@ def mount_rootfs(inst, images_dir, gpu_layers=()):
     translation layer it mounted, or None."""
     rootfs = inst.rootfs
     sync_root(inst)
+    write_zygote_restart_rc(inst)
     umount_tree(rootfs)
     mount_image(os.path.join(images_dir, "system.img"), rootfs)
     sdk = stock.read_prop_file(rootfs + "/system/build.prop", "ro.build.version.sdk")
     arm = armtrans.layer(inst.get("arm_translation"), sdk)
-    wv = (webview.layer(rootfs, os.path.join(images_dir, "webview"))
+    wv = (webview.layer(rootfs, os.path.join(images_dir, webview.LAYER))
           if catalog.get(android_of(inst), "webview64") else None)
     shared = list(gpu_layers) + [d for d in (arm, images.gapps_layer(inst.image_id), wv) if d]
     if os.path.isdir(paths.STOCK_OVERLAY) and runs_stock_android(inst):
@@ -892,6 +1023,7 @@ def mount_rootfs(inst, images_dir, gpu_layers=()):
                   writable=inst.getbool("system_writable"))
     fix_hwc(inst)
     fix_init(inst)
+    fix_heap(inst)
     fix_ndk_translation(inst)
     fix_property_contexts(inst)
     fix_cpuinfo(inst)
@@ -939,6 +1071,15 @@ def host_timezone():
         return ""
 
 
+SIZE_PROPS = ("persist.waydroid.width", "persist.waydroid.height")
+
+
+def matches_display(inst):
+    """A 0 width or height: Android's display takes its window's monitor's size, and follows it
+    (session/wlproxy.py follow_display). No prop may pin it then, stock's or the device's own."""
+    return inst.get("width") == "0" or inst.get("height") == "0"
+
+
 def stock_props(inst, arm, mode):
     """Stock Waydroid's [properties] a start keeps, over our defaults (arm, mode: see write_props)."""
     kind = inst.get("arm_translation")
@@ -952,6 +1093,8 @@ def stock_props(inst, arm, mode):
             continue
         # its ARM translation (waydroid_script's) is in its overlay, made for stock's Android
         if k in armtrans.ALL_PROPS and (arm or kind == "none" or not stock_way):
+            continue
+        if k in SIZE_PROPS and matches_display(inst):
             continue
         out[k] = v
     return out
@@ -987,13 +1130,14 @@ def write_props(inst, session, arm, render=("gpu", None)):
     key = android_of(inst)
     if key:
         eff["properties"].update(catalog.get(key, "props", {}))
-    if catalog.get(key, "webview64") and os.path.isdir(os.path.join(images.image_dir(inst.image_id), "webview")):
+    if catalog.get(key, "webview64") and os.path.isdir(os.path.join(images.image_dir(inst.image_id), webview.LAYER)):
         # Android keeps a package's ABI until the build fingerprints change: this one (there's no
         # oem partition) makes a device made before the 64-bit WebView re-derive it, once. It
-        # repeats the build's own fingerprint, like the other partitions' do
+        # repeats the build's own fingerprint, like the other partitions' do, plus the layer
+        # revision so an updated APK is rescanned too.
         fp = (inst.cfg["properties"].get("ro.build.fingerprint") or build.get("ro.build.fingerprint")
               or stock.read_prop_file(inst.rootfs + "/system/build.prop", "ro.build.fingerprint"))
-        eff["properties"]["ro.oem.build.fingerprint"] = fp or "waydroid-manager:webview64"
+        eff["properties"]["ro.oem.build.fingerprint"] = (fp or "waydroid-manager") + ":" + webview.LAYER
     if mode == "gpu" and node:
         eff["waydroid"]["drm_device"] = node        # stock's props follow the picked GPU
     if mode == "vkms":
@@ -1016,6 +1160,8 @@ def write_props(inst, session, arm, render=("gpu", None)):
         if inst.owner_uid != 0 and PROTECTED_PROP_RE.match(k):
             log.warning("%s: ignoring property %s (only root may set it)", inst.id, k)
             continue
+        if k in SIZE_PROPS and matches_display(inst):
+            continue
         eff["properties"][k] = v
     eff_path = os.path.join(inst.dir, "effective.cfg")
     with open(eff_path, "w") as f:
@@ -1036,10 +1182,8 @@ def write_props(inst, session, arm, render=("gpu", None)):
     # Device model: ro.product.waydroid.* win in Android's product property source order
     for k, v in list(dev_props.items()) + list(build.items()):
         extra.append("{}={}".format(k, v))
-    if inst.get("width") != "0":
-        extra.append("persist.waydroid.width=" + inst.get("width"))
-    if inst.get("height") != "0":
-        extra.append("persist.waydroid.height=" + inst.get("height"))
+    if not matches_display(inst):
+        extra += ["persist.waydroid.width=" + inst.get("width"), "persist.waydroid.height=" + inst.get("height")]
     if host_timezone():
         extra.append("persist.sys.timezone=" + host_timezone())
     with open(full) as f:
@@ -1062,6 +1206,8 @@ def start(inst, net, hosts, session_in, uid, in_use, cpus_busy=list):
     in_use: see images.gc. cpus_busy(): the other running or starting instances' (cpus limit,
     pinned CPUs)."""
     pw = pwd.getpwuid(uid)
+    if not os.path.exists("/sys/fs/cgroup/cgroup.controllers"):
+        raise RuntimeError(paths.CGROUP_V2_NEEDED)
     if inst.index == 0:
         _stock_stopped()
     images_dir = select_image(inst, in_use)
@@ -1077,32 +1223,32 @@ def start(inst, net, hosts, session_in, uid, in_use, cpus_busy=list):
     render = render_for(inst)
     with _pin_lock:
         write_lxc_config(inst, net, cpus_busy(), render)
-    net.ensure_up(hosts)
-    set_device_permissions()
-    ensure_overcommit()
-
-    # Sockets: validate the caller's and bind them at root-owned paths
-    stage = paths.staging_dir(inst.id)
-    umount_tree(stage)
-    os.makedirs(stage, mode=0o755, exist_ok=True)
-    wl = os.path.join(stage, "wayland-0")
-    stage_socket(session_in["wayland_socket"], wl, uid)
-    pulse = ""
-    if session_in.get("pulse_socket"):
-        try:
-            pulse = os.path.join(stage, "pulse-native")
-            stage_socket(session_in["pulse_socket"], pulse, uid)
-        except (OSError, PermissionError) as e:
-            log.warning("%s: no audio: %s", inst.id, e)
-            pulse = ""
-    venus = ""
-    if render[0] == "nvidia":
-        venus = os.path.join(stage, "venus")
-        stage_dir(session_in.get("venus_dir", ""), venus, uid)
-    _write(os.path.join(inst.lxc_dir, "config_session"),
-           lxcconfig.session_entries(wl, pulse, inst.data_dir, venus))
-
     try:
+        net.ensure_up(hosts)
+        set_device_permissions()
+        ensure_overcommit()
+
+        # Sockets: validate the caller's and bind them at root-owned paths
+        stage = paths.staging_dir(inst.id)
+        umount_tree(stage)
+        os.makedirs(stage, mode=0o755, exist_ok=True)
+        wl = os.path.join(stage, "wayland-0")
+        stage_socket(session_in["wayland_socket"], wl, uid)
+        pulse = ""
+        if session_in.get("pulse_socket"):
+            try:
+                pulse = os.path.join(stage, "pulse-native")
+                stage_socket(session_in["pulse_socket"], pulse, uid)
+            except (OSError, PermissionError) as e:
+                log.warning("%s: no audio: %s", inst.id, e)
+                pulse = ""
+        venus = ""
+        if render[0] == "nvidia":
+            venus = os.path.join(stage, "venus")
+            stage_dir(session_in.get("venus_dir", ""), venus, uid)
+        _write(os.path.join(inst.lxc_dir, "config_session"),
+               lxcconfig.session_entries(wl, pulse, inst.data_dir, venus))
+
         if inst.index == 0:
             mount_stock_data(inst)
         # Shader caches of another renderer crash Android 13's apps (storage.clear_shader_caches).
@@ -1197,11 +1343,14 @@ def wait_boot(inst, timeout=180):
 
 # Waydroid pins the display to the user rotation (no sensors), so apps wanting the other orientation
 # are letterboxed. In the full-UI window (active_apps "Waydroid") let it follow them, like a phone;
-# an app's own window (single- or multi-window mode) doesn't turn, so there it stays pinned. Prints
-# the rotation (Surface.ROTATION_*) every half second. Android 11 names the setting
-# set-fix-to-user-rotation and has no "default" (its own is "enabled").
+# an app's own window (single- or multi-window mode) doesn't turn, so there it stays pinned. Checks
+# every half second and prints the rotation (Surface.ROTATION_*) when it changes: lines every half
+# second woke the daemon, session and proxy for nothing. And every 10 s regardless: writing is how
+# a loop whose reader died (a daemon restart; KillMode=process leaves lxc-attach) gets SIGPIPE and
+# ends. Android 11 names the setting set-fix-to-user-rotation and has no "default" (its own is
+# "enabled").
 ROTATION_LOOP = """
-last=
+last= shown= n=0
 while :; do
   m=default old=enabled
   [ "$(getprop waydroid.active_apps)" = Waydroid ] && [ "$(getprop persist.waydroid.multi_windows)" != true ] \\
@@ -1212,15 +1361,19 @@ while :; do
     wm set-ignore-orientation-request false >/dev/null 2>&1
     last=$m
   fi
-  [ -n "$r" ] && echo "${r#mRotation=}"
+  n=$((n + 1))
+  if [ -n "$r" ] && { [ "$r" != "$shown" ] || [ $n -ge 20 ]; }; then
+    echo "${r#mRotation=}"
+    shown=$r n=0
+  fi
   sleep 0.5
 done
 """
 
 
 def watch_rotation(inst, fd):
-    """Write Android's display rotation to fd (the session's pipe to its proxy), a line every half
-    second, for as long as the pipe has a reader: across Android reboots too. Runs in a thread."""
+    """Write Android's display rotation to fd (the session's pipe to its proxy) when it changes,
+    for as long as the pipe has a reader: across Android reboots too. Runs in a thread."""
     os.set_blocking(fd, False)          # a reader that falls behind loses lines, never blocks us
     gone = select.poll()
     gone.register(fd, select.POLLERR)   # a pipe whose reader closed
@@ -1233,9 +1386,18 @@ def watch_rotation(inst, fd):
                 p = subprocess.Popen(cmd, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
                                      stderr=subprocess.DEVNULL)
                 try:
-                    for line in p.stdout:
+                    # lines come only on a change, none while frozen: wake for a reader gone too
+                    ev = select.poll()
+                    ev.register(fd, select.POLLERR)
+                    ev.register(p.stdout, select.POLLIN)
+                    while True:
+                        if fd in dict(ev.poll()):
+                            return          # the reader is gone
+                        data = os.read(p.stdout.fileno(), 4096)
+                        if not data:
+                            break           # Android stopped or rebooted
                         try:
-                            os.write(fd, line)
+                            os.write(fd, data)
                         except BlockingIOError:
                             pass
                 except OSError:             # EPIPE: the proxy is gone
@@ -1243,6 +1405,7 @@ def watch_rotation(inst, fd):
                 finally:
                     p.kill()
                     p.wait()
+                    p.stdout.close()
             time.sleep(2)
     finally:
         os.close(fd)
