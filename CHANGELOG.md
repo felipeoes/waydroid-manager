@@ -6,6 +6,8 @@ follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions f
 
 ## [Unreleased]
 
+## [1.5.0] - 2026-11-08
+
 ### Added
 - When the host's own nftables firewall drops devices' traffic (Arch's default
   `/etc/nftables.conf` does), `waydroid-manager doctor` names it, and the device's window offers to
@@ -424,7 +426,8 @@ First release.
 - Root daemon hardened against symlink and race attacks, root-enabling Android properties,
   and misuse of passed file descriptors. Each user sees and controls only their own instances.
 
-[Unreleased]: https://github.com/felipeoes/waydroid-manager/compare/v1.4.0...HEAD
+[Unreleased]: https://github.com/felipeoes/waydroid-manager/compare/v1.5.0...HEAD
+[1.5.0]: https://github.com/felipeoes/waydroid-manager/compare/v1.4.0...v1.5.0
 [1.4.0]: https://github.com/felipeoes/waydroid-manager/compare/v1.3.6...v1.4.0
 [1.3.6]: https://github.com/felipeoes/waydroid-manager/compare/v1.3.5...v1.3.6
 [1.3.5]: https://github.com/felipeoes/waydroid-manager/compare/v1.3.4...v1.3.5
