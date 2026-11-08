@@ -199,6 +199,8 @@ def apparmor_profile_loaded(name):
 def _open_user_path(src_path, uid, flags, is_kind, kind):
     """O_PATH fd of a user's src_path: a real (non-symlink) kind owned by uid, under
     /run/user/<uid>. Binding it through /proc/self/fd mounts exactly the checked inode."""
+    # shortcut: only logind's (or elogind's) runtime dirs are trusted; widen this check if a host
+    # without a logind (XDG_RUNTIME_DIR elsewhere) is to be supported
     runtime = "/run/user/{}/".format(uid)
     norm = os.path.normpath(src_path)
     if not norm.startswith(runtime):

@@ -12,11 +12,15 @@ import platform
 import pwd
 import select
 import shutil
+import signal
 import stat
 import struct
 import subprocess
 import threading
 import time
+
+import dbus
+import dbus.service
 
 from .. import catalog, devices, gpu, lxcconfig, paths, stock, stockctl
 from ..instance import PROTECTED_PROP_RE, Instance
@@ -48,6 +52,9 @@ def stock_args(inst, config=None):
 
 STOCK_UNIT = "waydroid-container.service"
 STOCK_WAS_ACTIVE = os.path.join(paths.RUN_DIR, "stock-was-active")  # release_stock starts it again
+STOCK_BUS_NAME = "id.waydro.Container"
+RUNIT_DIRS = ("/run/runit/service", "/var/service", "/etc/service", "/service")    # Artix, Void, others
+_stock_name = []    # without systemd: our hold on STOCK_BUS_NAME while #0 runs (hold_stock)
 # No device-mapper: Android 14 and 15's apexd maps its APEXes there when it can, and those
 # mappings belong to the host: they outlive the container and collide between devices. Without
 # it apexd mounts its loop devices directly, as 16 and 17 do.
@@ -155,15 +162,58 @@ def _stock_stopped():
         raise RuntimeError("stock Waydroid is running; stop it first ('waydroid session stop')")
 
 
+def _stock_service(action):
+    """Stop or start stock's container service through OpenRC or runit when one of them runs it
+    (they'd respawn it after a plain SIGTERM); False when neither does."""
+    if os.path.isfile("/etc/init.d/waydroid-container") and shutil.which("rc-service"):
+        if action == "stop" and run(["rc-service", "waydroid-container", "status"], check=False).returncode:
+            return False    # not started by OpenRC: D-Bus activated
+        return run(["rc-service", "waydroid-container", action], check=False).returncode == 0
+    for d in RUNIT_DIRS:
+        sv = os.path.join(d, "waydroid-container")
+        if os.path.isdir(sv) and shutil.which("sv"):
+            return run(["sv", action, sv], check=False).returncode == 0
+    return False
+
+
+def hold_stock():
+    """Without systemd nothing masks stock's container service: hold its bus name instead while
+    #0 runs. Its service and its D-Bus activation both use do_not_queue, so neither can start
+    stock Waydroid on #0's data then. Its idle service is stopped first, as the mask would."""
+    if _stock_name:
+        return
+    bus = dbus.SystemBus()
+    if bus.name_has_owner(STOCK_BUS_NAME):
+        _stock_stopped()    # its idle service may go, not a running container
+        open(STOCK_WAS_ACTIVE, "w").close()
+        if not _stock_service("stop"):
+            daemon = dbus.Interface(bus.get_object("org.freedesktop.DBus", "/org/freedesktop/DBus"),
+                                    "org.freedesktop.DBus")
+            try:
+                os.kill(int(daemon.GetConnectionUnixProcessID(STOCK_BUS_NAME)), signal.SIGTERM)
+            except (dbus.exceptions.DBusException, ProcessLookupError):
+                pass        # it just went
+        deadline = time.monotonic() + 10
+        while bus.name_has_owner(STOCK_BUS_NAME) and time.monotonic() < deadline:
+            time.sleep(0.2)
+    try:
+        _stock_name.append(dbus.service.BusName(STOCK_BUS_NAME, bus, do_not_queue=True))
+    except dbus.exceptions.NameExistsException:
+        raise RuntimeError("stock Waydroid's container service didn't stop; stop it first") from None
+
+
 def mount_stock_data(inst):
     """#0 runs on stock Waydroid's own data, bind-mounted in place (never copied or
     changed by us). Stock's container service is masked until #0 stops, so stock
     Waydroid can't boot the same data alongside it; the mask is --runtime, so a
-    reboot clears it even if we never get to."""
-    if run(["systemctl", "is-active", STOCK_UNIT], check=False).stdout.strip() == "active":
-        open(STOCK_WAS_ACTIVE, "w").close()
-    run(["systemctl", "mask", "--runtime", STOCK_UNIT])
-    run(["systemctl", "stop", STOCK_UNIT], check=False)
+    reboot clears it even if we never get to. Without systemd, hold_stock does that."""
+    if not paths.systemd_booted():
+        hold_stock()
+    else:
+        if run(["systemctl", "is-active", STOCK_UNIT], check=False).stdout.strip() == "active":
+            open(STOCK_WAS_ACTIVE, "w").close()
+        run(["systemctl", "mask", "--runtime", STOCK_UNIT])
+        run(["systemctl", "stop", STOCK_UNIT], check=False)
     _stock_stopped()  # also catches a start between start()'s check and the mask
     umount_tree(inst.data_dir)
     fd = storage.open_stock_data(inst.owner_uid)
@@ -174,16 +224,24 @@ def mount_stock_data(inst):
 
 
 def release_stock():
-    """Undo mount_stock_data's mask (only if it is ours) and start stock's service again if
-    it was running before."""
-    if run(["systemctl", "is-enabled", STOCK_UNIT], check=False).stdout.strip() != "masked-runtime":
+    """Undo mount_stock_data's mask (only if it is ours) or hold_stock's hold, and start stock's
+    service again if it was running before."""
+    if not paths.systemd_booted():
+        _stock_name.clear()     # the BusName going releases the name
+    elif run(["systemctl", "is-enabled", STOCK_UNIT], check=False).stdout.strip() != "masked-runtime":
         return
-    run(["systemctl", "unmask", "--runtime", STOCK_UNIT], check=False)
+    else:
+        run(["systemctl", "unmask", "--runtime", STOCK_UNIT], check=False)
     try:
         os.remove(STOCK_WAS_ACTIVE)
     except FileNotFoundError:
         return
-    run(["systemctl", "start", STOCK_UNIT], check=False)
+    if paths.systemd_booted():
+        run(["systemctl", "start", STOCK_UNIT], check=False)
+    elif not _stock_service("start"):
+        # its own Exec, as D-Bus would; no --print-reply: doesn't wait for it to start
+        run(["dbus-send", "--system", "--type=method_call", "--dest=org.freedesktop.DBus", "/",
+             "org.freedesktop.DBus.StartServiceByName", "string:" + STOCK_BUS_NAME, "uint32:0"], check=False)
 
 
 def ensure_dirs(inst):
@@ -265,6 +323,19 @@ _pin_lock = threading.Lock()
 def _read(path):
     with open(path) as f:
         return f.read()
+
+
+def enable_controllers():
+    """An instance's cpu.max and memory.high need these controllers for the root cgroup's
+    children: systemd enables them, OpenRC doesn't, and lxc-start fails without them. Enabling
+    one changes no other cgroup's limits."""
+    for c in ("cpu", "memory"):
+        try:
+            if c not in _read("/sys/fs/cgroup/cgroup.subtree_control").split():
+                with open("/sys/fs/cgroup/cgroup.subtree_control", "w") as f:
+                    f.write("+" + c)
+        except OSError as e:
+            log.warning("cannot enable the cgroup %s controller: %s", c, e)
 
 
 def host_cpus():
@@ -367,6 +438,8 @@ def write_lxc_config(inst, net, cpus_busy=(), render=("gpu", None)):
         if inst.get("cpus") and not cpuset:
             cpuset = lxcconfig.pick_cpus(inst.get("cpus"), cpus, cpus_busy, host_cores(cpus))
     limits = lxcconfig.cgroup_limits(inst.get("cpus"), cpuset, inst.get("memory"))
+    if limits:
+        enable_controllers()
     text = lxcconfig.build_config(
         stock.lxc_snippets(),
         rootfs=inst.rootfs, lxc_dir=inst.lxc_dir, bridge=net.cfg.bridge, mac=inst.mac,
@@ -504,7 +577,8 @@ def vkms_card():
             if not gpu.vkms_supported():
                 raise RuntimeError("rendering on NVIDIA or in software (Android 14, 17) needs Linux 6.19 or "
                                    "newer: older kernels' vkms can't make the hidden device Android draws into")
-            run(["udevadm", "control", "--reload"])
+            if shutil.which("udevadm"):     # loads our rule; with no udev there's no desktop to hide from
+                run(["udevadm", "control", "--reload"], check=False)
             run(["modprobe", "vkms", "create_default_dev=0"])
             # each step is skipped when done: this also completes a setup that failed partway
             for group in ("planes/plane", "crtcs/crtc", "encoders/encoder", "connectors/connector"):
@@ -1121,6 +1195,8 @@ def start(inst, net, hosts, session_in, uid, in_use, cpus_busy=list):
     in_use: see images.gc. cpus_busy(): the other running or starting instances' (cpus limit,
     pinned CPUs)."""
     pw = pwd.getpwuid(uid)
+    if not os.path.exists("/sys/fs/cgroup/cgroup.controllers"):
+        raise RuntimeError(paths.CGROUP_V2_NEEDED)
     if inst.index == 0:
         _stock_stopped()
     images_dir = select_image(inst, in_use)

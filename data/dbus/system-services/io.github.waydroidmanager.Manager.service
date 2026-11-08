@@ -1,5 +1,5 @@
 [D-BUS Service]
 Name=io.github.waydroidmanager.Manager
-Exec=/bin/false
+Exec=@DBUS_EXEC@
 User=root
 SystemdService=waydroid-manager.service

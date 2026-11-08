@@ -18,6 +18,11 @@ follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions f
   pasted on the other (Android 13; Android 14's image has no clipboard sharing on any desktop).
 - Automatic graphics renders on NVIDIA on a server whose NVIDIA cards drive no monitor (a remote
   desktop), instead of in software.
+- Waydroid Manager runs without systemd (#87). `scripts/install.sh` installs an OpenRC or runit
+  service for the daemon, and with any other init D-Bus starts it on first use. dnsmasq, device
+  sessions, #0's pause of stock Waydroid and `waydroid-manager log` work there too, and the daemon
+  logs to `/var/log/waydroid-manager.log`. It needs cgroup v2, which `waydroid-manager doctor`
+  checks. The `.deb` no longer depends on systemd.
 
 ### Fixed
 - Games protected by AppGuard, such as Let's Go Legends, no longer crash at launch on Houdini.

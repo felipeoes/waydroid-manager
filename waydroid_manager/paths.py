@@ -16,6 +16,7 @@ RUN_DIR = "/run/waydroid-manager"
 NET_ENV_FILE = RUN_DIR + "/net.env"
 DHCP_HOSTS_FILE = RUN_DIR + "/dhcp-hosts"
 CONFIG_FILE = "/etc/waydroid-manager/daemon.conf"
+DAEMON_LOG = "/var/log/waydroid-manager.log"       # without systemd's journal
 # "allow" or "deny" opening the host's own firewall for the bridge (none yet: ask)
 FIREWALL_CONSENT_FILE = STATE_DIR + "/host-firewall"
 
@@ -33,6 +34,15 @@ PIDLIMIT_SCRIPT = os.path.join(DATA_DIR, "waydroid-manager-pidlimit.sh")
 DBUS_NAME = "io.github.waydroidmanager.Manager"
 DBUS_PATH = "/io/github/waydroidmanager/Manager"
 DBUS_IFACE = "io.github.waydroidmanager.Manager1"
+
+
+CGROUP_V2_NEEDED = ("Waydroid Manager needs the unified cgroup hierarchy (cgroup v2). On OpenRC, set "
+                    "rc_cgroup_mode=\"unified\" in /etc/rc.conf and reboot.")
+
+
+def systemd_booted():
+    """systemd is the init system (what sd_booted() checks)."""
+    return os.path.isdir("/run/systemd/system")
 
 
 def instance_dir(iid):

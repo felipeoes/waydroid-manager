@@ -78,11 +78,18 @@ entry it first loaded.
   operations run in worker threads under a per-instance lock. A watcher polls LXC state every
   3 s. Containers and the dnsmasq unit keep running across daemon restarts, and a restarted
   daemon adopts them.
+  - Without systemd (`paths.systemd_booted()`): OpenRC (`data/openrc/`, supervise-daemon) or runit
+    (`data/runit/`) starts the daemon, and with any other init D-Bus does, on the first call
+    (`install.sh` writes the activation file's `Exec=`; only one of them may, or the init's own
+    daemon would exit and respawn). dnsmasq runs daemonized, found through its pidfile
+    (`network.dnsmasq_pid`). The daemon logs to `/var/log/waydroid-manager.log`. Sessions are
+    detached processes, found by their command line (`client.session_active`).
 - **Hardware helper** (`daemon/hwhelper.py`): python3-gbinder never releases the GIL, and its
   async `add_service` is broken. Each instance's `IHardware` service therefore runs in its own
   helper process using `add_service_sync`. It reports events to the daemon as `wdm:` lines.
 - **User session** (`session/main.py`): started by `waydroid-manager start` as a transient
-  `systemd --user` unit. It hands the user's Wayland and PulseAudio sockets to the daemon,
+  `systemd --user` unit (without one, as a detached process logging to
+  `~/.cache/waydroid-manager/session-N.log`). It hands the user's Wayland and PulseAudio sockets to the daemon,
   which validates them and bind-mounts them at root-owned paths (`util.stage_socket`). It also
   hosts the per-instance clipboard, notification and user-monitor services. On an X11 desktop
   (no Wayland socket, `DISPLAY` set) it first starts a Weston of its own on X11
@@ -181,7 +188,7 @@ entry it first loaded.
 | `waydroid_manager/session/` | user session, Wayland proxy, frame drawing, desktop launchers; `gbm.py` reads another GPU's buffers |
 | `waydroid_manager/session/protocols/` | vendored Wayland protocol XML (MIT, see its README) |
 | `waydroid_manager/gui/` | GTK4/libadwaita manager app; `confirm.py` is the close confirmation, `settings.py` the instance windows' Settings (one background process, reached over D-Bus) |
-| `data/` | network script, LXC hooks, D-Bus policy and activation, systemd unit, desktop file |
+| `data/` | network script, LXC hooks, D-Bus policy and activation, systemd unit, OpenRC and runit services, desktop file |
 | `scripts/` | `install.sh` (the installed file layout), `uninstall.sh`, `spike/` (original feasibility scripts) |
 | `packaging/deb/` | `.deb` build script, control template and maintainer scripts |
 | `.github/workflows/release.yml` | builds and publishes a release when a version tag is pushed |
@@ -196,6 +203,8 @@ entry it first loaded.
 | `/usr/lib/waydroid-manager/` | the program, `data/`, `lib/libgbinder.so.1` and its license, `uninstall.sh` and `install-method` (`script` or `deb`) |
 | `/usr/lib/udev/rules.d/70-waydroid-manager.rules` | keeps GNOME off our vkms device |
 | `/usr/lib/systemd/system/waydroid-manager.service` | the daemon's unit |
+| `/etc/init.d/waydroid-manager`, `/etc/runit/sv/waydroid-manager/` or `/etc/sv/waydroid-manager/` | the daemon's OpenRC or runit service (installed on those inits) |
+| `/var/log/waydroid-manager.log` | the daemon's log without systemd's journal |
 | `/etc/waydroid-manager/daemon.conf` | bridge name, subnet, instance isolation, nftables |
 | `/var/lib/waydroid-manager/host-firewall` | `allow` or `deny`: the admin's answer to opening the host's own firewall for devices |
 | `/var/lib/waydroid-manager/instances/N/` | `instance.cfg`, `data/` (Android `/data`), overlays, generated props, `container.log` |
@@ -367,8 +376,8 @@ instance started. After changing `session/`, reinstall and restart the instance.
 
 | What | Where |
 |---|---|
-| daemon | `journalctl -u waydroid-manager -f` |
-| an instance's session | `journalctl --user -u waydroid-manager-session-N -f` |
+| daemon | `waydroid-manager log -f` (`journalctl -u waydroid-manager`, or `/var/log/waydroid-manager.log` without systemd) |
+| an instance's session | `waydroid-manager log N -f` (its user unit's journal, or `~/.cache/waydroid-manager/session-N.log`) |
 | Wayland proxy | `~/.cache/waydroid-manager/wlproxy-N.log`; `waydroid-manager log N --window` dumps its live state (sends SIGUSR1) |
 | NVIDIA renderer | `~/.cache/waydroid-manager/renderer-N.log` |
 | proxy wire trace | start the instance with `WDM_PROXY_TRACE=1` |
@@ -460,7 +469,10 @@ unmounted in `container.cleanup`. Stock Waydroid must stay usable without us:
   boots an older Android than stock's own.
 - While #0 runs, `waydroid-container.service` is stopped and masked with `--runtime` (cleared by a
   reboot). `cleanup` and `uninstall.sh` unmask it, and start it again if it was running before #0
-  (`/run/waydroid-manager/stock-was-active`).
+  (`/run/waydroid-manager/stock-was-active`). Without systemd the daemon holds stock's bus name
+  `id.waydro.Container` instead (`container.hold_stock`): stock's container service and its D-Bus
+  activation both give up when it's taken. Its idle service is stopped first, through OpenRC or
+  runit when they run it (they'd respawn it), else with SIGTERM.
 - #0 can't be deleted. Purge refuses while anything is mounted under the state dir.
 
 ## Stock Waydroid pitfalls

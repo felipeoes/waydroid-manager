@@ -8,10 +8,11 @@
 #   - iptables rules scoped to its own bridge and subnet
 #   - an nftables table named "waydroid_manager" (never "lxc")
 #
-# Usage: waydroid-manager-net.sh {setup|teardown|run-dnsmasq|reload|close-firewall}
+# Usage: waydroid-manager-net.sh {setup|teardown|run-dnsmasq|start-dnsmasq|reload|close-firewall}
 #   setup           create the bridge and firewall rules
 #   teardown        remove firewall rules and the bridge
 #   run-dnsmasq     exec dnsmasq in the foreground (for a systemd service)
+#   start-dnsmasq   start dnsmasq in the background (no systemd)
 #   reload          make a running dnsmasq re-read the static hosts file
 #   close-firewall  remove the rules the daemon added to the host's own nftables tables
 #
@@ -196,7 +197,7 @@ run_dnsmasq() {
     [ -f "$WDM_HOSTSFILE" ] || : > "$WDM_HOSTSFILE"
     # Static mode: only MACs listed in the hosts file get an address, so every
     # instance always gets the same IP. SIGHUP re-reads the hosts file.
-    exec dnsmasq --keep-in-foreground --conf-file=/dev/null -u "$DNSMASQ_USER" \
+    exec dnsmasq "$@" --conf-file=/dev/null -u "$DNSMASQ_USER" \
         --strict-order --bind-interfaces --pid-file="${WDM_VARRUN}/dnsmasq.pid" \
         --listen-address "$WDM_ADDR" --dhcp-range "${WDM_DHCP_START},static" \
         --dhcp-hostsfile="$WDM_HOSTSFILE" --dhcp-no-override \
@@ -211,11 +212,12 @@ reload() {
 case "$1" in
     setup) setup ;;
     teardown) teardown "$2" ;;
-    run-dnsmasq) run_dnsmasq ;;
+    run-dnsmasq) run_dnsmasq --keep-in-foreground ;;
+    start-dnsmasq) run_dnsmasq ;;
     reload) reload ;;
     close-firewall) close_firewall ;;
     *)
-        echo "Usage: $0 {setup|teardown|run-dnsmasq|reload|close-firewall}" >&2
+        echo "Usage: $0 {setup|teardown|run-dnsmasq|start-dnsmasq|reload|close-firewall}" >&2
         exit 2
         ;;
 esac

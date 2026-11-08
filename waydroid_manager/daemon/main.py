@@ -10,6 +10,7 @@ import collections
 import contextlib
 import fcntl
 import logging
+import logging.handlers
 import os
 import pwd
 import re
@@ -1128,6 +1129,11 @@ class Manager(dbus.service.Object):
                 active = True
                 log.info("%s: adopting running container", inst.id)
                 self.start_helper(inst)
+                if inst.index == 0 and not paths.systemd_booted():
+                    try:
+                        container.hold_stock()      # the old daemon's hold went with it
+                    except Exception as e:  # noqa: BLE001
+                        log.warning("%s: stock Waydroid isn't held back: %s", inst.id, e)
             else:
                 container.cleanup(inst)
         if active:
@@ -1143,6 +1149,13 @@ class Manager(dbus.service.Object):
 def main():
     logging.basicConfig(level=logging.DEBUG if os.environ.get("WAYDROID_MANAGER_DEBUG") else logging.INFO,
                         format="%(levelname)s %(message)s", stream=sys.stderr)
+    if not paths.systemd_booted():      # OpenRC, runit and D-Bus keep no log of their own
+        try:
+            h = logging.handlers.RotatingFileHandler(paths.DAEMON_LOG, maxBytes=5 << 20, backupCount=1)
+            h.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(message)s"))
+            logging.getLogger().addHandler(h)
+        except OSError as e:
+            log.warning("no log file: %s", e)
     if os.geteuid() != 0:
         print("waydroid-manager-daemon must run as root", file=sys.stderr)
         return 1

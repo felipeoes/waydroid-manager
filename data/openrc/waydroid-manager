@@ -1,0 +1,15 @@
+#!/sbin/openrc-run
+# SPDX-License-Identifier: GPL-3.0-or-later
+# The waydroid-manager daemon under OpenRC (scripts/install.sh fills in the path).
+# Stopping it signals the daemon alone: instances and their dnsmasq keep running, and the
+# restarted daemon adopts them.
+description="waydroid-manager daemon (multiple Waydroid instances)"
+supervisor=supervise-daemon
+command="@BINDIR@/waydroid-manager-daemon"
+# its dnsmasq lives in this service's cgroup and must outlive a restart
+rc_cgroup_cleanup="NO"
+
+depend() {
+    need dbus
+    after net
+}

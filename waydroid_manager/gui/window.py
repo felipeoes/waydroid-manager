@@ -10,6 +10,7 @@ gi.require_version("Adw", "1")
 from gi.repository import Adw, Gio, GLib, Gtk  # noqa: E402
 
 from .. import paths  # noqa: E402
+from ..client import daemon_command  # noqa: E402
 from ..session import desktop  # noqa: E402
 from .backend import Backend  # noqa: E402
 from .dialogs import CloneDialog, InstanceDialog, restart_dialog, save_settings  # noqa: E402
@@ -244,8 +245,10 @@ class MainWindow(Adw.ApplicationWindow):
         for probe in self.dot_colors.values():
             page.append(probe)
 
+        start = daemon_command("start")
         self.error_page = Adw.StatusPage(icon_name="dialog-error-symbolic", title="Daemon not available",
-                                         description="Retry starts it (sudo systemctl start waydroid-manager)")
+                                         description="Retry starts it (sudo {})".format(" ".join(start))
+                                         if start else "Is Waydroid Manager installed?")
         retry = Gtk.Button(label="Retry", halign=Gtk.Align.CENTER, css_classes=["pill"])
         retry.connect("clicked", lambda *_: self.retry())
         self.error_page.set_child(retry)
@@ -279,10 +282,16 @@ class MainWindow(Adw.ApplicationWindow):
         self.backend.call("List", ok=self._got_list, fail=lambda m: self._start_daemon(), timeout=30)
 
     def _start_daemon(self):
+        # Under systemd, D-Bus activation already starts a stopped daemon: it is down because systemd
+        # gave up on it. OpenRC's crashed one needs a restart. Other inits: D-Bus failed to start it.
+        cmd = daemon_command("restart")
+        if cmd is None:
+            self.toast("D-Bus could not start the daemon: see " + paths.DAEMON_LOG)
+            return
+        if cmd[0] == "systemctl":
+            cmd = ["sh", "-c", "systemctl reset-failed waydroid-manager; systemctl start waydroid-manager"]
         try:
-            # D-Bus activation already starts a stopped daemon: it is down because systemd gave up on it
-            proc = Gio.Subprocess.new(["pkexec", "sh", "-c", "systemctl reset-failed waydroid-manager; "
-                                       "systemctl start waydroid-manager"],
+            proc = Gio.Subprocess.new(["pkexec"] + cmd,
                                       Gio.SubprocessFlags.STDOUT_PIPE | Gio.SubprocessFlags.STDERR_MERGE)
         except GLib.Error as e:
             self.toast("Could not start the daemon: " + e.message)

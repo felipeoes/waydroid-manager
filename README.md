@@ -38,6 +38,9 @@ Android 15 needs a GPU: it can't render in software.
   its own, with your desktop's title bar and the usual toolbar.
   Android renders on an NVIDIA card there too, monitor or not.
 - **Waydroid installed and set up**: you can already run `waydroid show-full-ui`
+- **systemd, OpenRC or runit** (any other init starts the daemon on its first use), with
+  elogind or another provider of `/run/user/<uid>`, and the unified cgroup hierarchy (cgroup v2;
+  on OpenRC, `rc_cgroup_mode="unified"` in `/etc/rc.conf`)
 - **On NVIDIA:** NVIDIA's proprietary driver and **Linux 6.19 or newer** (Ubuntu 26.04's kernel;
   Ubuntu 24.04's and Debian 13's are older). Rendering 14 or 17 in software needs it too.
   Devices on other GPUs work on any of them.
