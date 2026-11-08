@@ -23,6 +23,9 @@ ABIS = {"x86_64": ("x86_64", "x86"), "aarch64": ("arm64-v8a", "armeabi-v7a")}
 #    was refused. The check becomes "uid == 0": zygote's children are root until they specialize.
 # 2. Reading a socket's label fails with an error other than "no label", so zygiskd dropped every
 #    companion connection and modules with a companion hung app startup. Any error means no label.
+#    magisk32 runs a zygiskd of its own for 32-bit clients, so it needs this one too; without it
+#    a 32-bit WebView's zygote hangs and takes system_server down. The daemon, and so the first
+#    patch, is always the 64-bit binary.
 PATCH = {
     "x86_64": (
         # call eq(label, "u:r:zygote:s0"); cmpl $0,uid; mov %al,is_zygote
@@ -36,6 +39,14 @@ PATCH = {
         (0x27b00, "dd020094f903002a", "9f020071f9179f1a"),
         # fgetxattr failed: cmp w0, #ENODATA; b.ne fail -> nop
         (0x381e8, "c1000054", "1f2003d5"),
+    ),
+    "x86": (
+        # fgetxattr failed: cmp $ENODATA,%eax; jne fail -> nop; nop
+        (0x3e66f, "7512", "9090"),
+    ),
+    "armeabi-v7a": (
+        # fgetxattr failed: cmp r0, #ENODATA; bne fail -> nop
+        (0x20226, "07d1", "00bf"),
     ),
 }
 TMP = "/debug_ramdisk"  # Magisk only runs from /debug_ramdisk or /sbin
@@ -172,8 +183,9 @@ def install(inst):
                 _put(z, name, os.path.join(mdir, "magisk32"), 0o755)
             elif name.startswith("assets/") and name.count("/") == 1 and base.endswith(".sh"):
                 _put(z, name, os.path.join(mdir, base), 0o644)
-    for patch in PATCH[abi]:
-        _patch(os.path.join(mdir, "magisk"), *patch)
+    for binary, patches in (("magisk", PATCH[abi]), ("magisk32", PATCH[abi32])):
+        for patch in patches:
+            _patch(os.path.join(mdir, binary), *patch)
     with open(os.path.join(mdir, "setup.sh"), "w") as f:
         f.write(sh_text)
     # magiskd installs stub.apk when no Magisk app is installed, and trusts apps signed like it.

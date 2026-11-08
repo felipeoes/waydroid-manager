@@ -517,7 +517,7 @@ class EmulatorStealthTest(unittest.TestCase):
         length = struct.unpack_from("<I", data, idx - 96)[0] >> 24
         return data[idx - 92:idx - 92 + length].decode()
 
-    def test_armtrans_renames_houdini_and_whiteouts_base_houdini(self):
+    def test_armtrans_keeps_houdinis_name_and_whiteouts_it_for_libndk(self):
         from waydroid_manager.daemon import armtrans
         with tempfile.TemporaryDirectory() as d:
             zpath = os.path.join(d, "arm.zip")
@@ -528,13 +528,13 @@ class EmulatorStealthTest(unittest.TestCase):
             with mock.patch.object(layers, "whiteout", side_effect=whiteouts.append):
                 h_dir = os.path.join(d, "houdini")
                 armtrans._unpack(zpath, h_dir, "houdini")
-                self.assertEqual(armtrans.PROPS["houdini"]["ro.dalvik.vm.native.bridge"], "libnb_impl.so")
-                with open(os.path.join(h_dir, "system/lib64/libnb_impl.so"), "rb") as f:
-                    self.assertEqual(f.read(), b"ELF\0libnb_impl.so\0")
+                # pairip takes its Houdini path only for this exact mapped file name
+                self.assertEqual(armtrans.PROPS["houdini"]["ro.dalvik.vm.native.bridge"], "libhoudini.so")
+                with open(os.path.join(h_dir, "system/lib64/libhoudini.so"), "rb") as f:
+                    self.assertEqual(f.read(), b"ELF\0libhoudini.so\0")
                 with open(os.path.join(h_dir, "system/lib64/arm64/nb/libtcb.so"), "rb") as f:
-                    self.assertEqual(f.read(), b"NEEDED\0libnb_impl.so\0")
-                self.assertIn(os.path.join(h_dir, "system/lib64/libhoudini.so"), whiteouts)
-                whiteouts.clear()
+                    self.assertEqual(f.read(), b"NEEDED\0libhoudini.so\0")
+                self.assertEqual(whiteouts, [])
                 n_dir = os.path.join(d, "libndk")
                 armtrans._unpack(zpath, n_dir, "libndk")
                 self.assertIn(os.path.join(n_dir, "system/lib64/libhoudini.so"), whiteouts)
@@ -678,6 +678,18 @@ class EmulatorStealthTest(unittest.TestCase):
                 with open(os.path.join(d, "libndk_translation.so"), "rb") as f:
                     patched = f.read()
                 self.assertEqual(patched[0x10:0x15], bytes.fromhex("4885db7407"))
+
+    def test_zygote_restart_rc_reboots_android_after_boot_only(self):
+        with tempfile.TemporaryDirectory() as d:
+            inst = Instance.new("4", 4, 1000, "", {}, {})
+            with mock.patch.object(Instance, "dir", d):
+                container.write_zygote_restart_rc(inst)
+            with open(os.path.join(d, "overlay/system/etc/init/zygote_restart.rc")) as f:
+                rc = f.read()
+        # during boot Magisk restarts zygote on purpose, and the props aren't scrubbed yet
+        self.assertIn("property:sys.boot_completed=1 && property:init.svc.zygote=restarting", rc)
+        # the daemon only starts Android again for a reason that begins with "reboot"
+        self.assertIn("setprop sys.powerctl reboot,", rc)
 
     def test_fix_heap_caps_waydroid_init_heap(self):
         with tempfile.TemporaryDirectory() as d:

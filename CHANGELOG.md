@@ -17,6 +17,15 @@ follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions f
   desktop), instead of in software.
 
 ### Fixed
+- Games protected by Google's pairip, such as Frog's Kitchen, Mergedom and Tower War, no longer
+  crash at launch with a black screen on Houdini. Their protection only accepts Houdini under its
+  real file name, so Houdini is no longer renamed `libnb_impl`; `libhoudini.so` shows in an app's
+  memory map again. Existing instances pick this up at their next start.
+- Rooted instances on Android 14 no longer restart Android about a minute after an app opens a
+  WebView, such as a game showing an ad. The fix for Zygisk modules with a root companion process
+  only covered 64-bit apps, and this image's WebView is 32-bit.
+- An instance now reboots cleanly when Android's core process restarts on its own. It used to stay
+  up with no ARM translation and no network until it was restarted by hand.
 - Devices had no network with firewalld running (Fedora, and Ubuntu with firewalld enabled): its
   default zone rejected the bridge's DHCP, DNS and forwarding. The bridge is now in firewalld's
   `trusted` zone while devices run.
