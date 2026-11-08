@@ -844,31 +844,54 @@ class MatchDisplayTest(unittest.TestCase):
     def sized(out):
         return [args(p, "iia") for o, op, p in out if o == TL and op == P.XDG_TOPLEVEL_EV_CONFIGURE]
 
+    def settle(self, h):
+        """The sized configures follow_display sends once its delay is over."""
+        if h.s.follow_due:
+            h.s.follow_due = (0, h.s.follow_due[1])
+        h.s.tick()
+        out = parse(bytes(h.s2c.out))
+        h.s2c.out.clear()
+        return self.sized(out)
+
     def mode(self, h, w, ht, output=OUT):
         return h.ev(msg(output, P.WL_OUTPUT_EV_MODE, "uiii", 1, w, ht, 60000), msg(output, P.WL_OUTPUT_EV_DONE))
 
     def test_follows_the_windows_monitor(self):
         h = self.window(Harness(zoom="auto", width=0, height=0))
-        self.assertEqual(self.sized(h.ev(msg(S, 0, "o", OUT))), [])        # enter: Android already has its mode
+        h.ev(msg(S, 0, "o", OUT))
+        self.assertEqual(self.settle(h), [])                # enter: Android already has its mode
         zoom = h.s.zoom
-        self.assertEqual(self.sized(self.mode(h, 1920, 1080)), [[1920, 1080, self.ACTIVE]])
+        self.assertEqual(self.sized(self.mode(h, 1920, 1080)), [])
+        self.assertFalse(h.s.tick())                        # not before the mode has held
+        self.assertEqual(self.settle(h), [[1920, 1080, self.ACTIVE]])
         self.assertEqual(h.s.res, (1920, 1080))
         self.assertNotEqual(h.s.zoom, zoom)                 # refit to the new monitor
         self.assertLess(1920 * h.s.zoom, 1920 - 2 * wp.fr.BORDER)
         # a burst of modes ends with one done: one configure
-        out = h.ev(msg(OUT, P.WL_OUTPUT_EV_MODE, "uiii", 0, 1280, 720, 60000),
-                   msg(OUT, P.WL_OUTPUT_EV_MODE, "uiii", 1, 2560, 1440, 60000), msg(OUT, P.WL_OUTPUT_EV_DONE))
-        self.assertEqual(self.sized(out), [[2560, 1440, self.ACTIVE]])
-        self.assertEqual(self.sized(self.mode(h, 3840, 2160, self.OUT2)), [])    # another monitor
-        self.assertEqual(self.sized(h.ev(msg(S, 0, "o", self.OUT2))), [[3840, 2160, self.ACTIVE]])
-        self.assertEqual(self.sized(self.mode(h, 3840, 2160, self.OUT2)), [])    # no change
+        h.ev(msg(OUT, P.WL_OUTPUT_EV_MODE, "uiii", 0, 1280, 720, 60000),
+             msg(OUT, P.WL_OUTPUT_EV_MODE, "uiii", 1, 2560, 1440, 60000), msg(OUT, P.WL_OUTPUT_EV_DONE))
+        self.assertEqual(self.settle(h), [[2560, 1440, self.ACTIVE]])
+        # modes in quick succession (hotplugs that close crash SurfaceFlinger): one, for the last
+        self.mode(h, 1280, 720)
+        self.mode(h, 3200, 1800)
+        self.assertEqual(self.settle(h), [[3200, 1800, self.ACTIVE]])
+        self.mode(h, 1280, 720)                             # back before the delay: none
+        self.mode(h, 3200, 1800)
+        self.assertEqual(self.settle(h), [])
+        self.mode(h, 3840, 2160, self.OUT2)                 # another monitor
+        self.assertEqual(self.settle(h), [])
+        h.ev(msg(S, 0, "o", self.OUT2))
+        self.assertEqual(self.settle(h), [[3840, 2160, self.ACTIVE]])
+        self.mode(h, 3840, 2160, self.OUT2)                 # no change
+        self.assertEqual(self.settle(h), [])
 
     def test_fixed_size_and_nested_devices_never_get_a_size(self):
         for h in (Harness(zoom="auto"), Harness(zoom="auto", width=0, height=0)):
             h.s.cfg.nested = h.s.match
             self.window(h)
             out = h.ev(msg(S, 0, "o", OUT)) + self.mode(h, 1920, 1080)
-            self.assertEqual(self.sized(out), [])
+            self.assertIsNone(h.s.follow_due)
+            self.assertEqual(self.sized(out) + self.settle(h), [])
 
 
 class StreamTest(unittest.TestCase):

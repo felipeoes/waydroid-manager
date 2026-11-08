@@ -503,8 +503,10 @@ are easy to break:
 - **Never forward a real configure size.** Every `xdg_toplevel.configure` with a non-zero size
   makes the HWC hotplug Android's display. The proxy always forwards 0×0 and does the window
   geometry itself. One exception, on purpose: a device sized 0×0 (Match display) gets one sized
-  configure of its own each time its window's monitor changes mode (`Session.follow_display`),
-  so Android resizes with the monitor. After it, the HWC no longer follows `wl_output` modes.
+  configure of its own when its window's monitor changes mode (`Session.follow_display`), so
+  Android resizes with the monitor. It waits until the new mode has held for a second, since
+  hotplugs in quick succession crash Android 13's SurfaceFlinger. After it, the HWC no longer
+  follows `wl_output` modes.
 - **Don't forward `xdg_toplevel.close`.** The HWC then wipes all Android recent tasks. The frame's
   close button reports `close` to the session instead. With `close_action=stop`, the session
   asks for confirmation (`gui/confirm.py`) and then calls `ReportClose`.

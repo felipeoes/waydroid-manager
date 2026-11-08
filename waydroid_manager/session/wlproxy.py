@@ -633,6 +633,7 @@ class Session:
         self.pressed = None      # (surface kind, action)
         self.last_title_click = 0.0
         self.tip_due = None      # (monotonic time, toolbar action) to show a tooltip at
+        self.follow_due = None   # (monotonic time, monitor mode) to give Android at (follow_display)
         self.tip_shown = None    # toolbar action whose tooltip is up
         self.tb_scroll = 0       # how far the toolbar's entries are scrolled up (short windows)
         self.cursor_dev = None
@@ -1825,18 +1826,34 @@ class Session:
         self.request_apply()
         self.follow_display()
 
+    FOLLOW_DELAY = 1.0
+
     def follow_display(self):
         """A match-display device: Android's display takes the mode of its window's monitor, and
         follows it (a Moonlight client setting the host's resolution, say). The HWC hotplugs its
-        display at the size of any sized configure, so it gets exactly one per change, with the
-        states it last had; from then on it ignores wl_output modes, so on several monitors it's
+        display at the size of any sized configure, so it gets one once a new mode has held for
+        FOLLOW_DELAY, with the states it last had: hotplugs in quick succession crash Android 13's
+        SurfaceFlinger. From then on the HWC ignores wl_output modes, so on several monitors it's
         the window's that counts. Not nested: Weston's output is our own window there.
         shortcut: a monitor turned to portrait still gives its landscape mode; swap the mode by
         its wl_output transform if users ask."""
+        mode = self.display_mode()
+        if not mode or mode == self.res:
+            self.follow_due = None
+        elif not self.follow_due or self.follow_due[1] != mode:
+            self.follow_due = (time.monotonic() + self.FOLLOW_DELAY, mode)
+
+    def display_mode(self):
         w = self.window
-        mode = self.outputs.get(self.surface_output, {}).get("mode")
-        if not (self.match and w and w.committed and mode) or self.cfg.nested or mode == self.res:
-            return
+        if self.match and w and w.committed and not self.cfg.nested:
+            return self.outputs.get(self.surface_output, {}).get("mode")
+        return None
+
+    def _follow_now(self):
+        """follow_display's change, once due. True if messages were queued."""
+        w, mode = self.window, self.display_mode()
+        if not mode or mode == self.res:
+            return False
         self.res = mode
         self.to_client(msg(w.toplevel, P.XDG_TOPLEVEL_EV_CONFIGURE, "iia", mode[0], mode[1], w.raw_states))
         # refit as for a new window, or to the size the compositor gives; never saved as the zoom
@@ -1845,6 +1862,7 @@ class Session:
         else:
             self.zoom = self.initial_zoom()
         self.request_apply()
+        return True
 
     def request_apply(self):
         """Bring geometry/frame up to date, as soon as the HWC's stream allows."""
@@ -2118,11 +2136,16 @@ class Session:
                 self.tip_due = (time.monotonic() + self.TIP_DELAY, action)
 
     def tick(self):
-        """From the main loop: show a tooltip whose delay has passed. True if messages were queued."""
-        if not self.tip_due or time.monotonic() < self.tip_due[0]:
-            return False
-        action, self.tip_due = self.tip_due[1], None
-        return self._show_tip(action)
+        """From the main loop: follow the monitor or show a tooltip, once their delay has passed.
+        True if messages were queued."""
+        now, queued = time.monotonic(), False
+        if self.follow_due and now >= self.follow_due[0]:
+            self.follow_due = None
+            queued = self._follow_now()
+        if self.tip_due and now >= self.tip_due[0]:
+            action, self.tip_due = self.tip_due[1], None
+            queued = self._show_tip(action) or queued
+        return queued
 
     def _show_tip(self, action):
         f = self.window.frame if self.window else None
@@ -2630,7 +2653,7 @@ class Proxy:
             self.bind()
         self.emit("ready")
         while True:
-            due = [c.session.tip_due[0] for c in self.conns if c.session.tip_due]
+            due = [d[0] for c in self.conns for d in (c.session.tip_due, c.session.follow_due) if d]
             for key, mask in self.sel.select(max(0.0, min(due) - time.monotonic()) if due else None):
                 if key.data is None:
                     self.accept()
@@ -2643,8 +2666,8 @@ class Proxy:
                 try:
                     if c.session.tick():
                         c.pump()
-                except Exception:  # noqa: BLE001  same: a tooltip mustn't end the window
-                    log_error("error showing a tooltip")
+                except Exception:  # noqa: BLE001  same: a tooltip or a resize mustn't end the window
+                    log_error("error in a delayed action")
 
 
 def main(argv=None):
