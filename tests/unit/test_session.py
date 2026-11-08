@@ -98,6 +98,33 @@ class NestedWestonTest(unittest.TestCase):
         os.close(r)
         os.close(session.rotation_w)
 
+    def test_window_turns_with_android(self):
+        """Weston's window is the device's: Android turned for a landscape app, it takes that shape
+        (the proxy fills it), unless it has it already, is fullscreen or sizes Android (0x0)."""
+        session = self.session()
+        size = {"width": "720", "height": "1280"}
+        session.inst = mock.Mock(get=size.get)
+        session.x11, session.xwin = mock.Mock(), 0x20
+        session.x11.is_fullscreen.return_value = False
+        tb = main.TOOLBAR_W
+        with mock.patch.object(main, "nested_size", side_effect=lambda w, h: (w, h)) as fit:
+            session.x11.size.return_value = (500 + tb, 909)
+            session.handle_proxy_event("rotation 1")
+            session.x11.resize.assert_called_once_with(0x20, 909 + tb, 500)
+            fit.assert_called_once_with(909 + tb, 500)                     # kept on the screen
+            session.x11.resize.reset_mock()
+            session.x11.size.return_value = (909 + tb, 500)
+            session.handle_proxy_event("rotation 3")                       # landscape already
+            session.handle_proxy_event("rotation 2")                       # upside down: portrait
+            session.x11.resize.assert_called_once_with(0x20, 500 + tb, 909)
+            session.x11.resize.reset_mock()
+            session.x11.is_fullscreen.return_value = True
+            session.handle_proxy_event("rotation 0")
+            session.x11.is_fullscreen.return_value = False
+            size.update(width="0", height="0")
+            session.handle_proxy_event("rotation 0")
+            session.x11.resize.assert_not_called()
+
     def test_frames_go_through_shared_memory_under_weston(self):
         session = self.session()
         gpus = [main.gpu.Gpu("0000:21:00.0", "GPU 0", "nvidia", "/dev/dri/renderD129")]
