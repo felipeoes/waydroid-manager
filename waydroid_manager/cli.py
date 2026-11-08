@@ -254,6 +254,10 @@ def cmd_start(o):
     if not o.background:
         show_full_ui(o.id, timeout=o.timeout)
     print("#{} is running (IP {}).".format(o.id, info["ip"]))
+    blocked = d.info()
+    if blocked.get("firewall") and blocked.get("firewall_consent") == "ask":
+        print("Your firewall blocks devices' network ({}).\n{}".format(blocked["firewall"].replace("\n", "; "),
+                                                                    FIREWALL_HINT))
     if o.wait:
         cmd_wait(o)
 
@@ -293,6 +297,30 @@ def cmd_status(o):
     info = d.get(o.id)
     for k in sorted(info):
         print("{:26} {}".format(k, info[k]))
+
+
+FIREWALL_HINT = "To let devices through, run: sudo waydroid-manager firewall allow"
+
+
+def cmd_firewall(o):
+    d = daemon()
+    if o.answer:
+        if os.geteuid() != 0:
+            die("changing your firewall needs root: sudo waydroid-manager firewall " + o.answer)
+        try:
+            d.set_host_firewall(o.answer)
+        except DaemonError as e:
+            die(e)
+    info = d.info()
+    consent = info.get("firewall_consent", "ask")
+    print("Adding rules for devices to your firewall: " +
+          {"allow": "allowed", "deny": "denied", "ask": "not decided yet"}[consent])
+    if info.get("firewall"):
+        print("Your firewall blocks devices' network:\n  " + info["firewall"].replace("\n", "\n  "))
+        if consent != "allow":
+            print(FIREWALL_HINT)
+    else:
+        print("Nothing in your firewall blocks devices' network (checked whenever devices start).")
 
 
 def cmd_wait(o):
@@ -517,6 +545,9 @@ def cmd_doctor(o):
         from .netconfig import NetConfig
         bad = NetConfig.load().overlapping_routes()
         check(not bad, "subnet {} is free".format(info["subnet"]), "subnet overlaps: " + ", ".join(bad))
+        check(not info.get("firewall"), "your firewall lets devices through (checked whenever devices start)",
+              "your firewall blocks devices' network ({}). {}".format(info.get("firewall", "").replace("\n", "; "),
+                                                                      FIREWALL_HINT))
     except DaemonError as e:
         check(False, "", "daemon not reachable: {}".format(e))
     sys.exit(0 if ok else 1)
@@ -669,6 +700,10 @@ def parser():
     c.set_defaults(fn=cmd_gsf)
 
     sub.add_parser("doctor", help="check the host setup").set_defaults(fn=cmd_doctor)
+    c = sub.add_parser("firewall", help="whether your firewall blocks devices' network; allow (or deny) adding "
+                                         "rules that let them through (needs root)")
+    c.add_argument("answer", nargs="?", choices=("allow", "deny"))
+    c.set_defaults(fn=cmd_firewall)
     sub.add_parser("devices", help="list device model presets").set_defaults(fn=cmd_devices)
 
     c = sub.add_parser("session", help=argparse.SUPPRESS)

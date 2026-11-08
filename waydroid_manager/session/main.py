@@ -21,7 +21,7 @@ import time
 
 import dbus
 import dbus.mainloop.glib
-from gi.repository import GLib
+from gi.repository import Gio, GLib
 
 from .. import gpu, paths
 from ..client import Daemon, DaemonError, open_settings
@@ -286,14 +286,15 @@ class Session:
             log.info("sending key %s", ev.split()[2])
             self._async("SendKey", self.iid, dbus.UInt32(int(ev.split()[2])))
 
-    def _ask(self, attr, module, on_answer):
+    def _ask(self, attr, module, on_answer, args=()):
         """Run a small GTK process (gui/<module>.py) once at a time; on_answer gets its stdout."""
         if getattr(self, attr, None) and getattr(self, attr).poll() is None:
             return                     # already asking
         env = dict(os.environ)
         env["PYTHONPATH"] = os.path.dirname(paths.PKG_DIR) + os.pathsep + env.get("PYTHONPATH", "")
         proc = subprocess.Popen(
-            [sys.executable, "-m", "waydroid_manager.gui." + module, "--name", Instance.load(self.iid).name],
+            [sys.executable, "-m", "waydroid_manager.gui." + module, "--name", Instance.load(self.iid).name]
+            + list(args),
             stdout=subprocess.PIPE, stdin=subprocess.DEVNULL, env=env)
         setattr(self, attr, proc)
         out = []
@@ -316,6 +317,47 @@ class Session:
                 log.info("stop confirmed")
                 self._async("ReportClose", self.iid)
         self._ask("confirm", "confirm", answer)
+
+    def check_firewall(self):
+        """The host's firewall cuts devices off and no admin decided about it yet: offer to open it."""
+        try:
+            info = self.daemon.info()
+        except DaemonError:
+            return
+        never = os.path.join(paths.user_cache_dir(), "firewall-never-ask")
+        if not info.get("firewall") or info.get("firewall_consent") != "ask" or os.path.exists(never):
+            return
+
+        def answer(a):
+            if a == "allow":
+                self.open_firewall()
+            elif a == "never":
+                os.makedirs(paths.user_cache_dir(), exist_ok=True)
+                open(never, "w").close()
+        self._ask("firewall_prompt", "firewall", answer, ("--blocked", info["firewall"]))
+
+    def open_firewall(self):
+        """`waydroid-manager firewall allow` as root: the daemon takes that answer from root only."""
+        try:
+            proc = Gio.Subprocess.new(["pkexec", shutil.which("waydroid-manager") or "waydroid-manager",
+                                       "firewall", "allow"],
+                                      Gio.SubprocessFlags.STDOUT_SILENCE | Gio.SubprocessFlags.STDERR_SILENCE)
+        except GLib.Error as e:
+            return notify("Could not open your firewall", e.message, "dialog-error-symbolic")
+
+        def done(p, res):
+            try:
+                p.wait_finish(res)
+            except GLib.Error:
+                return
+            status = p.get_exit_status() if p.get_if_exited() else -1
+            if status == 0:
+                notify("Devices can reach the network", "Your firewall lets them through now.",
+                       "network-wired-symbolic")
+            elif status not in (126, 127):      # pkexec: authentication cancelled or failed
+                notify("Could not open your firewall", "Run: sudo waydroid-manager firewall allow",
+                       "dialog-error-symbolic")
+        proc.wait_async(None, done)
 
     def pick_apk(self):
         """Toolbar Install APK: pick a file, then hand it to the daemon like `app install`."""
@@ -608,6 +650,7 @@ class Session:
         self.watch_rotation()
         self.bus.watch_name_owner(paths.DBUS_NAME, self.on_daemon_owner)
         self.register_services()
+        self.check_firewall()
         log.info("instance %s is running", self.iid)
         self.loop.run()
 

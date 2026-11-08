@@ -50,6 +50,10 @@ class Daemon:
     def info(self):
         return self.plain(self.call("GetInfo", timeout=30))
 
+    def set_host_firewall(self, answer):
+        """Root only: allow or deny opening the host's own firewall for devices."""
+        self.call("SetHostFirewall", answer, timeout=60)
+
     def list(self):
         return self.plain(self.call("List", timeout=60))
 

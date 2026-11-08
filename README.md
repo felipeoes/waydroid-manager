@@ -117,6 +117,23 @@ On NVIDIA, RAID: Shadow Legends runs at 60 fps, against 9 in software. The first
 downloads [waydroid-nvidia](https://github.com/quinovax/waydroid-nvidia)'s renderer (about 25 MB).
 It's young (0.1): a game may hit a driver error.
 
+## No internet in a device
+
+Devices share a network (`wdm0`) whose firewall rules go where your other tools put theirs
+(Docker, ufw, libvirt). Some firewalls also drop all traffic they don't allow themselves, and no
+rule elsewhere can override that: Arch's default `/etc/nftables.conf` does. Once a device has
+started, `waydroid-manager doctor` names the firewall table that blocks it, and the device's window
+offers to let devices through:
+
+```sh
+sudo waydroid-manager firewall allow   # add rules for wdm0 to that table while devices run
+sudo waydroid-manager firewall deny    # leave the firewall alone, and stop asking
+```
+
+The rules are never written to your firewall's configuration. To allow devices there yourself,
+add `iifname "wdm0" udp dport { 53, 67 } accept` and `iifname "wdm0" tcp dport { 53, 67 } accept`
+to its input chain, and `iifname "wdm0" accept` and `oifname "wdm0" accept` to its forward chain.
+
 ## Uninstall
 
 In the app's menu, choose **Uninstall Waydroid Manager…**, or:

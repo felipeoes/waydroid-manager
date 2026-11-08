@@ -239,3 +239,39 @@ class RotationTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class HostFirewallSyncTest(unittest.TestCase):
+    RULESET = {"nftables": [
+        {"chain": {"family": "inet", "table": "filter", "name": "forward", "handle": 2, "type": "filter",
+                   "hook": "forward", "prio": 0, "policy": "drop"}},
+    ]}
+
+    def sync(self, consent, ruleset=RULESET):
+        from waydroid_manager.daemon import network
+        net = network.Network.__new__(network.Network)
+        net.cfg = types.SimpleNamespace(bridge="wdm0")
+        net.blockers = ["stale"]
+        calls = []
+        with tempfile.TemporaryDirectory() as d, mock.patch.object(network.paths, "RUN_DIR", d), \
+                mock.patch.object(network, "nft_ruleset", return_value=ruleset), \
+                mock.patch.object(network, "firewall_consent", return_value=consent), \
+                mock.patch.object(network, "run", side_effect=lambda cmd, **_kw: calls.append(cmd)):
+            with open(os.path.join(d, "network_up"), "w") as f:
+                f.write("iptables-nft\n")
+            net.sync_firewall()
+        return net.blockers, calls
+
+    def test_our_old_rules_go_first_and_blockers_are_noted(self):
+        blockers, calls = self.sync("ask")
+        self.assertEqual(calls, [["sh", main.paths.NET_SCRIPT, "close-firewall"]])
+        self.assertEqual(blockers, [("inet", "filter", "forward", "forward")])
+
+    def test_allowed_opens_the_chain(self):
+        blockers, calls = self.sync("allow")
+        self.assertEqual(blockers, [])
+        self.assertEqual(calls[0][-1], "close-firewall")
+        self.assertEqual([c[6:8] for c in calls[1:]], [["iifname", '"wdm0"'], ["oifname", '"wdm0"']])
+
+    def test_without_nft_nothing_runs(self):
+        self.assertEqual(self.sync("allow", ruleset=None), ([], []))

@@ -8,11 +8,12 @@
 #   - iptables rules scoped to its own bridge and subnet
 #   - an nftables table named "waydroid_manager" (never "lxc")
 #
-# Usage: waydroid-manager-net.sh {setup|teardown|run-dnsmasq|reload}
-#   setup        create the bridge and firewall rules
-#   teardown     remove firewall rules and the bridge
-#   run-dnsmasq  exec dnsmasq in the foreground (for a systemd service)
-#   reload       make a running dnsmasq re-read the static hosts file
+# Usage: waydroid-manager-net.sh {setup|teardown|run-dnsmasq|reload|close-firewall}
+#   setup           create the bridge and firewall rules
+#   teardown        remove firewall rules and the bridge
+#   run-dnsmasq     exec dnsmasq in the foreground (for a systemd service)
+#   reload          make a running dnsmasq re-read the static hosts file
+#   close-firewall  remove the rules the daemon added to the host's own nftables tables
 #
 # Configuration comes from the environment (normally an EnvironmentFile
 # written by the daemon); every variable has a default.
@@ -29,8 +30,10 @@
 : "${WDM_USE_NFT:=false}"
 : "${WDM_NFT_TABLE:=waydroid_manager}"
 
-IPTABLES_BIN="$(command -v iptables-legacy)"
-[ -n "$IPTABLES_BIN" ] || IPTABLES_BIN="$(command -v iptables)"
+# The host's default iptables, as Docker, ufw and libvirt use: with both backends present, rules in
+# the other one can't help, since a DROP in either backend wins (Docker's FORWARD policy on Arch).
+IPTABLES_BIN="$(command -v iptables)"
+[ -n "$IPTABLES_BIN" ] || IPTABLES_BIN="$(command -v iptables-legacy)"
 
 firewalld_running() {
     command -v firewall-cmd >/dev/null 2>&1 && firewall-cmd --state >/dev/null 2>&1
@@ -68,7 +71,8 @@ iptables_rules() {
     ipt $op FORWARD -o "$WDM_BRIDGE" -j ACCEPT
     if [ "$op" = "-I" ]; then nat_op="-A"; else nat_op="-D"; fi
     ipt -t nat $nat_op POSTROUTING -s "$WDM_NETWORK" ! -d "$WDM_NETWORK" -j MASQUERADE
-    ipt -t mangle $nat_op POSTROUTING -o "$WDM_BRIDGE" -p udp -m udp --dport 68 -j CHECKSUM --checksum-fill
+    # Only for old DHCP clients; iptables-nft may lack the CHECKSUM target, and setup runs under set -e
+    ipt -t mangle $nat_op POSTROUTING -o "$WDM_BRIDGE" -p udp -m udp --dport 68 -j CHECKSUM --checksum-fill || true
 }
 
 nft_setup() {
@@ -91,6 +95,18 @@ nft_teardown() {
 delete table inet ${WDM_NFT_TABLE};
 add table ip ${WDM_NFT_TABLE};
 delete table ip ${WDM_NFT_TABLE};"
+}
+
+# The rules the daemon adds to the host's own nftables tables (netconfig.opening_rules) carry this comment
+close_firewall() {
+    command -v nft >/dev/null 2>&1 || return 0
+    nft -a list ruleset 2>/dev/null | awk '
+        $1 == "table" { family = $2; table = $3 }
+        $1 == "chain" { chain = $2 }
+        /comment "waydroid-manager" # handle [0-9]+$/ { print family, table, chain, $NF }' |
+    while read -r family table chain handle; do
+        nft delete rule "$family" "$table" "$chain" handle "$handle"
+    done
 }
 
 setup() {
@@ -138,7 +154,14 @@ setup() {
             echo "warning: firewalld: can't trust ${WDM_BRIDGE}; instances may get no network" >&2
     fi
 
-    touch "${WDM_VARRUN}/network_up"
+    # Where our rules are, for the daemon's check of the host's own firewall (netconfig.firewall_blockers)
+    if use_nft; then
+        echo nft
+    elif "$IPTABLES_BIN" -V 2>/dev/null | grep -q nf_tables; then
+        echo iptables-nft
+    else
+        echo iptables-legacy
+    fi > "${WDM_VARRUN}/network_up"
     FAILED=0
     trap - EXIT HUP INT TERM
 }
@@ -146,11 +169,15 @@ setup() {
 teardown() {
     [ -f "${WDM_VARRUN}/network_up" ] || [ "$1" = "force" ] || { echo "waydroid-manager network isn't up"; return 0; }
     set +e
+    close_firewall
     firewalld_running && firewall-cmd --quiet --zone=trusted --remove-interface="$WDM_BRIDGE" 2>/dev/null
     if use_nft; then
         nft_teardown
     elif [ -f "${WDM_VARRUN}/network_up" ]; then
-        iptables_rules -D 2>/dev/null
+        # From both backends: older versions put the rules in iptables-legacy whenever it existed
+        for bin in iptables iptables-legacy; do
+            IPTABLES_BIN="$(command -v "$bin")" && iptables_rules -D 2>/dev/null
+        done
     fi
     if [ -d "/sys/class/net/${WDM_BRIDGE}" ]; then
         ip addr flush dev "$WDM_BRIDGE"
@@ -186,8 +213,9 @@ case "$1" in
     teardown) teardown "$2" ;;
     run-dnsmasq) run_dnsmasq ;;
     reload) reload ;;
+    close-firewall) close_firewall ;;
     *)
-        echo "Usage: $0 {setup|teardown|run-dnsmasq|reload}" >&2
+        echo "Usage: $0 {setup|teardown|run-dnsmasq|reload|close-firewall}" >&2
         exit 2
         ;;
 esac

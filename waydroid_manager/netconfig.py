@@ -134,3 +134,49 @@ def etc_hosts_text(text, entries):
             lines.append("")
         lines += [HOSTS_BEGIN] + ["{} {}".format(ip, host) for ip, host in sorted(entries)] + [HOSTS_END]
     return "\n".join(lines) + "\n" if lines else ""
+
+
+# Opening the host's own firewall: Arch's default nftables.conf drops forwarded and incoming traffic
+# by policy, and an accept in our rules (another table or backend) can't override a drop elsewhere.
+NFT_TABLE = "waydroid_manager"           # net.sh's WDM_NFT_TABLE
+OUR_RULE_COMMENT = "waydroid-manager"    # tags the rules opening_rules adds to the host's tables
+
+
+def firewall_blockers(ruleset, backend):
+    """The host's nftables base chains that drop what our rules accept: [(family, table, chain, hook)]
+    on the input or forward hook with policy drop. ruleset: `nft -j list ruleset` output; backend:
+    what net.sh wrote to network_up. With "iptables-nft" our rules come first in iptables' own ip
+    filter table, so its policy (Docker's FORWARD DROP) doesn't matter."""
+    out = []
+    for item in ruleset.get("nftables", []):
+        c = item.get("chain")
+        if (not c or c.get("hook") not in ("input", "forward") or c.get("policy") != "drop"
+                or c.get("family") not in ("ip", "inet") or c.get("table") == NFT_TABLE):
+            continue
+        if backend == "iptables-nft" and (c["family"], c["table"]) == ("ip", "filter"):
+            continue
+        out.append((c["family"], c["table"], c["name"], c["hook"]))
+    return out
+
+
+def opening_rules(blockers, bridge):
+    """nft commands letting the bridge through the blocking chains: forwarding both ways, and DHCP
+    and DNS to the host. Each rule carries OUR_RULE_COMMENT, for net.sh's close-firewall."""
+    tag = ["comment", '"{}"'.format(OUR_RULE_COMMENT)]
+    dev = '"{}"'.format(bridge)
+    cmds = []
+    for family, table, chain, hook in blockers:
+        if hook == "forward":
+            matches = [["iifname", dev], ["oifname", dev]]
+        else:
+            matches = [["iifname", dev, proto, "dport", "{ 53, 67 }"] for proto in ("udp", "tcp")]
+        cmds += [["nft", "insert", "rule", family, table, chain] + m + ["accept"] + tag for m in matches]
+    return cmds
+
+
+def describe_blockers(blockers):
+    """For the user: "table inet filter (input, forward)", one table per line."""
+    tables = {}
+    for family, table, chain, _hook in blockers:
+        tables.setdefault((family, table), []).append(chain)
+    return "\n".join("table {} {} ({})".format(f, t, ", ".join(c)) for (f, t), c in tables.items())
