@@ -68,7 +68,7 @@ VERSIONS = {
                props={"qemu.hw.mainkeys": "1", "persist.sys.usb.config": "adb",
                       "debug.ffmpeg-codec2.pixel_format": "YUV_420"},
                nvidia_props={"ro.waydroid.override_props": "0"}),
-    "17": dict(sdk=37, ota=_atv("a17") + ("24.0",), gb=1.7, nvidia="venus", experimental=True,
+    "17": dict(sdk=37, ota=_atv("a17-qpr0") + ("24.0",), gb=1.7, nvidia="venus", experimental=True,
                gapps="gms_apex", loop=True, videodev=True, software="vkms", webview64=True,
                props={"qemu.hw.mainkeys": "1"},
                nvidia_props={"ro.waydroid.override_props": "0", "debug.hwui.renderer": "skiavk"}),

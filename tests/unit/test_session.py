@@ -2,6 +2,7 @@
 """Session startup and toolbar action delegation."""
 import os
 import tempfile
+import time
 import unittest
 from unittest import mock
 
@@ -38,6 +39,77 @@ class ProxyStartupTest(unittest.TestCase):
                     self.assertEqual("--logical-pointer" in popen.call_args.args[0], android == "11")
                 finally:
                     os.close(session.rotation_w)
+
+
+class NestedWestonTest(unittest.TestCase):
+    """On an X11 desktop the device's window is a Weston of its own."""
+
+    def session(self):
+        session = main.Session.__new__(main.Session)
+        session.iid = "3"
+        session.inst = Instance.new("3", 3, 1000, "", {}, {})
+        return session
+
+    def test_size_fits_the_x_screen(self):
+        out = mock.Mock(stdout="screen #0:\n  dimensions:    1389x824 pixels (367x218 millimeters)\n")
+        with mock.patch.object(main.subprocess, "run", return_value=out):
+            self.assertEqual(main.nested_size(720, 1280), (417, 741))
+            self.assertEqual(main.nested_size(400, 300), (400, 300))   # never enlarged
+        with mock.patch.object(main.subprocess, "run", side_effect=FileNotFoundError):
+            self.assertEqual(main.nested_size(720, 1280), (720, 1280))
+
+    def test_starts_weston_and_returns_its_socket(self):
+        session = self.session()
+        with tempfile.TemporaryDirectory() as xdg, tempfile.TemporaryDirectory() as cache, \
+                mock.patch.dict(os.environ, {"XDG_RUNTIME_DIR": xdg}), \
+                mock.patch.object(main.shutil, "which", return_value="/usr/bin/weston"), \
+                mock.patch.object(main.paths, "user_cache_dir", return_value=cache), \
+                mock.patch.object(main, "nested_size", return_value=(400, 700)), \
+                mock.patch.object(main.x11, "Display") as display, \
+                mock.patch.object(main.subprocess, "Popen") as popen:
+            # another device's, one starting with ours, ours
+            display.return_value.weston_windows.side_effect = [{0x10}, {0x10, 0x18, 0x20}]
+            display.return_value.window_pid.side_effect = {0x18: 99, 0x20: popen.return_value.pid}.get
+            sock = os.path.join(xdg, "waydroid-manager-3-weston")
+            open(sock + ".lock", "w").close()                   # left by a Weston that died
+            popen.return_value.poll.side_effect = lambda: open(sock, "w").close()
+            self.assertEqual(session.start_nested(), sock)
+            argv = popen.call_args.args[0]
+            self.assertIn("--socket=waydroid-manager-3-weston", argv)
+            self.assertIn("--backend=x11", argv)
+            self.assertIn("--width=400", argv)
+            self.assertFalse(os.path.exists(sock + ".lock"))
+            self.assertEqual(session.xwin, 0x20)
+            display.return_value.set_title.assert_called_once_with(0x20, session.inst.name + " · #3")
+
+    def test_fullscreen_reported_once_the_window_manager_made_it(self):
+        session = self.session()
+        r, session.rotation_w = os.pipe()
+        session.x11, session.xwin = mock.Mock(), 0x20
+        session.x11.is_fullscreen.side_effect = [False, True]
+        far = time.monotonic() + 60
+        self.assertTrue(session.report_fullscreen(False, far))           # not yet: polled again
+        self.assertFalse(session.report_fullscreen(False, far))
+        self.assertEqual(os.read(r, 100), b"fullscreen 1\n")
+        os.close(r)
+        os.close(session.rotation_w)
+
+    def test_frames_go_through_shared_memory_under_weston(self):
+        session = self.session()
+        gpus = [main.gpu.Gpu("0000:21:00.0", "GPU 0", "nvidia", "/dev/dri/renderD129")]
+        with mock.patch.object(main.gpu, "gpus", return_value=gpus), \
+                mock.patch.object(main.gpu, "host_gpu", return_value=None):
+            render = {"mode": "nvidia", "cpu_buffers": ""}
+            self.assertEqual(session.cpu_buffers(render), "")              # a Wayland desktop
+            session.weston = mock.Mock()
+            self.assertEqual(session.cpu_buffers(render), "/dev/dri/renderD129")
+            self.assertEqual(session.cpu_buffers({"mode": "vkms", "cpu_buffers": "shared"}), "shared")
+            self.assertEqual(session.cpu_buffers({"mode": "software", "cpu_buffers": ""}), "")
+
+    def test_without_weston_says_what_to_install(self):
+        with mock.patch.object(main.shutil, "which", return_value=None):
+            with self.assertRaisesRegex(RuntimeError, "install weston"):
+                self.session().start_nested()
 
 
 class AppEntrySyncTest(unittest.TestCase):

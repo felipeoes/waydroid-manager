@@ -6,6 +6,16 @@ follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions f
 
 ## [Unreleased]
 
+### Added
+- Devices run on X11 desktops, remote ones such as ThinLinc and VNC included: with no Wayland
+  compositor, each device opens in a Weston window of its own (install `weston`, and `xclip` for
+  the clipboard). `waydroid-manager doctor` checks for them. Devices render on an NVIDIA card there
+  as well, including on servers whose NVIDIA cards drive no monitor. The window has the desktop's
+  own title bar and the usual toolbar, which hides in fullscreen. Text copied on either side can be
+  pasted on the other (Android 13; Android 14's image has no clipboard sharing on any desktop).
+- Automatic graphics renders on NVIDIA on a server whose NVIDIA cards drive no monitor (a remote
+  desktop), instead of in software.
+
 ### Fixed
 - Games protected by Google's pairip, such as Frog's Kitchen, Mergedom and Tower War, no longer
   crash at launch with a black screen on Houdini. Their protection only accepts Houdini under its
@@ -16,6 +26,13 @@ follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions f
   only covered 64-bit apps, and this image's WebView is 32-bit.
 - An instance now reboots cleanly when Android's core process restarts on its own. It used to stay
   up with no ARM translation and no network until it was restarted by hand.
+- Devices had no network with firewalld running (Fedora, and Ubuntu with firewalld enabled): its
+  default zone rejected the bridge's DHCP, DNS and forwarding. The bridge is now in firewalld's
+  `trusted` zone while devices run.
+- Clipboard sharing and Android notifications on the desktop could stay off for a whole run: only
+  the last of the session's Android services came back when Android's service manager started.
+- Creating an Android 17 device failed with "HTTP Error 404": its image moved to the `a17-qpr0`
+  update channel.
 - Zygisk works on Android 14 to 17: Zygisk modules said "Module suspended because Zygisk is not
   enabled" and never loaded into apps. Root now installs official Magisk 31.0 instead of Magisk
   Delta 26.3, which predates the way 14 and newer start apps. Rooted instances switch over at their

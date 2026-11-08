@@ -12,6 +12,7 @@ from unittest import mock
 
 from waydroid_manager.session import wlproto as P
 from waydroid_manager.session import wlproxy as wp
+from waydroid_manager.session import wlschema
 from waydroid_manager.session.wlproto import Reader, msg, parse
 
 # HWC-side object ids used in the scenarios
@@ -728,6 +729,60 @@ class WindowStateTest(unittest.TestCase):
         self.assertEqual(len(data), stride * h_)
 
 
+class NestedWindowTest(unittest.TestCase):
+    """In the session's Weston on X11 (kiosk: always fullscreen), the X11 window manager's title
+    bar moves and resizes the window: ours is gone, the toolbar stays, fullscreen goes to X11."""
+
+    def setUp(self):
+        self.h = Harness(zoom="50", frame=True)
+        self.h.s.cfg.nested = True
+        self.h.setup_globals(frame_globals=True)
+        self.h.create_window()
+        self.h.req(msg(V0, P.WP_VIEWPORT_SET_DESTINATION, "ii", 1280, 720),
+                   msg(LSUB, P.WL_SUBSURFACE_SET_POSITION, "ii", 0, 0))
+        self.h.req(msg(S, P.WL_SURFACE_COMMIT))
+        self.h.server_out()
+
+    def test_kiosk_fullscreen_is_a_window_with_the_toolbar_and_no_title(self):
+        h = self.h
+        out = self.configure(1290, 703, P.XDG_TOPLEVEL_STATE_FULLSCREEN)
+        self.assertTrue(h.s.framed)
+        self.assertEqual(h.s.frame_extent(), (40, 0))
+        self.assertAlmostEqual(h.s.zoom, min((1290 - 40) / 1280, 703 / 720))
+        geo = [args(p, "iiii") for o, op, p in out if o == XS and op == P.XDG_SURFACE_SET_WINDOW_GEOMETRY]
+        self.assertEqual(geo[-1], [0, 0, 1290, 703])
+        f = h.s.window.frame
+        self.assertEqual(f["sizes"]["title"], "hidden")
+        self.assertEqual(f["sizes"]["toolbar"][0], 40)
+
+    def test_fullscreen_goes_to_the_session(self):
+        h = self.h
+        self.configure(1290, 703, P.XDG_TOPLEVEL_STATE_FULLSCREEN)
+        h.s.toggle_fullscreen()
+        self.assertEqual(h.events[-1], "fullscreen")
+        self.assertNotIn(P.XDG_TOPLEVEL_SET_FULLSCREEN, [op for o, op, _ in h.server_out() if o == TL])
+
+    def test_x11_fullscreen_drops_the_toolbar_and_esc_leaves(self):
+        h = self.h
+        self.configure(1920, 1080, P.XDG_TOPLEVEL_STATE_FULLSCREEN)
+        proxy = wp.Proxy("", "", h.s.cfg)
+        proxy.conns = [mock.Mock(session=h.s)]
+        r, w = os.pipe()
+        proxy.watch_rotation(r)
+        os.write(w, b"fullscreen 1\n")
+        proxy.on_event(None, None)
+        self.assertEqual(h.s.frame_extent(), (0, 0))
+        self.assertAlmostEqual(h.s.zoom, 1.5)                   # 1920x1080: all of it
+        h.ev(msg(KBD, P.WL_KEYBOARD_EV_ENTER, "uoa", 3, S, b""), msg(KBD, P.WL_KEYBOARD_EV_KEY, "uuuu", 4, 0, 1, 1))
+        self.assertEqual(h.events[-1], "fullscreen")            # Esc: the session's toggle
+        os.close(w)
+        proxy.sel.unregister(r)
+        os.close(r)
+
+    tearDown = WindowStateTest.tearDown
+    configure = WindowStateTest.configure
+
+
 class Android11BackdropTest(unittest.TestCase):
     def test_black_behind_the_picture_when_maximized(self):
         """Android 11 draws on the toplevel itself: the rest of a maximized window gets a backdrop."""
@@ -882,6 +937,56 @@ class ClipboardTest(unittest.TestCase):
         self.assertEqual(self.hwc_reads()[0], b"")
 
 
+class NestedClipboardTest(unittest.TestCase):
+    """In the session's Weston on X11, whose clipboard isn't the desktop's: the HWC gets X11's text
+    on each focus, and what Android copies goes to X11."""
+
+    def setUp(self):
+        ClipboardTest.setUp(self)
+        self.h.s.cfg.nested = True
+
+    hwc_reads = ClipboardTest.hwc_reads
+
+    def test_focus_offers_x11_text(self):
+        h = self.h
+        with mock.patch.object(wp, "X11_PASTE", ("printf", "from x11")):
+            h.ev(msg(KBD, P.WL_KEYBOARD_EV_ENTER, "uoa", 5, S, b""))
+            (_, create, p), (_, sel, q) = h.server_out()
+            src = args(p, "n")[0]
+            self.assertEqual((create, sel, args(q, "ou")), (P.WL_DATA_DEVICE_MANAGER_CREATE_DATA_SOURCE,
+                                                            P.WL_DATA_DEVICE_SET_SELECTION, [src, 5]))
+            # Weston offers our typeless source; the HWC is told it is text
+            out = h.ev(msg(DD, P.WL_DATA_DEVICE_EV_DATA_OFFER, "n", OFFER),
+                       msg(DD, P.WL_DATA_DEVICE_EV_SELECTION, "o", OFFER))
+            self.assertIn((OFFER, P.WL_DATA_OFFER_EV_OFFER), [(o, op) for o, op, _ in out])
+            self.assertEqual(self.hwc_reads()[0], b"from x11")
+            self.assertEqual(h.server_out(), [])           # Weston was never asked
+
+    def test_android_copy_goes_to_x11(self):
+        h, watched = self.h, []
+        h.s.watch = lambda fd, done: watched.append((fd, done))
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "x11")
+            with mock.patch.object(wp, "X11_COPY", ("sh", "-c", "cat > " + path)):
+                h.req(msg(DDM, P.WL_DATA_DEVICE_MANAGER_CREATE_DATA_SOURCE, "n", 40),
+                      msg(40, P.WL_DATA_SOURCE_OFFER, "s", "text/plain;charset=utf-8"),
+                      msg(DD, P.WL_DATA_DEVICE_SET_SELECTION, "ou", 40, 7))
+                (o, op, p), = parse(bytes(h.s2c.out))     # we ask the HWC's source for its text
+                self.assertEqual((o, op, args(p, "s")), (40, P.WL_DATA_SOURCE_EV_SEND, ["text/plain;charset=utf-8"]))
+                hwc = h.s2c.fds.pop()
+                os.write(hwc, "olá".encode())
+                os.close(hwc)
+                (fd, done), = watched
+                data = os.read(fd, 100)
+                os.close(fd)
+                done(data)
+                deadline = time.monotonic() + 5
+                while time.monotonic() < deadline and not (os.path.exists(path) and os.path.getsize(path)):
+                    time.sleep(0.05)
+                with open(path, "rb") as f:
+                    self.assertEqual(f.read(), "olá".encode())
+
+
 class CpuBufferTest(unittest.TestCase):
     """Android's dmabufs reach the compositor as shm: over the same fd ("shared", software
     rendering), or in memory of our own filled through the GPU they come from."""
@@ -974,6 +1079,85 @@ class CpuBufferTest(unittest.TestCase):
         h.s.close()
         with self.assertRaises(OSError):
             os.fstat(kept)
+
+
+class OwnDmabufTest(unittest.TestCase):
+    """A compositor without linux-dmabuf (Weston drawing in software, on X11): with cpu_buffers
+    the proxy serves the HWC one itself, and only the shm buffers it turns into go upstream."""
+    SHM, DMABUF, PARAMS, BUF = 30, 31, 32, 33
+    AB24 = 0x34324241
+
+    def harness(self, upstream_dmabuf=False):
+        h = Harness()
+        h.s.cfg.cpu_buffers = "shared"
+        h.s.tr = wp.Translator(wlschema.load())
+        h.c2s = h.s.c2s = wp.Stream(h.s.on_request, h.s.post_feed_c2s, count_fds=h.s.tr.request_fds)
+        h.req(msg(1, P.WL_DISPLAY_GET_REGISTRY, "n", REG), msg(1, P.WL_DISPLAY_SYNC, "n", 40))
+        globs = [(7, "wl_shm", 1)] + ([(11, "zwp_linux_dmabuf_v1", 4)] if upstream_dmabuf else [])
+        h.ev(*[msg(REG, P.WL_REGISTRY_EV_GLOBAL, "usu", n, i, v) for n, i, v in globs])
+        announced = h.ev(msg(40, P.WL_CALLBACK_EV_DONE, "u", 1))
+        return h, announced
+
+    def client_out(self, h):
+        out = parse(bytes(h.s2c.out))
+        h.s2c.out.clear()
+        return out
+
+    def test_announced_only_without_the_compositors(self):
+        _, announced = self.harness()
+        own = msg(REG, P.WL_REGISTRY_EV_GLOBAL, "usu", wp.OWN_DMABUF_NAME, "zwp_linux_dmabuf_v1", 3)
+        self.assertEqual(announced, parse(own + msg(40, P.WL_CALLBACK_EV_DONE, "u", 1)))
+        _, announced = self.harness(upstream_dmabuf=True)
+        self.assertEqual(announced, parse(msg(40, P.WL_CALLBACK_EV_DONE, "u", 1)))
+
+    def test_served_here_and_buffers_go_up_as_shm(self):
+        h, _ = self.harness()
+        self.assertEqual(h.req(msg(REG, P.WL_REGISTRY_BIND, "usun", 7, "wl_shm", 1, self.SHM)),
+                         parse(msg(REG, P.WL_REGISTRY_BIND, "usun", 7, "wl_shm", 1, self.SHM)))
+        h.ev(msg(self.SHM, P.WL_SHM_EV_FORMAT, "u", self.AB24))
+        self.assertEqual(h.req(msg(REG, P.WL_REGISTRY_BIND, "usun", wp.OWN_DMABUF_NAME,
+                                   "zwp_linux_dmabuf_v1", 3, self.DMABUF)), [])
+        events = self.client_out(h)
+        self.assertEqual({(o, op) for o, op, _ in events},
+                         {(self.DMABUF, P.ZWP_LINUX_DMABUF_EV_FORMAT), (self.DMABUF, P.ZWP_LINUX_DMABUF_EV_MODIFIER)})
+        modifiers = [args(p, "uuu") for o, op, p in events if op == P.ZWP_LINUX_DMABUF_EV_MODIFIER]
+        self.assertIn([self.AB24, 0, 0], modifiers)
+
+        fd = os.memfd_create("dmabuf")
+        os.ftruncate(fd, 64 * 4 * 32)
+        sent = h.req(msg(self.DMABUF, P.ZWP_LINUX_DMABUF_CREATE_PARAMS, "n", self.PARAMS),
+                     msg(self.PARAMS, P.ZWP_LINUX_BUFFER_PARAMS_ADD, "uuuuu", 0, 0, 256, 0, 0), fds=[fd])
+        self.assertEqual(sent, [])
+        sent = h.req(msg(self.PARAMS, P.ZWP_LINUX_BUFFER_PARAMS_CREATE_IMMED, "niiuu", self.BUF, 64, 32, self.AB24, 0),
+                     msg(self.PARAMS, P.ZWP_LINUX_BUFFER_PARAMS_DESTROY))
+        self.assertEqual([(o == self.SHM, op) for o, op, _ in sent][:1], [(True, P.WL_SHM_CREATE_POOL)])
+        self.assertEqual(args(sent[1][2], "niiiiu"), [self.BUF, 0, 64, 32, 256, self.AB24])
+        self.assertEqual(len(sent), 3)                  # create_pool, create_buffer, pool destroy
+        self.assertEqual(self.client_out(h), parse(msg(1, P.WL_DISPLAY_EV_DELETE_ID, "u", self.PARAMS)))
+        self.assertNotIn(self.PARAMS, h.s.own_dmabuf)
+
+    def test_an_rgba_reader_makes_argb_buffers_abgr(self):
+        h = CpuBufferTest()
+        h.setUp()
+
+        class Gpu:
+            rgba = True
+
+            def import_buffer(self, *a):
+                return "bo"
+
+            def map_stride(self, bo, width, height):
+                return width * 4
+
+            def read(self, *a):
+                return True
+
+            def free(self, bo):
+                pass
+        h.h.s.cfg.gpu = Gpu()
+        h.AB24 = P.DRM_FORMAT_ARGB8888
+        _, (create, _), _ = h.create(modifier=1 << 56 | 4)
+        self.assertEqual(args(create[2], "niiiiu")[-1], P.DRM_FORMAT_ABGR8888)
 
 
 class FileDropTest(unittest.TestCase):
