@@ -32,7 +32,11 @@ Android 15 needs a GPU: it can't render in software.
 
 ## Requirements
 
-- An x86_64 PC running Linux with a Wayland desktop (GNOME, KDE Plasma, …)
+- An x86_64 PC running Linux with a Wayland desktop (GNOME, KDE Plasma, …), or an X11 one with
+  [Weston](https://wayland.pages.freedesktop.org/weston/) installed (`sudo apt install weston xclip`),
+  remote desktops such as ThinLinc or VNC included. On X11 each device opens in a Weston window of
+  its own, with your desktop's title bar and the usual toolbar.
+  Android renders on an NVIDIA card there too, monitor or not.
 - **Waydroid installed and set up**: you can already run `waydroid show-full-ui`
 - **On NVIDIA:** NVIDIA's proprietary driver and **Linux 6.19 or newer** (Ubuntu 26.04's kernel;
   Ubuntu 24.04's and Debian 13's are older). Rendering 14 or 17 in software needs it too.
@@ -105,7 +109,7 @@ Each device's **Graphics** setting decides where Android draws:
 
 | Choice | Where Android draws |
 |---|---|
-| **Automatic** (default) | on your NVIDIA card when it shows your desktop; otherwise on the GPU your normal Waydroid uses; in software when neither can |
+| **Automatic** (default) | on your NVIDIA card when it shows your desktop, or when no card does (a server's remote desktop); otherwise on the GPU your normal Waydroid uses; in software when neither can |
 | **Software** | on the CPU: slower, above all in 3D games, but it works on any PC |
 | **GPU 0, GPU 1, …** | on that card, e.g. your integrated GPU while the desktop runs on NVIDIA |
 

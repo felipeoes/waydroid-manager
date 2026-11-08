@@ -32,6 +32,10 @@
 IPTABLES_BIN="$(command -v iptables-legacy)"
 [ -n "$IPTABLES_BIN" ] || IPTABLES_BIN="$(command -v iptables)"
 
+firewalld_running() {
+    command -v firewall-cmd >/dev/null 2>&1 && firewall-cmd --state >/dev/null 2>&1
+}
+
 use_nft() {
     [ "$WDM_USE_NFT" = "true" ] && command -v nft >/dev/null 2>&1 && nft list ruleset >/dev/null 2>&1
 }
@@ -126,6 +130,13 @@ setup() {
     else
         iptables_rules -I
     fi
+    # firewalld rejects DHCP, DNS and forwarding on interfaces it doesn't know (its default
+    # zone): put the bridge in "trusted", as Docker and libvirt put theirs in zones of their own.
+    # Runtime only: a firewalld reload drops it until the network next comes up.
+    if firewalld_running; then
+        firewall-cmd --quiet --zone=trusted --change-interface="$WDM_BRIDGE" ||
+            echo "warning: firewalld: can't trust ${WDM_BRIDGE}; instances may get no network" >&2
+    fi
 
     touch "${WDM_VARRUN}/network_up"
     FAILED=0
@@ -135,6 +146,7 @@ setup() {
 teardown() {
     [ -f "${WDM_VARRUN}/network_up" ] || [ "$1" = "force" ] || { echo "waydroid-manager network isn't up"; return 0; }
     set +e
+    firewalld_running && firewall-cmd --quiet --zone=trusted --remove-interface="$WDM_BRIDGE" 2>/dev/null
     if use_nft; then
         nft_teardown
     elif [ -f "${WDM_VARRUN}/network_up" ]; then

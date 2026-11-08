@@ -10,6 +10,7 @@ import collections
 import logging
 import os
 import pwd
+import re
 import resource
 import shutil
 import signal
@@ -22,11 +23,12 @@ import dbus
 import dbus.mainloop.glib
 from gi.repository import GLib
 
-from .. import paths
+from .. import gpu, paths
 from ..client import Daemon, DaemonError, open_settings
 from ..instance import Instance
 from ..glibcompat import signal_add
-from . import desktop, services
+from . import desktop, services, x11
+from .frame import TOOLBAR_W, title_text
 
 log = logging.getLogger("waydroid-manager.session")
 
@@ -39,6 +41,26 @@ def wayland_socket():
     if not xdg:
         raise RuntimeError("XDG_RUNTIME_DIR is not set; start the session from your desktop session")
     return os.path.join(xdg, disp)
+
+
+def nested_size(width, height):
+    """Size of the Weston window a device opens in on X11: the device's, shrunk to fit 90% of
+    the X screen (the proxy fits Android into whatever size it gets)."""
+    try:
+        out = subprocess.run(["xdpyinfo"], capture_output=True, text=True, timeout=3).stdout
+        sw, sh = (int(v) for v in re.search(r"dimensions:\s+(\d+)x(\d+)", out).groups())
+    except (OSError, subprocess.TimeoutExpired, AttributeError):
+        return width, height
+    f = min(1.0, 0.9 * sw / width, 0.9 * sh / height)
+    return int(width * f), int(height * f)
+
+
+def weston_argv(socket_name, width, height, log_path):
+    # pixman: a remote X server (VNC, ThinLinc) has no GL to give Weston's GL renderer.
+    # shortcut: always pixman; try --renderer=gl on a local Xorg with DRI3 if it's too slow.
+    return ["weston", "--backend=x11", "--renderer=pixman", "--shell=kiosk", "--idle-time=0",
+            "--socket=" + socket_name, "--width={}".format(width), "--height={}".format(height),
+            "--log=" + log_path]
 
 
 def color_scheme():
@@ -80,6 +102,87 @@ class Session:
         self.adb_key = None      # our adb public key, once the adb server is up; "" if unreadable
 
     # -- proxy -------------------------------------------------------------------
+    def start_nested(self):
+        """No Wayland desktop but an X11 one: Weston opens a window on it for the device, and the
+        proxy connects to Weston. Closing that window ends Weston, then the proxy, which stops
+        the device (on_proxy)."""
+        if not shutil.which("weston"):
+            raise RuntimeError("this is an X11 desktop: install weston to run devices on it")
+        xdg = os.environ.get("XDG_RUNTIME_DIR")
+        if not xdg:
+            raise RuntimeError("XDG_RUNTIME_DIR is not set; start the session from your desktop session")
+        name = "waydroid-manager-{}-weston".format(self.iid)
+        sock = os.path.join(xdg, name)
+        for stale in (sock, sock + ".lock"):     # of a Weston that died with us: only our unit uses it
+            if os.path.exists(stale):
+                os.unlink(stale)
+        os.makedirs(paths.user_cache_dir(), exist_ok=True)
+        log_path = os.path.join(paths.user_cache_dir(), "weston-{}.log".format(self.iid))
+        size = nested_size(int(self.inst.get("width")) + TOOLBAR_W, int(self.inst.get("height")))
+        try:
+            self.x11 = x11.Display()
+            known = self.x11.weston_windows()
+        except OSError as e:
+            log.warning("X11: %s", e)
+            self.x11 = known = None
+        self.weston = subprocess.Popen(weston_argv(name, *size, log_path), stdin=subprocess.DEVNULL,
+                                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        deadline = time.time() + 10
+        while time.time() < deadline and self.weston.poll() is None:
+            if os.path.exists(sock):
+                log.info("X11 desktop: device window is Weston on %s", sock)
+                self.xwin = self._weston_window(known)
+                return sock
+            time.sleep(0.1)
+        raise RuntimeError("Weston didn't start on the X11 desktop; see {}".format(log_path))
+
+    def _weston_window(self, known):
+        """Our Weston's X11 window, named after the device (Weston calls them all "Weston
+        Compositor"): a new one our Weston made, or, when X11 can't tell whose it is (no
+        X-Resource), the only new one. None if it can't be told apart."""
+        deadline = time.time() + 3
+        while self.x11 and time.time() < deadline:
+            new = self.x11.weston_windows() - known
+            pids = {w: self.x11.window_pid(w) for w in new}
+            mine = [w for w, pid in pids.items() if pid == self.weston.pid]
+            if not mine and len(new) == 1 and None in pids.values():
+                mine = list(new)
+            if mine:
+                win = mine[0]
+                self.x11.set_title(win, title_text(self.inst.name, self.iid))
+                return win
+            time.sleep(0.1)
+        return None
+
+    def report_fullscreen(self, was, deadline):
+        """Once the X11 window's fullscreen changed (or not, by the deadline), tell the proxy (it then
+        drops or brings back its toolbar), on the pipe that carries Android's rotation (WatchRotation).
+        shortcut: read after our own toggles only; one the window manager makes itself (its own
+        shortcut) keeps the toolbar until the next toggle; watch PropertyNotify if that matters."""
+        now = self.x11.is_fullscreen(self.xwin)
+        if now == was and time.monotonic() < deadline:
+            return True
+        try:
+            os.write(self.rotation_w, "fullscreen {}\n".format(int(now)).encode())
+        except OSError:
+            pass
+        return False
+
+    def cpu_buffers(self, render):
+        """How the proxy shows Android's dmabufs (see PrepareGpu). Weston on X11 draws in
+        software and takes none, so then always as shared memory: mapped where they are, or
+        copied through the GPU that drew them."""
+        cpu = render["cpu_buffers"]
+        if cpu or getattr(self, "weston", None) is None or render["mode"] == "software":
+            return cpu
+        if render["mode"] == "vkms":                  # our vkms device's linear buffers
+            return "shared"
+        setting, gpus = self.inst.get("gpu"), gpu.gpus()
+        node = next((g.node for g in gpus if g.pci == setting), None)
+        if node is None and render["mode"] == "nvidia":
+            node = next((g.node for g in gpus if g.driver == "nvidia"), None)
+        return node or gpu.host_gpu() or ""
+
     def start_proxy(self, upstream, cpu_buffers=""):
         listen = os.path.join(paths.user_runtime_dir(self.iid), "wayland-0")
         env = dict(os.environ)
@@ -95,7 +198,8 @@ class Session:
              "--width", inst.get("width"), "--height", inst.get("height"), "--zoom", inst.get("zoom"),
              "--theme", color_scheme(), "--close-action", inst.get("close_action")]
             + (["--cpu-buffers", cpu_buffers] if cpu_buffers else [])
-            + (["--logical-pointer"] if android == "11" else []),
+            + (["--logical-pointer"] if android == "11" else [])
+            + (["--nested"] if getattr(self, "weston", None) is not None else []),
             stdout=subprocess.PIPE, stdin=rot_r, env=env,
             stderr=open(os.path.join(paths.user_runtime_dir(self.iid), "wlproxy.log"), "w")
             if os.environ.get("WDM_PROXY_TRACE") == "1" else None)
@@ -130,7 +234,10 @@ class Session:
             code = self.proxy.poll() if self.proxy else None
             log.warning("Wayland proxy exited (code %s); see ~/.cache/waydroid-manager/wlproxy-%s.log",
                         code, self.iid)
-            if not self.stopping:
+            if not self.stopping and getattr(self, "weston", None) is not None and self.weston.poll() is not None:
+                log.info("device window closed")      # its X11 window: Weston, then the proxy, ended
+                self.on_signal()
+            elif not self.stopping:
                 # Without its proxy the instance has no window, and starting it again can't
                 # give it one: stop it, so it can be started afresh
                 notify("{} stopped".format(Instance.load(self.iid).name),
@@ -168,6 +275,13 @@ class Session:
             open_settings(self.iid, restart=True)
         elif ev.startswith("install "):           # an APK dropped on the window
             self.install_apk(ev[len("install "):])
+        elif ev == "fullscreen":
+            log.info("fullscreen: X11 window %s", getattr(self, "xwin", None))
+            if getattr(self, "xwin", None):
+                was = self.x11.is_fullscreen(self.xwin)
+                self.x11.toggle_fullscreen(self.xwin)
+                deadline = time.monotonic() + 2           # the window manager takes its time
+                GLib.timeout_add(100, self.report_fullscreen, was, deadline)
         elif ev.startswith("action key "):
             log.info("sending key %s", ev.split()[2])
             self._async("SendKey", self.iid, dbus.UInt32(int(ev.split()[2])))
@@ -316,6 +430,11 @@ class Session:
         # Xid 69 and Android's display restarts (docs/spike-findings.md)
         env = dict(os.environ, RENDER_SERVER_EXEC_PATH=host + "/bin/virgl_render_server",
                    LD_LIBRARY_PATH=host + "/lib", WAYDROID_NVIDIA_CPU_LINEAR="0")
+        if getattr(self, "copied", ""):
+            # The proxy copies each frame through the GPU (cpu_buffers), so apps can draw into
+            # NVIDIA's own block-linear buffers. The renderer's pick for a desktop on another GPU,
+            # LINEAR, is one NVIDIA can't render into: every app's EGL surface fails.
+            env.setdefault("WAYDROID_NVIDIA_PRESENT", "block-linear")
         os.makedirs(paths.user_cache_dir(), exist_ok=True)
         log_path = os.path.join(paths.user_cache_dir(), "renderer-{}.log".format(self.iid))
         with open(log_path, "ab") as out:
@@ -378,11 +497,13 @@ class Session:
         w = inst.cfg["waydroid"]
         sm = gbinder.ServiceManager("/dev/" + w["binder"], w["service_manager_protocol"], w["binder_protocol"])
         self.sm = sm
-        clip = services.clipboard_service(sm)
+        clip = services.clipboard_service(sm, x11=getattr(self, "weston", None) is not None)
         if clip:
             self.services.append(clip)
         self.services.append(services.Notifications(sm, self.iid, inst.name))
         self.services.append(services.user_monitor_service(sm, self.on_unlocked, self.on_package))
+        binders = [getattr(s, "service", s) for s in self.services]
+        self.presence = sm.add_presence_handler(lambda: [b.register() for b in binders])
 
     def on_unlocked(self, uid):
         log.info("Android user %s is ready", uid)
@@ -460,9 +581,12 @@ class Session:
         self.daemon = Daemon(self.bus)
         upstream = wayland_socket()
         if not os.path.exists(upstream):
-            raise RuntimeError("Wayland socket {} not found; is a Wayland compositor running?".format(upstream))
+            if not os.environ.get("DISPLAY"):
+                raise RuntimeError("Wayland socket {} not found; is a Wayland compositor running?".format(upstream))
+            upstream = self.start_nested()
         render = self.daemon.prepare_gpu(self.iid)
-        wl = self.start_proxy(upstream, cpu_buffers=render["cpu_buffers"])
+        self.copied = self.cpu_buffers(render)
+        wl = self.start_proxy(upstream, cpu_buffers=self.copied)
         if not os.path.exists(desktop.launcher_path(self.iid)):
             desktop.write_launcher(self.iid, self.inst.name)
         self.session = self.session_dict(wl)
@@ -574,13 +698,14 @@ class Session:
                 s.close()
             except Exception:  # noqa: BLE001
                 pass
-        if self.proxy and self.proxy.poll() is None:
-            self.proxy.terminate()
-            try:
-                self.proxy.wait(3)
-            except subprocess.TimeoutExpired:
-                self.proxy.kill()
-                self.proxy.wait()
+        for child in (self.proxy, getattr(self, "weston", None)):
+            if child and child.poll() is None:
+                child.terminate()
+                try:
+                    child.wait(3)
+                except subprocess.TimeoutExpired:
+                    child.kill()
+                    child.wait()
 
 
 def main(iid, background=False):

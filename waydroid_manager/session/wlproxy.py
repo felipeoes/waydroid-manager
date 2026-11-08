@@ -45,6 +45,7 @@ import selectors
 import signal
 import socket
 import struct
+import subprocess
 import sys
 import threading
 import time
@@ -60,6 +61,7 @@ MAX_FDS_PER_MSG = 28        # libwayland's MAX_FDS_OUT; receivers truncate beyon
 RECV_SIZE = 65536
 HIGH_WATER = 4 * 1024 * 1024
 FULL_UI_APP_ID = "Waydroid"
+OWN_DMABUF_NAME = 0xfff00000  # registry name of the zwp_linux_dmabuf_v1 we serve ourselves (Session.own_dmabuf)
 MY_ID_BASE = 0xfe000000      # proxy-created objects in client space (mapped to real ids by Translator)
 FULL_DAMAGE = 0x7fffffff
 GRIP_KINDS = ("grip_left", "grip_bottom")   # our resize strips inside the picture's edges
@@ -72,6 +74,10 @@ CLIP_MAX = 1 << 20            # more text than this is not passed to Android
 # An owner that sends nothing for this long is stuck: its reader gives up. Far above CLIP_WAIT, so a
 # slow owner still finishes in time for the next paste.
 CLIP_IDLE = 30
+# Nested (an X11 desktop): Weston keeps a clipboard of its own, so the proxy takes the HWC's text to
+# X11's and answers the HWC's reads from it
+X11_COPY = ("xclip", "-selection", "clipboard", "-in", "-target", "UTF8_STRING")
+X11_PASTE = ("xclip", "-selection", "clipboard", "-out", "-target", "UTF8_STRING")
 URI_LIST = "text/uri-list"    # what file managers offer when files are dragged
 
 
@@ -608,6 +614,8 @@ class Session:
         self.dmabuf_planes = {}  # cpu_buffers: params id -> [(fd copy, offset, stride, modifier)]
         self.copies = {}         # cpu_buffers through a GPU: buffer id -> (gbm buffer, width, height, our memory, stride)
         self.dmabuf_kept = set()  # (planes, modifier, format) passed on as dmabufs, noted once each
+        self.own_dmabuf = set()   # zwp_linux_dmabuf_v1 and params ids served here, not by the compositor
+        self.tr = None            # the connection's Translator
         # input routing
         self.last_serial = 0
         self.ptr_focus = None    # ("mine", surface) | ("tree", surface) | None
@@ -632,6 +640,10 @@ class Session:
         self.clips = {}           # selection offer id -> Clip
         self.clip_stats = {"answered": 0, "late": 0}
         self.own_source = None    # the HWC's wl_data_source while it owns the selection
+        self.source_types = {}    # the HWC's wl_data_source id -> mime types it offers
+        self.data_device = None   # (wl_data_device_manager, wl_data_device) of the HWC
+        self.clip_source = None   # nested: our latest wl_data_source (_offer_x11_clipboard)
+        self.fresh_copy = False   # nested: the next selection is the HWC's new copy (not X11's)
         self.dnd_version = 1      # of the HWC's wl_data_device_manager (actions and finish need 3)
         self.file_drag = None     # offer of the file drag over the window, kept from the HWC
         self.drag_action = 0      # what the compositor chose for it
@@ -650,11 +662,11 @@ class Session:
             trace(">>+", o, w & 0xffff, self.objs.get(o) or self.mine.get(o), "injected")
         self.c2s.inject(data, fds)
 
-    def to_client(self, data):
+    def to_client(self, data, fds=()):
         if TRACE:
             o, w = HEADER.unpack_from(data)
             trace("<<+", o, w & 0xffff, self.objs.get(o) or self.mine.get(o), "injected")
-        self.s2c.inject(data)
+        self.s2c.inject(data, fds)
 
     def in_tree(self, sid):
         """Is the surface the full-UI toplevel or one of the HWC's subsurfaces of it?"""
@@ -669,10 +681,19 @@ class Session:
     # -- geometry model -------------------------------------------------------------
     @property
     def framed(self):
-        return bool(self.cfg.frame and self.window and self.window.frame and not self.window.fullscreen)
+        return bool(self.cfg.frame and self.window and self.window.frame and not self.fullscreen)
+
+    @property
+    def fullscreen(self):
+        """The toplevel is, or (nested) the session's X11 window is: no frame."""
+        return bool(self.window and (self.window.fullscreen or self.cfg.x11_fullscreen))
+
+    @property
+    def title_h(self):
+        return 0 if self.cfg.nested else fr.TITLE_H
 
     def frame_extent(self):
-        return (fr.TOOLBAR_W, fr.TITLE_H) if self.framed else (0, 0)
+        return (fr.TOOLBAR_W, self.title_h) if self.framed else (0, 0)
 
     @property
     def turn(self):
@@ -721,7 +742,7 @@ class Session:
         if w.fullscreen and w.fs_size:
             return w.fs_size
         if w.fill_size:
-            b, t = (fr.TOOLBAR_W, fr.TITLE_H) if self.framed else (0, 0)
+            b, t = self.frame_extent()
             return max(1, w.fill_size[0] - b), max(1, w.fill_size[1] - t)
         return None
 
@@ -761,7 +782,7 @@ class Session:
     def fit_zoom(self, avail_w, avail_h):
         if not self.res:
             return 1.0
-        b, t = (fr.TOOLBAR_W, fr.TITLE_H) if (self.cfg.frame and not (self.window and self.window.fullscreen)) else (0, 0)
+        b, t = (fr.TOOLBAR_W, self.title_h) if (self.cfg.frame and not self.fullscreen) else (0, 0)
         vw, vh = self.view()
         z = min((avail_w - b) / vw, (avail_h - t) / vh)
         return max(ZOOM_MIN, min(ZOOM_MAX, z))
@@ -840,17 +861,21 @@ class Session:
                 rid = r.n()
                 self.objs[rid] = "wl_registry"
                 self.registries.add(rid)
+                if self.pending_outputs is None and self.serve_dmabuf():
+                    self.to_client(self.own_dmabuf_global(rid))
             elif op == P.WL_DISPLAY_SYNC and self.initial_sync is None and self.pending_outputs is not None:
                 self.initial_sync = r.n()
             return None
         if iface is None:
             return None
         if iface == "wl_registry" and op == P.WL_REGISTRY_BIND:
-            r.u()
+            name = r.u()
             name_iface = r.s()
             version = r.u()
             new = r.n()
             self.objs[new] = name_iface
+            if name == OWN_DMABUF_NAME:
+                return self._own_dmabuf_bind(new, version)
             if name_iface == "wl_data_device_manager":
                 self.dnd_version = version
             elif name_iface == "wl_seat":
@@ -929,12 +954,22 @@ class Session:
             return None
         if iface == "wl_data_device_manager":
             if op == P.WL_DATA_DEVICE_MANAGER_GET_DATA_DEVICE:
-                self.objs[r.n()] = "wl_data_device"
+                did = r.n()
+                self.objs[did] = "wl_data_device"
+                self.data_device = (obj, did)
             elif op == P.WL_DATA_DEVICE_MANAGER_CREATE_DATA_SOURCE:
-                self.objs[r.n()] = "wl_data_source"
+                sid = r.n()
+                self.objs[sid] = "wl_data_source"
+                self.source_types[sid] = []
+            return None
+        if iface == "wl_data_source" and op == P.WL_DATA_SOURCE_OFFER and obj in self.source_types:
+            self.source_types[obj].append(r.s())
             return None
         if iface == "wl_data_device" and op == P.WL_DATA_DEVICE_SET_SELECTION:
             self.own_source = r.o() or None
+            if self.cfg.nested and self.own_source:
+                self.fresh_copy = True
+                self._copy_to_x11(self.own_source)
             return None
         if iface == "wl_data_offer":
             return self._offer_request(obj, op)
@@ -944,9 +979,56 @@ class Session:
             return self._viewport_request(obj, op, r)
         if iface == "wl_subsurface":
             return self._subsurface_request(obj, op, r)
+        if obj in self.own_dmabuf:
+            return self._own_dmabuf_request(obj, iface, op, r)
         if self.cfg.cpu_buffers and iface in ("zwp_linux_dmabuf_v1", "zwp_linux_buffer_params_v1"):
             return self._dmabuf_request(obj, iface, op, r)
         return None
+
+    # -- linux-dmabuf served here ---------------------------------------------------------
+    # cpu_buffers with a compositor that offers no linux-dmabuf (Weston drawing in software, on an
+    # X11 desktop): the HWC still needs one for Android's buffers. We serve it, and its buffers
+    # reach the compositor as shared memory (_dmabuf_request), so nothing of it goes upstream.
+
+    def serve_dmabuf(self):
+        return bool(self.cfg.cpu_buffers) and all(g != "zwp_linux_dmabuf_v1" for g, _ in self.globals.values())
+
+    @staticmethod
+    def own_dmabuf_global(rid):
+        return msg(rid, P.WL_REGISTRY_EV_GLOBAL, "usu", OWN_DMABUF_NAME, "zwp_linux_dmabuf_v1", 3)
+
+    def _own(self, oid, iface):
+        self.objs[oid] = iface
+        self.own_dmabuf.add(oid)
+        self.tr.iface[oid] = iface      # so the Stream counts the fds of its requests
+
+    def _own_dmabuf_bind(self, new, version):
+        self._own(new, "zwp_linux_dmabuf_v1")
+        # formats wl_shm takes as they are; LINEAR, since each frame is read through the CPU
+        for fmt in (P.DRM_FORMAT_ARGB8888, P.DRM_FORMAT_XRGB8888, P.DRM_FORMAT_ABGR8888, P.DRM_FORMAT_XBGR8888):
+            self.to_client(msg(new, P.ZWP_LINUX_DMABUF_EV_FORMAT, "u", fmt))
+            if version >= 3:
+                self.to_client(msg(new, P.ZWP_LINUX_DMABUF_EV_MODIFIER, "uuu", fmt, 0, P.DRM_FORMAT_MOD_LINEAR))
+        return []
+
+    def _own_dmabuf_request(self, obj, iface, op, r):
+        if iface == "zwp_linux_dmabuf_v1":
+            if op == P.ZWP_LINUX_DMABUF_CREATE_PARAMS:
+                self._own(r.n(), "zwp_linux_buffer_params_v1")
+            out = None
+        elif op == P.ZWP_LINUX_BUFFER_PARAMS_CREATE:      # the HWC creates immed; refuse the rest
+            for plane in self.dmabuf_planes.pop(obj, []):
+                os.close(plane[0])
+            self.to_client(msg(obj, P.ZWP_LINUX_BUFFER_PARAMS_EV_FAILED))
+            out = None
+        else:
+            out = self._dmabuf_request(obj, iface, op, r)
+        if op == (P.ZWP_LINUX_DMABUF_DESTROY if iface == "zwp_linux_dmabuf_v1" else P.ZWP_LINUX_BUFFER_PARAMS_DESTROY):
+            self.own_dmabuf.discard(obj)
+            self.objs.pop(obj, None)
+            self.tr.iface.pop(obj, None)
+            self.to_client(msg(1, P.WL_DISPLAY_EV_DELETE_ID, "u", obj))
+        return out or []
 
     def _dmabuf_request(self, obj, iface, op, r):
         """cpu_buffers: Android's dmabufs reach the compositor as shared memory. A compositor may
@@ -979,6 +1061,9 @@ class Session:
                 return None
             fd, offset, stride, modifier = planes[0]
             code = {P.DRM_FORMAT_ARGB8888: 0, P.DRM_FORMAT_XRGB8888: 1}.get(fmt, fmt)
+            if getattr(self.cfg.gpu, "rgba", False):   # read back as RGBA bytes, whatever its format
+                code = P.DRM_FORMAT_XBGR8888 if fmt in (P.DRM_FORMAT_XRGB8888, P.DRM_FORMAT_XBGR8888) \
+                    else P.DRM_FORMAT_ABGR8888
             size = offset + stride * height
             pool_fd = None
             if code not in self.shm_formats:
@@ -1214,6 +1299,8 @@ class Session:
         if obj == self.initial_sync and op == P.WL_CALLBACK_EV_DONE:
             pending, self.pending_outputs = self.pending_outputs, None
             self.initial_sync = None
+            if self.serve_dmabuf():
+                pending = [self.own_dmabuf_global(rid) for rid in self.registries] + pending
             return pending + [build_message(obj, op, payload)] if pending else None
         iface = self.objs.get(obj)
         r = Reader(payload)
@@ -1292,6 +1379,8 @@ class Session:
     def _keyboard_event(self, kid, op, r):
         if op == P.WL_KEYBOARD_EV_ENTER:
             self.last_serial, self.kbd_focus = r.u(), r.o()
+            if self.cfg.nested and self.data_device:
+                self._offer_x11_clipboard()
         elif op == 2:                                     # leave
             self.last_serial = r.u()
             self.kbd_focus = None
@@ -1306,7 +1395,7 @@ class Session:
                 swallowed.discard(key)
                 return []
             if (state == 1 and w and getattr(self, "kbd_focus", None) == w.surface
-                    and (key == self.KEY_F11 or (key == self.KEY_ESC and w.fullscreen))):
+                    and (key == self.KEY_F11 or (key == self.KEY_ESC and self.fullscreen))):
                 swallowed.add(key)
                 self.swallowed_keys = swallowed
                 self.toggle_fullscreen(leave_only=(key == self.KEY_ESC))
@@ -1347,6 +1436,8 @@ class Session:
 
     def _configure(self, width, height, states):
         w = self.window
+        if self.cfg.nested and P.XDG_TOPLEVEL_STATE_FULLSCREEN in states:
+            states = (states - {P.XDG_TOPLEVEL_STATE_FULLSCREEN}) | {P.XDG_TOPLEVEL_STATE_MAXIMIZED}
         was_fs, was_fill, was_resizing = w.fullscreen, w.fill_size is not None, w.resizing
         w.fullscreen = P.XDG_TOPLEVEL_STATE_FULLSCREEN in states
         w.maximized = P.XDG_TOPLEVEL_STATE_MAXIMIZED in states
@@ -1508,7 +1599,12 @@ class Session:
             self.offers[offer] = []
             return None
         if op == P.WL_DATA_DEVICE_EV_SELECTION:
-            self._clip_selection(r.o())
+            offer = r.o()
+            if self.cfg.nested and offer and self.clip_source and not self.offers.get(offer):
+                self.offers[offer] = [CLIP_TYPES[0]]      # our source's (_offer_x11_clipboard)
+                self._clip_selection(offer)
+                return [msg(offer, P.WL_DATA_OFFER_EV_OFFER, "s", CLIP_TYPES[0]), build_message(did, op, payload)]
+            self._clip_selection(offer)
             return None
         if op == P.WL_DATA_DEVICE_EV_ENTER:
             serial, sid, x, y, offer = r.u(), r.o(), r.f(), r.f(), r.o()
@@ -1566,13 +1662,56 @@ class Session:
         mime = next((m for m in CLIP_TYPES if m in self.offers.get(offer, ())), None)
         if not offer or mime is None:
             return
-        if self.own_source:
+        if self.own_source and (self.fresh_copy or not self.cfg.nested):
             # The HWC's own text: fetching it would wait on the HWC, which is busy reading
+            self.fresh_copy = False
             self.clips[offer] = Clip(None, self.clip_stats)
             return
         rfd, wfd = os.pipe()
-        self.to_server(msg(offer, P.WL_DATA_OFFER_RECEIVE, "s", mime), fds=[wfd])
+        if self.cfg.nested:
+            # X11's clipboard is the one shared with the desktop (Weston's offer: on each focus)
+            try:
+                paste = subprocess.Popen(X11_PASTE, stdin=subprocess.DEVNULL, stdout=wfd, stderr=subprocess.DEVNULL)
+                threading.Thread(target=paste.wait, daemon=True, name="clip-x11").start()   # reaped
+            except OSError:
+                pass
+            os.close(wfd)
+        else:
+            self.to_server(msg(offer, P.WL_DATA_OFFER_RECEIVE, "s", mime), fds=[wfd])
         self.clips[offer] = Clip(rfd, self.clip_stats)
+
+    def _offer_x11_clipboard(self):
+        """Nested, on each focus: a new selection of ours, so Weston offers it to the HWC, which
+        reads the clipboard only then, and gets X11's text (_clip_selection). Weston itself
+        offers nothing on an X11 focus. Our source offers no type: Weston's clipboard would read
+        it (and our source can't take the fd); the type is added to the offer the HWC gets."""
+        manager, device = self.data_device
+        old, src = self.clip_source, self.new_id("clip_source")
+        self.clip_source = src
+        self.to_server(msg(manager, P.WL_DATA_DEVICE_MANAGER_CREATE_DATA_SOURCE, "n", src))
+        self.to_server(msg(device, P.WL_DATA_DEVICE_SET_SELECTION, "ou", src, self.last_serial))
+        # Only now, replaced: Weston also cancels a source whose offer the HWC destroys (after
+        # each read), and a destroyed selection becomes none, which empties the HWC's copy
+        if old:
+            self.to_server(msg(old, P.WL_DATA_SOURCE_DESTROY))
+
+    def _copy_to_x11(self, source):
+        """Nested: Android copied: ask the HWC's source for the text and put it in X11's clipboard."""
+        mime = next((m for m in CLIP_TYPES if m in self.source_types.get(source, ())), None)
+        if mime is None:
+            return
+        rfd, wfd = os.pipe()
+        self.to_client(msg(source, P.WL_DATA_SOURCE_EV_SEND, "s", mime), fds=[wfd])
+
+        def copy(data):
+            def run():
+                try:
+                    subprocess.run(X11_COPY, input=data, timeout=2, check=False,
+                                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                except (OSError, subprocess.TimeoutExpired):
+                    pass
+            threading.Thread(target=run, daemon=True, name="clip-x11").start()
+        self.watch(rfd, copy)
 
     def _offer_request(self, offer, op):
         if op == P.WL_DATA_OFFER_RECEIVE and offer in self.clips:
@@ -1589,6 +1728,7 @@ class Session:
         kind = self.mine.get(obj)
         if kind in ("buffer_shm", "buffer_pixel") and op == 0:     # wl_buffer.release
             self.to_server(msg(obj, P.WL_BUFFER_DESTROY))
+
 
     # -- applying geometry ----------------------------------------------------------------
     def _apply_messages(self, commit=True):
@@ -1718,6 +1858,9 @@ class Session:
 
     def _forget(self, oid):
         iface = self.objs.pop(oid, None)
+        self.source_types.pop(oid, None)
+        if self.data_device and oid in self.data_device:
+            self.data_device = None
         copy = self.copies.pop(oid, None)
         if copy:
             self.cfg.gpu.free(copy[0])
@@ -1844,8 +1987,12 @@ class Session:
             f["sizes"]["backdrop"] = backdrop
             out.extend(self._backdrop_messages(backdrop))
         out.append(msg(f["backdrop_sub"], P.WL_SUBSURFACE_SET_POSITION, "ii", ox, oy))
-        hidden = w.fullscreen or not self.cfg.frame
-        b, t, m = fr.TOOLBAR_W, fr.TITLE_H, fr.BORDER
+        hidden = self.fullscreen or not self.cfg.frame
+        b, t, m = fr.TOOLBAR_W, self.title_h, fr.BORDER
+        if self.cfg.nested and f["sizes"].get("title") != "hidden":
+            out.append(msg(f["title"], P.WL_SURFACE_ATTACH, "oii", 0, 0, 0))
+            out.append(msg(f["title"], P.WL_SURFACE_COMMIT))
+            f["sizes"]["title"] = "hidden"
         if hidden:
             self._tip(None)
             for kind in ("title", "toolbar", "border") + GRIP_KINDS:
@@ -1855,10 +2002,11 @@ class Session:
                     f["sizes"][kind] = "hidden"
             return out
         dw, dh = self.area() or (dw, dh)     # maximized/tiled: frame hugs the window, content centred
-        out.append(msg(f["title_sub"], P.WL_SUBSURFACE_SET_POSITION, "ii", ox, oy - t))
+        if not self.cfg.nested:
+            out.append(msg(f["title_sub"], P.WL_SUBSURFACE_SET_POSITION, "ii", ox, oy - t))
         out.append(msg(f["toolbar_sub"], P.WL_SUBSURFACE_SET_POSITION, "ii", ox + dw, oy))
         out.append(msg(f["border_sub"], P.WL_SUBSURFACE_SET_POSITION, "ii", ox - m, oy - t - m))
-        if f["sizes"].get("title") != (dw + b, t):
+        if not self.cfg.nested and f["sizes"].get("title") != (dw + b, t):
             f["sizes"]["title"] = (dw + b, t)
             self._draw("title")
         if f["sizes"].get("toolbar") != (b, dh):
@@ -1894,7 +2042,7 @@ class Session:
         hover = self.hover.get(kind)
         pressed = self.pressed[1] if self.pressed and self.pressed[0] == kind else None
         if kind == "title":
-            data, pw, ph, stride = fr.render_title(size[0], scale, "{} · #{}".format(self.cfg.name, self.cfg.id),
+            data, pw, ph, stride = fr.render_title(size[0], scale, fr.title_text(self.cfg.name, self.cfg.id),
                                                    self.cfg.theme, hover, pressed)
         else:
             self.tb_scroll = min(self.tb_scroll, fr.toolbar_scroll_max(size[1]))
@@ -2117,6 +2265,10 @@ class Session:
         w = self.window
         if not w:
             return
+        if self.cfg.nested:
+            if not leave_only or self.cfg.x11_fullscreen:
+                self.emit("fullscreen")         # the session's X11 window
+            return
         if w.fullscreen:
             self.to_server(msg(w.toplevel, P.XDG_TOPLEVEL_UNSET_FULLSCREEN))
         elif not leave_only:
@@ -2203,6 +2355,7 @@ class Connection:
                           count_fds=self.tr.request_fds)
         self.s2c = Stream(self._event)
         self.session.c2s, self.session.s2c = self.c2s, self.s2c
+        self.session.tr = self.tr
         self.session.watch = lambda fd, done: PipeReader(self, fd, done)
         self.closed = False
 
@@ -2319,7 +2472,12 @@ class Config:
         # the compositor can't import Android's dmabufs: show them as shm ("shared", or the render
         # node of the GPU to copy them through; Session._dmabuf_request)
         self.cpu_buffers = cpu_buffers
-        self.gpu = gbm.Device(cpu_buffers) if cpu_buffers not in (None, "shared") else None
+        self.gpu = gbm.open_device(cpu_buffers) if cpu_buffers not in (None, "shared") else None
+        # the compositor is a Weston of our own in an X11 window (kiosk: always "fullscreen"). The
+        # X11 window manager's title bar moves and resizes it: we draw no title bar, keep the
+        # toolbar, and the session takes fullscreen to X11
+        self.nested = False
+        self.x11_fullscreen = False   # nested: that window is fullscreen (stdin, from the session)
 
 
 class Proxy:
@@ -2333,7 +2491,8 @@ class Proxy:
         self.conns = []
 
     def watch_rotation(self, fd):
-        """Android's display rotation arrives on fd, a digit per line (session/main.py)."""
+        """Android's display rotation arrives on fd, a digit per line (session/main.py); nested,
+        also "fullscreen 0|1" (Config.x11_fullscreen)."""
         os.set_blocking(fd, False)
         self.rot_fd, self.rot_buf = fd, b""
         self.sel.register(fd, selectors.EVENT_READ, self)
@@ -2349,10 +2508,14 @@ class Proxy:
             self.sel.unregister(self.rot_fd)
             return
         *lines, self.rot_buf = (self.rot_buf + data).split(b"\n")
-        last = lines[-1].strip() if lines else b""
-        if last not in (b"0", b"1", b"2", b"3") or int(last) == self.cfg.rotation:
+        changed = False
+        for line in (l.strip() for l in lines):
+            if line in (b"0", b"1", b"2", b"3") and int(line) != self.cfg.rotation:
+                self.cfg.rotation, changed = int(line), True
+            elif line in (b"fullscreen 0", b"fullscreen 1") and (line[-1:] == b"1") != self.cfg.x11_fullscreen:
+                self.cfg.x11_fullscreen, changed = line[-1:] == b"1", True
+        if not changed:
             return
-        self.cfg.rotation = int(last)
         for c in self.conns:
             try:
                 c.session.rotated()
@@ -2467,9 +2630,11 @@ def main(argv=None):
     p.add_argument("--close-action", default="stop", choices=("stop", "freeze", "none"))
     p.add_argument("--cpu-buffers", help='"shared" or a render node (Config)')
     p.add_argument("--logical-pointer", action="store_true", help="Android 11: pointer positions stay turned")
+    p.add_argument("--nested", action="store_true", help="upstream is the session's Weston on X11 (Config.nested)")
     o = p.parse_args(argv)
     cfg = Config(o.id, o.name, o.width, o.height, o.zoom, True, o.theme, o.close_action, o.cpu_buffers)
     cfg.logical_pointer = o.logical_pointer
+    cfg.nested = o.nested
     global LOG_PATH
     cache = os.environ.get("XDG_CACHE_HOME") or os.path.expanduser("~/.cache")
     os.makedirs(os.path.join(cache, "waydroid-manager"), exist_ok=True)

@@ -326,13 +326,13 @@ class GpuTest(unittest.TestCase):
     NV = gpu.Gpu("0000:01:00.0", "GPU 0: NVIDIA GeForce RTX 5060 Ti", "nvidia", "/dev/dri/renderD128")
     AMD = gpu.Gpu("0000:11:00.0", "GPU 1: AMD Radeon Graphics", "amdgpu", "/dev/dri/renderD129")
 
-    def modes(self, android, nvidia_desktop, igpu, settings=("auto", "software")):
-        exists = os.path.exists
+    def modes(self, android, nvidia_desktop, igpu, settings=("auto", "software"), driver=None):
+        exists, driver = os.path.exists, nvidia_desktop if driver is None else driver
         with mock.patch.multiple(gpu, nvidia_display=lambda: nvidia_desktop,
                                  host_gpu=lambda: self.AMD.node if igpu else None,
                                  gpus=lambda: [self.NV, self.AMD]), \
                 mock.patch.object(gpu.os.path, "exists",
-                                  lambda p: nvidia_desktop if p == "/dev/nvidiactl" else exists(p)):
+                                  lambda p: driver if p == "/dev/nvidiactl" else exists(p)):
             return [gpu.mode(android, s) for s in settings]
 
     def test_desktop_on_nvidia(self):
@@ -344,6 +344,12 @@ class GpuTest(unittest.TestCase):
         self.assertEqual(self.modes("16", False, True)[0], ("gpu", None))       # stock Waydroid's pick
         self.assertEqual(self.modes("17", False, False)[0], ("vkms", None))
         self.assertEqual(self.modes(None, False, False)[0], ("software", None))  # stock on 10
+
+    def test_server_without_a_screen_renders_on_nvidia(self):
+        self.assertEqual(self.modes("17", False, False, driver=True)[0], ("nvidia", None))
+        self.assertEqual(self.modes("13", False, False, driver=True)[0], ("nvidia", None))
+        self.assertEqual(self.modes(None, False, False, driver=True)[0], ("software", None))  # no build
+        self.assertEqual(self.modes("16", False, True, driver=True)[0], ("gpu", None))  # a laptop's iGPU
 
     def test_picked_gpu(self):
         self.assertEqual(self.modes("16", True, True, ("0000:11:00.0", "0000:01:00.0")),

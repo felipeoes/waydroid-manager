@@ -142,8 +142,10 @@ def mode(android, setting):
         if picked is None:
             raise ValueError("the GPU at {} isn't there anymore: pick another in Graphics".format(setting))
         return ("nvidia", None) if picked.driver == "nvidia" else ("gpu", picked.node)
+    # NVIDIA shows the desktop, or no GPU does (a server's remote desktop: its NVIDIA cards
+    # drive no screen, and the session copies the frames, PrepareGpu)
     if setting == "auto" and known and catalog.get(android, "nvidia") \
-            and os.path.exists("/dev/nvidiactl") and nvidia_display():
+            and os.path.exists("/dev/nvidiactl") and (nvidia_display() or not host_gpu()):
         return "nvidia", None
     if setting == "auto" and host_gpu() and not nvidia_display():
         return "gpu", None
