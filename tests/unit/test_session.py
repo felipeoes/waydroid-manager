@@ -6,8 +6,10 @@ import time
 import unittest
 from unittest import mock
 
+import dbus
+
 from waydroid_manager.instance import Instance
-from waydroid_manager.session import main
+from waydroid_manager.session import main, services
 
 
 class ProxyStartupTest(unittest.TestCase):
@@ -182,3 +184,25 @@ class ShutdownTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class NotificationTest(unittest.TestCase):
+    def test_null_texts_reach_the_desktop_as_empty_strings(self):
+        """Android sends null for a notification without a title, text or action label."""
+        sent = []
+
+        def notify(*args):
+            # what dbus-python does to the call: a None string raises TypeError there
+            dbus.lowlevel.MethodCallMessage("org.freedesktop.Notifications", "/org/freedesktop/Notifications",
+                                            "org.freedesktop.Notifications", "Notify").append(
+                signature="susssasa{sv}i", *args)
+            sent.append(args)
+            return 7
+        n = services.Notifications.__new__(services.Notifications)
+        n.inst_id, n.inst_name, n.I = "1", "Phone", mock.Mock(ID_NONE=0)
+        n.proxy = mock.Mock(Notify=notify)
+        nid = n._notify(0, None, None, None, None, [("open", None)], None, None, False, -1, False, False, 1)
+        self.assertEqual(nid, 7)
+        label, _, _, summary, body, actions = sent[0][:6]
+        self.assertEqual((summary, body, actions), ("", "", ["open", ""]))
+        self.assertNotIn("None", label)
