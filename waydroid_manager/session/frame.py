@@ -105,6 +105,11 @@ def _finish(surf):
 
 # -- title bar --------------------------------------------------------------------
 
+def title_text(name, iid):
+    """What a device window's title bar says: ours on Wayland, the window manager's on X11."""
+    return "{} · #{}".format(name, iid)
+
+
 def title_buttons(width):
     """[(action, x0, x1)] for the title bar buttons, right-aligned."""
     out = []

@@ -67,6 +67,7 @@ entry it first loaded.
    │
    └─ per-instance user session (session/main.py, transient user unit
       waydroid-manager-session-N.service)
+        ├─ X11 desktop only: Weston (x11 backend, kiosk shell, pixman) as the device's window
         ├─ Wayland proxy (session/wlproxy.py): window title, frame, toolbar, zoom, clipboard
         ├─ NVIDIA mode: the device's renderer (virgl_test_server --venus)
         └─ binder services for Android: clipboard, notifications, user monitor
@@ -83,7 +84,34 @@ entry it first loaded.
 - **User session** (`session/main.py`): started by `waydroid-manager start` as a transient
   `systemd --user` unit. It hands the user's Wayland and PulseAudio sockets to the daemon,
   which validates them and bind-mounts them at root-owned paths (`util.stage_socket`). It also
-  hosts the per-instance clipboard, notification and user-monitor services.
+  hosts the per-instance clipboard, notification and user-monitor services. On an X11 desktop
+  (no Wayland socket, `DISPLAY` set) it first starts a Weston of its own on X11
+  (`start_nested`, socket `$XDG_RUNTIME_DIR/waydroid-manager-N-weston`, log
+  `~/.cache/waydroid-manager/weston-N.log`) and points the proxy at it. Closing Weston's window
+  ends the proxy, which stops the device.
+  - Its window is the one Weston's process made (X-Resource gives a window's client pid,
+    `x11.Display.window_pid`); without X-Resource, the only Weston window that appeared.
+  - The X11 window manager's title bar moves and resizes it (Weston resizes its output to the X11
+    window): the session names the window `frame.title_text`, as our title bar reads on Wayland,
+    and the proxy (`--nested`) takes kiosk's fullscreen for a maximized window, drawing the
+    toolbar and no title bar. Our title bar couldn't move the window: Weston holds the X11 pointer
+    grab while a button is down, so the window manager refuses `_NET_WM_MOVERESIZE`.
+  - The toolbar's fullscreen (and F11) reaches the session as a `fullscreen` event, which toggles
+    `_NET_WM_STATE_FULLSCREEN` on the X11 window (`session/x11.py`, libX11 through ctypes). Once
+    the window manager has made the change, the session writes `fullscreen 0|1` on the proxy's
+    stdin (the rotation pipe), and the proxy hides or shows its toolbar.
+  - Clipboard: Weston's clipboard isn't the desktop's, so the proxy bridges X11's through `xclip`.
+    The HWC reads the clipboard only when a selection arrives (and caches it for Android), so on
+    each keyboard focus the proxy sets a new selection of its own and answers the HWC's read from
+    `xclip -o`. That source offers no type (Weston's own clipboard would read it, and an event's
+    fd for a proxy object can't be taken out of the stream); the proxy adds the type on the offer
+    the HWC gets. It is destroyed only once replaced: Weston also cancels a source when the HWC
+    destroys its offer, and a destroyed selection would empty the HWC's copy. When Android copies,
+    the proxy asks the HWC's source for the text itself (an injected `wl_data_source.send`) and
+    hands it to `xclip -in`.
+- Android's services (clipboard, notifications, user monitor) share one presence handler on the
+  ServiceManager: gbinder keeps one per ServiceManager, the last one added, so each service
+  adding its own left only the last re-registering when Android's service manager started.
 - **Wayland proxy** (`session/wlproxy.py`, `wlproto.py`, `wlschema.py`, `frame.py`): sits
   between Android's hwcomposer (HWC) and the compositor. It:
   - labels windows ("Waydroid · Name", app_id `waydroid-manager.N`);
@@ -484,6 +512,16 @@ are easy to break:
     The proxy imports each one with libgbm (`session/gbm.py`) and gives the compositor a memfd of
     its own. On every attach it maps the buffer for reading, so Mesa has the GPU copy it into
     cached memory first, and copies that into the memfd (0.8 ms).
+    NVIDIA's libgbm can't map its block-linear buffers, so there `gbm.EglDevice` reads them
+    instead: the dmabuf as an EGLImage on a GLES framebuffer, read back with `glReadPixels`
+    (0.5 ms for 720p), as RGBA, so the shm buffer is ABGR8888 whatever the dmabuf's format.
+  - A compositor without linux-dmabuf (Weston drawing in software on X11): with `--cpu-buffers`
+    the proxy announces its own `zwp_linux_dmabuf_v1` (version 3, registry name
+    `OWN_DMABUF_NAME`) and serves it; only the shm buffers go upstream. On X11 the session always
+    passes `--cpu-buffers`, and starts NVIDIA's renderer with `WAYDROID_NVIDIA_PRESENT=block-linear`:
+    with no NVIDIA display it would otherwise pick LINEAR buffers, which NVIDIA can't render into,
+    and every app's EGL surface fails (`EGL_BAD_SURFACE`, then `drawRenderNode called on a context
+    with no surface!`).
 
 ## License
 

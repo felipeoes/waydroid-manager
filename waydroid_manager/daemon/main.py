@@ -972,7 +972,12 @@ class Manager(dbus.service.Object):
                 cpu = "shared" if mode == "vkms" else node if mode == "gpu" and gpu.nvidia_display() else ""
                 return {"mode": mode, "renderer": "", "cpu_buffers": cpu or ""}
             nvidia.guest_layers(catalog.get(container.android_of(inst), "nvidia"))
-            return {"mode": mode, "renderer": nvidia.host_dir(), "cpu_buffers": ""}
+            # No GPU shows the desktop (gpu.mode): frames copied through NVIDIA's, to shared memory.
+            # shortcut: the first NVIDIA card, the renderer's default; pick the renderer's card
+            # when servers with mixed NVIDIA cards show up
+            cpu = "" if gpu.nvidia_display() or gpu.host_gpu() else \
+                next((g.node for g in gpu.gpus() if g.driver == "nvidia"), "")
+            return {"mode": mode, "renderer": nvidia.host_dir(), "cpu_buffers": cpu}
         self.run_async(inst.id, prepare, reply, error, lock=False)
 
     @dbus.service.method(paths.DBUS_IFACE, in_signature="", out_signature="s",

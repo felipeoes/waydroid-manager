@@ -482,17 +482,23 @@ def cmd_doctor(o):
     check(shutil.which("dnsmasq"), "dnsmasq installed", "dnsmasq not installed")
     check(shutil.which("openssl"), "openssl installed",
           "openssl missing: apps with web content can crash on Android 16 and 17")
-    check(shutil.which("wl-copy"), "wl-clipboard installed", "wl-clipboard missing: no clipboard sharing")
-    check(os.environ.get("WAYLAND_DISPLAY"), "Wayland session", "WAYLAND_DISPLAY not set")
+    if not os.environ.get("WAYLAND_DISPLAY") and os.environ.get("DISPLAY"):
+        check(shutil.which("weston"), "X11 session: devices open in a Weston window",
+              "X11 session: install weston to run devices")
+        check(shutil.which("xclip"), "xclip installed", "xclip missing: no clipboard sharing")
+    else:
+        check(os.environ.get("WAYLAND_DISPLAY"), "Wayland session", "WAYLAND_DISPLAY not set")
+        check(shutil.which("wl-copy"), "wl-clipboard installed", "wl-clipboard missing: no clipboard sharing")
     from ctypes.util import find_library
     from . import gpu
-    if gpu.nvidia_display():
-        check(os.path.exists("/dev/nvidiactl"), "the desktop is on NVIDIA: devices render there (Graphics: auto)",
-              "the desktop is on an NVIDIA GPU without NVIDIA's proprietary driver: devices render in software")
+    node = gpu.host_gpu()
+    if gpu.nvidia_display() or (not node and any(g.driver == "nvidia" for g in gpu.gpus())):
+        where = "the desktop is on NVIDIA" if gpu.nvidia_display() else "no GPU shows the desktop"
+        check(os.path.exists("/dev/nvidiactl"), where + ": devices render on NVIDIA (Graphics: auto)",
+              where + ", and NVIDIA's proprietary driver is missing: devices render in software")
         check(find_library("epoxy") and find_library("gbm"), "libepoxy and libgbm (NVIDIA's renderer, other GPUs' frames)",
               "libepoxy or libgbm missing: NVIDIA's renderer can't run, nor another GPU's frames show")
     else:
-        node = gpu.host_gpu()
         check(True, "devices render on {} (Graphics: auto)".format(node) if node else
               "no usable GPU: devices render in software", "")
     for g in gpu.gpus():
