@@ -1071,6 +1071,15 @@ def host_timezone():
         return ""
 
 
+SIZE_PROPS = ("persist.waydroid.width", "persist.waydroid.height")
+
+
+def matches_display(inst):
+    """A 0 width or height: Android's display takes its window's monitor's size, and follows it
+    (session/wlproxy.py follow_display). No prop may pin it then, stock's or the device's own."""
+    return inst.get("width") == "0" or inst.get("height") == "0"
+
+
 def stock_props(inst, arm, mode):
     """Stock Waydroid's [properties] a start keeps, over our defaults (arm, mode: see write_props)."""
     kind = inst.get("arm_translation")
@@ -1084,6 +1093,8 @@ def stock_props(inst, arm, mode):
             continue
         # its ARM translation (waydroid_script's) is in its overlay, made for stock's Android
         if k in armtrans.ALL_PROPS and (arm or kind == "none" or not stock_way):
+            continue
+        if k in SIZE_PROPS and matches_display(inst):
             continue
         out[k] = v
     return out
@@ -1149,6 +1160,8 @@ def write_props(inst, session, arm, render=("gpu", None)):
         if inst.owner_uid != 0 and PROTECTED_PROP_RE.match(k):
             log.warning("%s: ignoring property %s (only root may set it)", inst.id, k)
             continue
+        if k in SIZE_PROPS and matches_display(inst):
+            continue
         eff["properties"][k] = v
     eff_path = os.path.join(inst.dir, "effective.cfg")
     with open(eff_path, "w") as f:
@@ -1169,10 +1182,8 @@ def write_props(inst, session, arm, render=("gpu", None)):
     # Device model: ro.product.waydroid.* win in Android's product property source order
     for k, v in list(dev_props.items()) + list(build.items()):
         extra.append("{}={}".format(k, v))
-    if inst.get("width") != "0":
-        extra.append("persist.waydroid.width=" + inst.get("width"))
-    if inst.get("height") != "0":
-        extra.append("persist.waydroid.height=" + inst.get("height"))
+    if not matches_display(inst):
+        extra += ["persist.waydroid.width=" + inst.get("width"), "persist.waydroid.height=" + inst.get("height")]
     if host_timezone():
         extra.append("persist.sys.timezone=" + host_timezone())
     with open(full) as f:

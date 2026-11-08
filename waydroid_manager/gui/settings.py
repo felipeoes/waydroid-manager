@@ -14,21 +14,13 @@ gi.require_version("Adw", "1")
 import dbus.mainloop.glib  # noqa: E402
 from gi.repository import Adw, Gio, GLib  # noqa: E402
 
+from .adwcompat import present_alone  # noqa: E402
 from .backend import Backend  # noqa: E402
 from .confirm import APP_ID as MANAGER_ID  # noqa: E402
 from .dialogs import InstanceDialog, restart_dialog, save_settings  # noqa: E402
 from .window import ACTIVE  # noqa: E402
 
 APP_ID = "io.github.waydroidmanager.Settings"     # client.SETTINGS_NAME
-
-
-def present_alone(dlg):
-    """Show dlg as a window of its own. Before libadwaita 1.7 such a dialog never emits closed (only
-    its sheets did): emit it when the window goes, or it'd stay in SettingsApp.windows and the next
-    Settings click would present its destroyed window, showing nothing."""
-    dlg.present(None)
-    if (Adw.get_major_version(), Adw.get_minor_version()) < (1, 7):
-        dlg.get_root().connect("destroy", lambda _w: dlg.emit("closed"))
 
 
 class SettingsApp(Adw.Application):

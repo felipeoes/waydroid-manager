@@ -10,6 +10,8 @@ It gives every instance window an identity and a frame:
   scaled and input coordinates are scaled back. The HWC scale is normalised
   to 1 (``wl_output.scale`` and fractional scale are rewritten), and configure
   sizes are hidden from it (any real size triggers an Android display hotplug).
+  A device sized 0x0 (match the display) is the one exception: it gets one sized
+  configure whenever its window's monitor changes mode (follow_display).
 * **Frame** (full-UI window only): a title bar (move, minimize, close), an
   attached side toolbar (Settings, Restart, Back, Home, Recents, volume, screenshot,
   Install APK, fullscreen) with tooltips, and an invisible resize border. These are proxy-owned
@@ -536,6 +538,7 @@ class Window:
         self.frame = None        # dict of our objects once created
         self.saved_zoom = None
         self.own_vp = None       # our wp_viewport on the surface, when the HWC has none (Android 11)
+        self.raw_states = b""    # the states of the last configure the HWC got
 
 
 TRACE = os.environ.get("WDM_PROXY_TRACE") == "1"
@@ -605,6 +608,7 @@ class Session:
         self.window = None
         self.zoom = None         # current zoom factor (float), None until known
         self.res = (cfg.width, cfg.height) if cfg.width and cfg.height else None
+        self.match = self.res is None    # 0x0: Android's display matches the monitor (follow_display)
         # proxy-owned objects
         self.next_id = MY_ID_BASE
         self.mine = {}           # id -> kind
@@ -1342,11 +1346,14 @@ class Session:
                 flags, w, h = r.u(), r.i(), r.i()
                 if flags & 1:
                     out["mode"] = (w, h)
+            elif op == P.WL_OUTPUT_EV_DONE and obj == self.surface_output:
+                self.follow_display()       # once per change: done ends a burst of output events
             return None
         if iface == "wp_fractional_scale_v1" and op == P.WP_FRACTIONAL_SCALE_EV_PREFERRED:
             return [msg(obj, op, "u", 120)]
         if iface == "wl_surface" and op == 0 and self.window and obj == self.window.surface:
             self.surface_output = r.o()             # wl_surface.enter(output)
+            self.follow_display()
             return None
         if iface == "xdg_wm_base" and op == 0:          # ping
             self.ping_stats["pings"] += 1
@@ -1417,6 +1424,7 @@ class Session:
         raw_states = r.a()
         states = set(struct.unpack("={}I".format(len(raw_states) // 4), raw_states))
         self._configure(width, height, states)
+        w.raw_states = raw_states
         # The HWC would hotplug Android's display on any real size: hide it
         return [msg(tid, op, "iia", 0, 0, raw_states)]
 
@@ -1814,6 +1822,28 @@ class Session:
             self.zoom = self.initial_zoom()
         if self.cfg.frame and self._can_frame():
             self._create_frame()
+        self.request_apply()
+        self.follow_display()
+
+    def follow_display(self):
+        """A match-display device: Android's display takes the mode of its window's monitor, and
+        follows it (a Moonlight client setting the host's resolution, say). The HWC hotplugs its
+        display at the size of any sized configure, so it gets exactly one per change, with the
+        states it last had; from then on it ignores wl_output modes, so on several monitors it's
+        the window's that counts. Not nested: Weston's output is our own window there.
+        shortcut: a monitor turned to portrait still gives its landscape mode; swap the mode by
+        its wl_output transform if users ask."""
+        w = self.window
+        mode = self.outputs.get(self.surface_output, {}).get("mode")
+        if not (self.match and w and w.committed and mode) or self.cfg.nested or mode == self.res:
+            return
+        self.res = mode
+        self.to_client(msg(w.toplevel, P.XDG_TOPLEVEL_EV_CONFIGURE, "iia", mode[0], mode[1], w.raw_states))
+        # refit as for a new window, or to the size the compositor gives; never saved as the zoom
+        if w.fs_size or w.fill_size:
+            self.zoom = self.fit_zoom(*(w.fs_size or w.fill_size))
+        else:
+            self.zoom = self.initial_zoom()
         self.request_apply()
 
     def request_apply(self):

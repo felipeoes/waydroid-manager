@@ -55,8 +55,10 @@ class NestedWestonTest(unittest.TestCase):
         with mock.patch.object(main.subprocess, "run", return_value=out):
             self.assertEqual(main.nested_size(720, 1280), (417, 741))
             self.assertEqual(main.nested_size(400, 300), (400, 300))   # never enlarged
+            self.assertEqual(main.nested_size(0, 0), (1250, 741))      # matching the display: 90% of it
         with mock.patch.object(main.subprocess, "run", side_effect=FileNotFoundError):
             self.assertEqual(main.nested_size(720, 1280), (720, 1280))
+            self.assertEqual(main.nested_size(0, 0), (1280, 720))
 
     def test_starts_weston_and_returns_its_socket(self):
         session = self.session()

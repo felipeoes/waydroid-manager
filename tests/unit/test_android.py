@@ -440,6 +440,13 @@ class StockPropsTest(unittest.TestCase):
         self.STOCK = dict(self.STOCK, **{"persist.waydroid.fake_touch": "com.example.game"})
         self.assertEqual(self.props(3, "13")["persist.waydroid.fake_touch"], "com.example.game")
 
+    def test_size_props_dropped_when_matching_the_display(self):
+        self.STOCK = dict(self.STOCK, **{"persist.waydroid.width": "1920", "persist.waydroid.height": "1080"})
+        self.assertEqual(self.props(3, "13")["persist.waydroid.width"], "1920")
+        props = self.props(3, "13", width="0", height="0")
+        self.assertNotIn("persist.waydroid.width", props)
+        self.assertNotIn("persist.waydroid.height", props)
+
     def test_stock_graphics_choice_only_for_0_as_stock_renders(self):
         self.assertIn("ro.hardware.gralloc", self.props(0, "13"))
         self.assertNotIn("ro.hardware.gralloc", self.props(0, "13", mode="nvidia"))

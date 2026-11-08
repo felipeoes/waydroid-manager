@@ -92,8 +92,9 @@ The HWC is a client we can't change, and it aborts on anything unexpected.
 
 **Don't**
 - Don't send the HWC an event that references an object it didn't create.
-- Don't forward a real `xdg_toplevel.configure` size (it hotplugs Android's display), and don't
-  forward `xdg_toplevel.close` (it wipes Android's recent tasks).
+- Don't forward a real `xdg_toplevel.configure` size (it hotplugs Android's display; only
+  `follow_display` sends one, for a Match display device), and don't forward
+  `xdg_toplevel.close` (it wipes Android's recent tasks).
 - Don't block. The proxy is a single-threaded event loop; anything slow belongs in the session.
 
 ## GUI (`waydroid_manager/gui/`)

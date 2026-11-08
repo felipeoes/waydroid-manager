@@ -172,6 +172,7 @@ class InstanceTest(unittest.TestCase):
         self.assertEqual(validate_setting("zoom", "75%"), "75")
         self.assertEqual(validate_setting("zoom", "AUTO"), "auto")
         self.assertEqual(validate_setting("device_model", "pixel_7"), "pixel_7")
+        self.assertEqual(validate_setting("width", "0"), "0")      # match the display
         for k, v in (("width", "-1"), ("cpuset", "0-3;rm"), ("memory", "lots"), ("close_action", "explode"),
                      ("name", "a\nb"), ("bogus", "1"), ("cpus", ""), ("memory", ""), ("memory", "100M"),
                      ("zoom", "10"), ("device_model", "nokia3310")):

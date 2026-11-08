@@ -152,8 +152,8 @@ def _name(v):
 # A callable default is evaluated when read (host-dependent defaults).
 SETTINGS = {
     "name": (_name, None, "display name"),
-    "width": (_uint(16384), "1280", "Android screen width in pixels"),
-    "height": (_uint(16384), "720", "Android screen height in pixels"),
+    "width": (_uint(16384), "1280", "Android screen width in pixels; 0 = match the display"),
+    "height": (_uint(16384), "720", "Android screen height in pixels; 0 = match the display"),
     "dpi": (_uint(1000), "240", "screen density"),
     "cpus": (_cpus, default_cpus, "CPU limit in cores, e.g. 2"),
     "cpuset": (_cpuset, "", "pin to host CPUs, e.g. 0-3; all = not pinned; empty = as many as cpus, the "

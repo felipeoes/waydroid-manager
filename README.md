@@ -9,7 +9,8 @@ in a container, not an emulator.
   proprietary driver
 - **As many devices as your PC can handle**, side by side, each with its own apps, accounts,
   settings, window and network address
-- **Per device:** phone or tablet resolution, CPU and memory, the device model apps see
+- **Per device:** phone or tablet resolution, or your monitor's (Match display: Android
+  resizes with it, e.g. when a Moonlight client sets it), CPU and memory, the device model apps see
   (Samsung, Pixel, Xiaomi, …), ARM translation for ARM-only apps, and root
 - **Clone** a device, your normal Waydroid included, to copy its apps and logins
 - Your normal Waydroid keeps working, and shows up as device **#0**
