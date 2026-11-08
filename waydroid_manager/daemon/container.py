@@ -309,12 +309,20 @@ def pinned_cpus(inst):
         return []
 
 
+CPUINFO_FEATURES = ("fp asimd evtstrm aes pmull sha1 sha2 crc32 atomics fphp asimdhp cpuid asimdrdm "
+                    "jscvt fcma lrcpc dcpop sha3 sm3 sm4 asimddp sha512 asimdfhm dit uscat ilrcpc "
+                    "flagm ssbs sb paca pacg dcpodp flagm2 frint")
+# Houdini sets ARM code's HWCAPs from its /system/etc templates' Features line, copied into a
+# 128-byte stack buffer: a longer line aborts it (0xdead1001) in apps that read them (AppGuard).
+# Its own templates' lists: what it translates.
+HOUDINI_FEATURES = {
+    "cpuinfo.arm.txt": "neon vfp half thumb fastmult edsp vfpv3 vfpv4 idiva idivt tls aes sha1 sha2 crc32",
+    "cpuinfo.arm64.txt": "fp asimd aes pmull sha1 sha2 crc32 atomics",
+}
 CPUINFO_CORE = (
-    "processor\t: {}\n"
+    "processor\t: {n}\n"
     "BogoMIPS\t: 38.40\n"
-    "Features\t: fp asimd evtstrm aes pmull sha1 sha2 crc32 atomics fphp asimdhp cpuid asimdrdm "
-    "jscvt fcma lrcpc dcpop sha3 sm3 sm4 asimddp sha512 asimdfhm dit uscat ilrcpc flagm ssbs sb "
-    "paca pacg dcpodp flagm2 frint\n"
+    "Features\t: {features}\n"
     "CPU implementer\t: 0x41\n"
     "CPU architecture: 8\n"
     "CPU variant\t: 0x2\n"
@@ -336,8 +344,9 @@ def cpu_count(inst, cpuset=""):
         return 4
 
 
-def cpuinfo_text(count):
-    return "".join(CPUINFO_CORE.format(n) for n in range(max(1, count))) + CPUINFO_FOOTER
+def cpuinfo_text(count, features=CPUINFO_FEATURES):
+    return "".join(CPUINFO_CORE.format(n=n, features=features)
+                   for n in range(max(1, count))) + CPUINFO_FOOTER
 
 
 def write_cpuinfo(inst, count):
@@ -723,8 +732,8 @@ def fix_property_contexts(inst):
 
 def fix_cpuinfo(inst):
     """Bind the fake ARM64 cpuinfo over any static cpuinfo templates in /system/etc."""
-    data = cpuinfo_text(cpu_count(inst)).encode()
-    for name in ("cpuinfo.arm.txt", "cpuinfo.arm64.txt"):
+    for name, features in HOUDINI_FEATURES.items():
+        data = cpuinfo_text(cpu_count(inst), features).encode()
         try:
             fd = open_beneath(inst.rootfs, "system/etc/" + name, os.O_RDONLY | os.O_NONBLOCK)
         except FileNotFoundError:

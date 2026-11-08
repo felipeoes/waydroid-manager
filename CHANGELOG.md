@@ -17,6 +17,11 @@ follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions f
   desktop), instead of in software.
 
 ### Fixed
+- Games protected by AppGuard, such as Let's Go Legends, no longer crash at launch on Houdini.
+  The phone CPU description an instance shows apps had a feature list longer than Houdini can
+  read, and it aborted when an app checked the CPU's features. Houdini now gets its own feature
+  lists, the ones it can run, so ARM apps no longer pick code paths it can't run; `/proc/cpuinfo`
+  is unchanged.
 - Games protected by Google's pairip, such as Frog's Kitchen, Mergedom and Tower War, no longer
   crash at launch with a black screen on Houdini. Their protection only accepts Houdini under its
   real file name, so Houdini is no longer renamed `libnb_impl`; `libhoudini.so` shows in an app's
