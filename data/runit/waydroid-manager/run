@@ -1,0 +1,7 @@
+#!/bin/sh
+# SPDX-License-Identifier: GPL-3.0-or-later
+# The waydroid-manager daemon under runit (scripts/install.sh fills in the path).
+# Stopping it signals the daemon alone: instances and their dnsmasq keep running, and the
+# restarted daemon adopts them.
+sv check dbus >/dev/null || exit 1
+exec @BINDIR@/waydroid-manager-daemon 2>&1

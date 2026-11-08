@@ -88,8 +88,23 @@ id3=$(sh_in "$n3" /system/bin/settings get secure android_id)
 [ "$(field "$n3" width)" = "800" ] && pass "clone kept the source's settings" || fail "clone settings"
 
 echo "== daemon restart keeps instances"
-if systemctl is-active -q waydroid-manager; then
-    sudo systemctl restart waydroid-manager
+# through whatever runs the installed daemon; fails (SKIP) for one started by hand
+restart_daemon() {
+    if systemctl is-active -q waydroid-manager 2>/dev/null; then
+        sudo systemctl restart waydroid-manager
+    elif [ -f /etc/init.d/waydroid-manager ]; then
+        sudo rc-service waydroid-manager restart >/dev/null
+    elif [ -e /run/runit/service/waydroid-manager ] || [ -e /var/service/waydroid-manager ]; then
+        sudo sv restart /run/runit/service/waydroid-manager 2>/dev/null ||
+            sudo sv restart /var/service/waydroid-manager
+    elif grep -qs '^Exec=.*waydroid-manager-daemon' \
+            /usr/share/dbus-1/system-services/io.github.waydroidmanager.Manager.service; then
+        sudo pkill -f -- '-m waydroid_manager\.daemon\.main'      # the next call D-Bus-starts it
+    else
+        return 1
+    fi
+}
+if restart_daemon; then
     sleep 4
     st=$(state "$n2")
     [ "$st" = "RUNNING" ] || [ "$st" = "FROZEN" ] && pass "#$n2 survived restart" || fail "#$n2 after restart ($st)"

@@ -28,6 +28,12 @@ STATE=/var/lib/waydroid-manager
 RUNDIR=/run/waydroid-manager
 
 [ "$(id -u)" = 0 ] || { echo "run as root: sudo $0" >&2; exit 1; }
+if [ -d /etc/runit/sv ]; then
+    SV_DIR=/etc/runit/sv; SV_LINKS=/run/runit/service       # Artix
+else
+    SV_DIR=/etc/sv; SV_LINKS=/var/service                   # Void
+fi
+DAEMON_RE='-m waydroid_manager\.daemon\.main'
 
 # mounts at or below a directory, deepest first
 mounts_under() {
@@ -38,14 +44,25 @@ stop_all() {
     echo "Stopping instances"
     for c in $(lxc-ls -P "$STATE/lxc" --active 2>/dev/null); do
         # through the daemon first: it unmounts and cleans up after the container
-        if systemctl -q is-active waydroid-manager.service && [ -x "$PREFIX/bin/waydroid-manager" ]; then
+        if pgrep -f -- "$DAEMON_RE" >/dev/null && [ -x "$PREFIX/bin/waydroid-manager" ]; then
             timeout 60 "$PREFIX/bin/waydroid-manager" stop "${c#wdm-}" >/dev/null 2>&1
         fi
         lxc-unfreeze -P "$STATE/lxc" -n "$c" 2>/dev/null
         lxc-stop -P "$STATE/lxc" -n "$c" -k 2>/dev/null
     done
     systemctl disable --now waydroid-manager.service 2>/dev/null
+    if [ -f /etc/init.d/waydroid-manager ]; then
+        rc-service waydroid-manager stop >/dev/null 2>&1
+        rc-update del waydroid-manager >/dev/null 2>&1
+    fi
+    if [ -e "$SV_LINKS/waydroid-manager" ]; then
+        sv stop "$SV_LINKS/waydroid-manager" >/dev/null 2>&1
+        rm -f "$SV_LINKS/waydroid-manager"
+    fi
+    pkill -f -- "$DAEMON_RE" 2>/dev/null    # D-Bus started it (no systemd, OpenRC or runit)
     systemctl stop waydroid-manager-dnsmasq.service 2>/dev/null
+    pid="$(cat "$RUNDIR/dnsmasq.pid" 2>/dev/null)" && [ "$(cat "/proc/$pid/comm" 2>/dev/null)" = dnsmasq ] &&
+        kill "$pid"     # without systemd it runs on its own
     # the daemon's hardware helpers (KillMode=process leaves them to us) and the per-user
     # instance sessions, which normally exit on their own once their instance stops
     pkill -f -- '-m waydroid_manager\.daemon\.hwhelper ' 2>/dev/null
@@ -53,6 +70,7 @@ stop_all() {
         user="$(id -nu "$uid" 2>/dev/null)" || continue
         systemctl --user -M "$user@" stop 'waydroid-manager-session-*.service' 2>/dev/null
     done
+    pkill -f -- '-m waydroid_manager session ' 2>/dev/null     # without systemd --user
 
     echo "Removing the network"
     if [ -x "$LIBDIR/data/waydroid-manager-net.sh" ]; then
@@ -81,6 +99,12 @@ stop_all() {
         systemctl unmask --runtime waydroid-container.service
         [ ! -e "$RUNDIR/stock-was-active" ] || systemctl start waydroid-container.service
         rm -f "$RUNDIR/stock-was-active"
+    elif [ ! -d /run/systemd/system ] && [ -e "$RUNDIR/stock-was-active" ]; then
+        # without systemd the daemon only held its bus name, which went with it
+        echo "Restarting stock Waydroid"
+        dbus-send --system --type=method_call --dest=org.freedesktop.DBus / \
+            org.freedesktop.DBus.StartServiceByName string:id.waydro.Container uint32:0
+        rm -f "$RUNDIR/stock-was-active"
     fi
 }
 
@@ -99,7 +123,8 @@ remove_user_files() {
 
 remove_files() {
     echo "Removing program files"
-    rm -f "$PREFIX/lib/systemd/system/waydroid-manager.service" \
+    rm -rf "$SV_DIR/waydroid-manager"
+    rm -f "$PREFIX/lib/systemd/system/waydroid-manager.service" /etc/init.d/waydroid-manager \
           /usr/share/dbus-1/system.d/io.github.waydroidmanager.Manager.conf \
           /usr/share/dbus-1/system-services/io.github.waydroidmanager.Manager.service \
           /usr/share/applications/io.github.waydroidmanager.desktop \
@@ -108,8 +133,12 @@ remove_files() {
     rm -rf "$LIBDIR" "$RUNDIR"
     # the instance names adb uses (only our lines, even if END was deleted)
     sed -i --follow-symlinks '/^# BEGIN waydroid-manager /,/^# END waydroid-manager$/{/^# BEGIN waydroid-manager \|^# END waydroid-manager$\|^[0-9a-fA-F.:]\+ waydroid-[a-z0-9-]\+$/d}' /etc/hosts 2>/dev/null || true
-    systemctl daemon-reload
-    systemctl reload dbus 2>/dev/null || true
+    if [ -d /run/systemd/system ]; then
+        systemctl daemon-reload
+        systemctl reload dbus 2>/dev/null || true
+    else
+        dbus-send --system --type=method_call --dest=org.freedesktop.DBus / org.freedesktop.DBus.ReloadConfig
+    fi
 }
 
 # rm --one-file-system does not stop at bind mounts of the same filesystem (stock

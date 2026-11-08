@@ -1,7 +1,9 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 """Client side helpers shared by the CLI, the session and the GUI."""
 import os
+import re
 import shutil
+import signal
 import subprocess
 import sys
 import time
@@ -15,6 +17,18 @@ LONG_TIMEOUT = 3600
 
 class DaemonError(RuntimeError):
     pass
+
+
+def daemon_command(action):
+    """The init's command to start or restart the daemon; None where D-Bus starts it on demand."""
+    if paths.systemd_booted():
+        return ["systemctl", action, "waydroid-manager"]
+    if os.path.isfile("/etc/init.d/waydroid-manager"):
+        return ["rc-service", "waydroid-manager", action]
+    for d in ("/run/runit/service", "/var/service"):
+        if os.path.exists(os.path.join(d, "waydroid-manager")):
+            return ["sv", action, os.path.join(d, "waydroid-manager")]
+    return None
 
 
 def _clean(e):
@@ -172,9 +186,21 @@ def session_unit(iid):
     return "waydroid-manager-session-{}.service".format(iid)
 
 
+def _unit_active(iid):
+    return shutil.which("systemctl") is not None and subprocess.run(
+        ["systemctl", "--user", "is-active", "-q", session_unit(iid)], stderr=subprocess.DEVNULL).returncode == 0
+
+
+def _session_pids(iid):
+    """Our processes running #iid's session: without systemd --user they're in no unit."""
+    r = subprocess.run(["pgrep", "-u", str(os.getuid()), "-f", "--",
+                        r"-m waydroid_manager session {}( |$)".format(re.escape(iid))],
+                       capture_output=True, text=True)
+    return [int(p) for p in r.stdout.split()]
+
+
 def session_active(iid):
-    r = subprocess.run(["systemctl", "--user", "is-active", "-q", session_unit(iid)])
-    return r.returncode == 0
+    return _unit_active(iid) or bool(_session_pids(iid))
 
 
 def run_unit(name, description, cmd, props=()):
@@ -236,7 +262,16 @@ def open_settings(iid, restart=False):
 
 
 def stop_session(iid):
-    if session_active(iid):
+    if _unit_active(iid):
         subprocess.run(["systemctl", "--user", "stop", session_unit(iid)], check=False)
         return True
-    return False
+    pids = _session_pids(iid)
+    for pid in pids:
+        try:
+            os.kill(pid, signal.SIGTERM)
+        except ProcessLookupError:
+            pass
+    deadline = time.monotonic() + 60    # it stops its instance first: the unit's TimeoutStopSec
+    while pids and _session_pids(iid) and time.monotonic() < deadline:
+        time.sleep(0.5)
+    return bool(pids)

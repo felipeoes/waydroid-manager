@@ -9,7 +9,8 @@ import sys
 import time
 
 from . import __version__, catalog, paths
-from .client import Daemon, DaemonError, platform_service, start_session, statusbar_service, stop_session, session_active
+from .client import (Daemon, DaemonError, daemon_command, platform_service, start_session, statusbar_service,
+                     stop_session, session_active)
 from .instance import SETTINGS, RESTART_SETTINGS
 
 ACTIVE = ("RUNNING", "FROZEN")
@@ -24,7 +25,8 @@ def daemon():
     try:
         return Daemon()
     except DaemonError as e:
-        die("{}\nIs it installed and running? (sudo systemctl start waydroid-manager)".format(e))
+        cmd = daemon_command("start")
+        die("{}\nIs it installed and running?{}".format(e, " (sudo {})".format(" ".join(cmd)) if cmd else ""))
 
 
 def wait_state(d, iid, wanted, timeout=120):
@@ -233,8 +235,7 @@ def ensure_running(d, iid, background=False):
     start_session(iid, background=background)
     st = wait_state(d, iid, ACTIVE)
     if st not in ACTIVE:
-        die("instance #{} failed to start (state {}). See: journalctl --user -u {}"
-            .format(iid, st, "waydroid-manager-session-{}".format(iid)))
+        die("instance #{} failed to start (state {}). See: waydroid-manager log {}".format(iid, st, iid))
     return True
 
 
@@ -454,6 +455,9 @@ def cmd_log(o):
         if not os.path.exists(path):
             die("no window log for #{} (has it been started?)".format(o.id))
         os.execvp("tail", ["tail", "-n", str(max(o.lines, 400)), path])
+    if not paths.systemd_booted():      # no journal: the session's log (client.run_unit) or the daemon's
+        path = os.path.join(paths.user_cache_dir(), "session-{}.log".format(o.id)) if o.id else paths.DAEMON_LOG
+        os.execvp("tail", ["tail", "-n", str(o.lines)] + (["-f"] if o.follow else []) + [path])
     if o.id:
         os.execvp("journalctl", ["journalctl", "--user", "-u", "waydroid-manager-session-{}".format(o.id),
                                  "-n", str(o.lines)] + (["-f"] if o.follow else []))
@@ -506,6 +510,7 @@ def cmd_doctor(o):
           "libgbinder ({}) speaks Android 15-17's protocols".format("shipped" if shipped else "system"),
           "libgbinder lacks Android 15-17's protocols: apps can't be installed there "
           "(run packaging/build-libgbinder.sh, then scripts/install.sh)")
+    check(os.path.exists("/sys/fs/cgroup/cgroup.controllers"), "cgroup v2", paths.CGROUP_V2_NEEDED)
     check(shutil.which("lxc-start"), "LXC installed", "LXC not installed")
     check(shutil.which("dnsmasq"), "dnsmasq installed", "dnsmasq not installed")
     check(shutil.which("openssl"), "openssl installed",
