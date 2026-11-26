@@ -13,8 +13,8 @@ follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions f
   immutable distributions can install with `sudo scripts/install.sh` without compiling anything.
 - Read-only `/usr` support in `scripts/install.sh` and `scripts/uninstall.sh`: automatically
   installs under `/usr/local` and `/etc` when `/usr` is read-only (or with `--immutable`),
-  restores SELinux contexts when enforcing, tracks installed paths for clean removal, and handles
-  `rpm` / `rpm-ostree` uninstalls.
+  restores SELinux contexts when SELinux is enabled, tracks installed paths for clean removal,
+  and handles `rpm` / `rpm-ostree` uninstalls.
 
 ### Fixed
 - On X11 desktops, a landscape app (e.g. a game) left the window black and restarted Android: the

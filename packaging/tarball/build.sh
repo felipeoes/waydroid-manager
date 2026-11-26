@@ -39,6 +39,7 @@ chmod 755 "$ROOT"/data/*.sh "$ROOT"/scripts/*.sh
 
 mkdir -p "$OUT"
 TARBALL="$OUT/waydroid-manager-${VERSION}-linux-${ARCH}.tar.gz"
-tar --owner=0 --group=0 --numeric-owner --sort=name --mtime="@$SOURCE_DATE_EPOCH" \
-    -C "$STAGE" -cf - "$TOP" | gzip -n -9 > "$TARBALL"
+LC_ALL=C tar --owner=0 --group=0 --numeric-owner --sort=name --mtime="@$SOURCE_DATE_EPOCH" \
+    -C "$STAGE" -cf "$STAGE/out.tar" "$TOP"
+gzip -n -9 < "$STAGE/out.tar" > "$TARBALL"
 echo "$TARBALL"

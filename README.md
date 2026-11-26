@@ -80,9 +80,11 @@ AppArmor profile.
 **Other and immutable distributions (prebuilt release tarball):** download
 `waydroid-manager-*-linux-x86_64.tar.gz` from the
 [latest release](https://github.com/felipeoes/waydroid-manager/releases/latest). It ships a
-prebuilt `libgbinder.so.1`, so no compiler is needed. On systems with a read-only `/usr`
-(SteamOS, Silverblue, Bazzite, …), `scripts/install.sh` detects it automatically and installs
-under `/usr/local` and `/etc` (and restores SELinux labels when SELinux is enforcing):
+prebuilt `libgbinder.so.1`, so no compiler is needed. On systems with a read-only `/usr` and
+writable `/usr/local` (Fedora Silverblue, Kinoite, Bazzite, openSUSE MicroOS, …),
+`scripts/install.sh` detects it automatically and installs under `/usr/local` (including
+`/usr/local/share/dbus-1/system-services`) and `/etc`, restoring SELinux labels when SELinux is
+enabled:
 
 ```sh
 tar -xf waydroid-manager-*-linux-x86_64.tar.gz
@@ -172,10 +174,15 @@ to its input chain, and `iifname "wdm0" accept` and `oifname "wdm0" accept` to i
 In the app's menu, choose **Uninstall Waydroid Manager…**, or:
 
 ```sh
-sudo apt remove waydroid-manager         # Ubuntu/Debian (keeps devices; purge deletes them too)
-sudo dnf remove waydroid-manager         # Fedora (keeps devices)
-rpm-ostree uninstall waydroid-manager    # Bazzite / Fedora Atomic (reboot afterwards)
+sudo apt remove waydroid-manager              # Ubuntu/Debian (keeps devices; purge deletes them too)
+sudo dnf remove waydroid-manager              # Fedora (keeps devices)
+sudo /usr/lib/waydroid-manager/uninstall.sh   # Bazzite / Fedora Atomic (clean rpm-ostree removal; add --purge to delete devices)
 ```
+
+On Bazzite / Fedora Atomic, running `sudo /usr/lib/waydroid-manager/uninstall.sh` (or the app's
+Uninstall menu) stops running devices and cleans up launchers before calling `rpm-ostree uninstall`;
+running `rpm-ostree uninstall waydroid-manager` directly removes the package only (reboot afterwards
+in either case).
 
 From a tarball or source install: `sudo /usr/lib/waydroid-manager/uninstall.sh` (or
 `sudo /usr/local/lib/waydroid-manager/uninstall.sh` on immutable `/usr` systems; add `--purge` to

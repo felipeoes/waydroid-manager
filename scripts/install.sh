@@ -25,6 +25,10 @@ while [ $# -gt 0 ]; do
         *) echo "unknown argument: $1" >&2; exit 2 ;;
     esac
 done
+while [ "$PREFIX" != "/" ] && [ "${PREFIX%/}" != "$PREFIX" ]; do
+    PREFIX="${PREFIX%/}"
+done
+PREFIX="${PREFIX:-/}"
 SRC="$(cd "$(dirname "$0")/.." && pwd)"
 D="$DESTDIR"
 
@@ -39,13 +43,25 @@ fi
 if [ "$IMMUTABLE" = 1 ] && [ "$PREFIX_SET" = 0 ]; then
     PREFIX=/usr/local
 fi
+if [ -z "$DESTDIR" ]; then
+    check_dir="$PREFIX"
+    while [ ! -e "$check_dir" ] && [ "$check_dir" != "/" ]; do
+        check_dir="$(dirname "$check_dir")"
+    done
+    if [ ! -w "$check_dir" ]; then
+        echo "install prefix $PREFIX is not writable (pass --prefix DIR with a writable prefix)" >&2
+        exit 1
+    fi
+fi
 
 LIBDIR="$PREFIX/lib/waydroid-manager"
 BINDIR="$PREFIX/bin"
 if [ "$IMMUTABLE" = 1 ] || { [ -z "$DESTDIR" ] && { [ "$PREFIX" != /usr ] || [ ! -w /usr ]; }; }; then
     UNITDIR=/etc/systemd/system
     DBUS_CONF_DIR=/etc/dbus-1/system.d
-    DBUS_SVC_DIR=/etc/dbus-1/system-services
+    # dbus-daemon never searches /etc/dbus-1/system-services; /usr/local/share/dbus-1/system-services
+    # is writable on immutable distros and searched by both dbus-daemon and dbus-broker
+    DBUS_SVC_DIR=/usr/local/share/dbus-1/system-services
     UDEV_DIR=/etc/udev/rules.d
     DESKTOP_DIR="$PREFIX/share/applications"
 else
@@ -86,7 +102,7 @@ if [ -z "$DESTDIR" ]; then
     done
     python3 -c "import dbus, gi, gbinder" 2>/dev/null || {
         echo "missing Python modules (python3-dbus, python3-gi / python3-gobject, python3-gbinder)" >&2; exit 1; }
-    if command -v dpkg-query >/dev/null && dpkg-query -S "$LIBDIR" >/dev/null 2>&1; then
+    if command -v dpkg-query >/dev/null && { dpkg-query -S "$LIBDIR" >/dev/null 2>&1 || dpkg-query -S /usr/lib/waydroid-manager >/dev/null 2>&1; }; then
         echo "waydroid-manager is installed as a package; update it with the .deb, or remove it" >&2
         echo "first (sudo apt remove waydroid-manager keeps your instances)." >&2
         exit 1
@@ -176,6 +192,7 @@ fi
 [ "$ACTIVATE" = 1 ] || exit 0
 
 "$LIBDIR/migrate-from-waydroid-multi.sh"
+# Restore SELinux file contexts whenever SELinux is enabled (enforcing or permissive)
 if command -v restorecon >/dev/null 2>&1 && [ -e /sys/fs/selinux/enforce ]; then
     restorecon -RF "$LIBDIR" \
         "$BINDIR/waydroid-manager" "$BINDIR/waydroid-manager-gui" "$BINDIR/waydroid-manager-daemon" \
@@ -183,6 +200,7 @@ if command -v restorecon >/dev/null 2>&1 && [ -e /sys/fs/selinux/enforce ]; then
         "$DBUS_CONF_DIR/io.github.waydroidmanager.Manager.conf" \
         "$DBUS_SVC_DIR/io.github.waydroidmanager.Manager.service" \
         "$UDEV_DIR/70-waydroid-manager.rules" \
+        "$DESKTOP_DIR/io.github.waydroidmanager.desktop" \
         /etc/waydroid-manager 2>/dev/null || true
 fi
 if command -v udevadm >/dev/null 2>&1; then

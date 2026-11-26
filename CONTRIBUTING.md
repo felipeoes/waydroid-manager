@@ -202,7 +202,7 @@ entry it first loaded.
 
 | Path | Contents |
 |---|---|
-| `/usr/lib/waydroid-manager/` | the program, `data/`, `lib/libgbinder.so.1` and its license, `uninstall.sh`, `install-method` (`script`, `deb` or `rpm`), and `install-paths` (for `script` installs). On read-only `/usr` systems, `install.sh` puts this under `/usr/local/lib/waydroid-manager/` and system integration files under `/etc` |
+| `/usr/lib/waydroid-manager/` | the program, `data/`, `lib/libgbinder.so.1` and its license, `uninstall.sh`, `install-method` (`script`, `deb` or `rpm`), and `install-paths` (for `script` installs). On read-only `/usr` systems, `install.sh` puts this under `/usr/local/lib/waydroid-manager/`, D-Bus activation under `/usr/local/share/dbus-1/system-services/`, and the remaining system integration files under `/etc` |
 | `/usr/lib/udev/rules.d/70-waydroid-manager.rules` | keeps GNOME off our vkms device (`/etc/udev/rules.d/` on immutable/local installs) |
 | `/usr/lib/systemd/system/waydroid-manager.service` | the daemon's unit (`/etc/systemd/system/` on immutable/local installs) |
 | `/usr/lib/systemd/system-preset/85-waydroid-manager.preset` | enables the daemon unit by default on RPM / `rpm-ostree` installs |
@@ -316,7 +316,7 @@ which Android reads last.
   its GPUs and could end the session. lxc-start only switches to `lxc-*` profiles. Each start
   regenerates it from stock's and loads it (`container.load_apparmor_profile`). On SELinux hosts
   without AppArmor (Fedora/Bazzite), no AppArmor profile is loaded and `install.sh` runs
-  `restorecon` on installed files when SELinux is enforcing.
+  `restorecon` on installed files when SELinux is enabled.
 - **Instance names are visible to every local user:** the daemon keeps a marked block in the
   world-readable `/etc/hosts` (`netconfig.etc_hosts_text`) with one `waydroid-<name>` per instance,
   so adb can show instances by name. The names are reduced to `[a-z0-9-]`, so a display name can't

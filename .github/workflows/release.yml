@@ -6,7 +6,7 @@ on:
     tags: ["v*"]
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
   check:
@@ -82,10 +82,12 @@ jobs:
           dnf install -y rpm-build systemd-rpm-macros git make gcc pkg-config glib2-devel
           packaging/rpm/build.sh
           rpm -qpi dist/*.rpm
+          rpm -qp --requires dist/*.rpm
           rpm -qpl dist/*.rpm | grep -q '^/usr/lib/waydroid-manager/waydroid_manager/daemon/main.py$'
           rpm -qpl dist/*.rpm | grep -q '^/usr/lib/waydroid-manager/lib/libgbinder.so.1$'
           rpm -qpl dist/*.rpm | grep -q '^/usr/lib/waydroid-manager/lib/libgbinder.LICENSE$'
           rpm -qpl dist/*.rpm | grep -q '^/usr/lib/systemd/system-preset/85-waydroid-manager.preset$'
+          rpm -qp --requires dist/*.rpm | grep -qx 'iptables-nft'
           ! rpm -qp --provides dist/*.rpm | grep -q 'libgbinder\.so\.1'
           ! rpm -qp --requires dist/*.rpm | grep -q 'openrc-run'
 
@@ -97,6 +99,8 @@ jobs:
   publish:
     needs: [check, build-deb, build-rpm]
     runs-on: ubuntu-24.04
+    permissions:
+      contents: write
     env:
       VERSION: ${{ needs.check.outputs.version }}
     steps:

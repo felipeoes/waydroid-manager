@@ -21,7 +21,13 @@ done
 SELF_DIR="$(cd "$(dirname "$0")" && pwd)"
 case "$SELF_DIR" in
     */lib/waydroid-manager) DEFAULT_PREFIX="${SELF_DIR%/lib/waydroid-manager}" ;;
-    *) DEFAULT_PREFIX=/usr ;;
+    *)
+        if [ ! -d /usr/lib/waydroid-manager ] && [ -d /usr/local/lib/waydroid-manager ]; then
+            DEFAULT_PREFIX=/usr/local
+        else
+            DEFAULT_PREFIX=/usr
+        fi
+        ;;
 esac
 PREFIX="${1:-$DEFAULT_PREFIX}"
 LIBDIR="$PREFIX/lib/waydroid-manager"
@@ -130,7 +136,7 @@ remove_files() {
     UDEV_DIR=/usr/lib/udev/rules.d
     DESKTOP_DIR=/usr/share/applications
     if [ -f "$LIBDIR/install-paths" ]; then
-        while IFS='=' read -r key val; do
+        while IFS='=' read -r key val || [ -n "$key" ]; do
             case "$val" in
                 /*) ;;
                 *) continue ;;
@@ -206,22 +212,26 @@ fi
 
 if [ "$METHOD" = rpm ]; then
     if [ -e /run/ostree-booted ] && command -v rpm-ostree >/dev/null 2>&1; then
-        # rpm-ostree uninstall runs scriptlets offline in the new deployment, so stop
-        # running instances and clean live state here first
-        stop_all
-        [ "$PURGE" = 1 ] && check_unmounted
-        rm -rf "$RUNDIR"
-        sed -i --follow-symlinks '/^# BEGIN waydroid-manager /,/^# END waydroid-manager$/{/^# BEGIN waydroid-manager \|^# END waydroid-manager$\|^[0-9a-fA-F.:]\+ waydroid-[a-z0-9-]\+$/d}' /etc/hosts 2>/dev/null || true
-        remove_user_files "$PURGE"
+        # rpm-ostree uninstall runs scriptlets offline in the new deployment; only delete
+        # live state and user data after the transaction succeeds so a failed uninstall
+        # never wipes instances or launchers.
         if [ "$PURGE" = 1 ]; then
-            purge_state
-        else
-            echo "Instances and images kept in $STATE (use --purge to delete them)."
+            stop_all
+            check_unmounted
         fi
         echo "Removing the waydroid-manager package (rpm-ostree)"
         rpm-ostree uninstall waydroid-manager
         rc=$?
-        if [ "$rc" = 0 ]; then
+        if [ "$rc" -eq 0 ]; then
+            [ "$PURGE" = 1 ] || stop_all
+            rm -rf "$RUNDIR"
+            sed -i --follow-symlinks '/^# BEGIN waydroid-manager /,/^# END waydroid-manager$/{/^# BEGIN waydroid-manager \|^# END waydroid-manager$\|^[0-9a-fA-F.:]\+ waydroid-[a-z0-9-]\+$/d}' /etc/hosts 2>/dev/null || true
+            remove_user_files "$PURGE"
+            if [ "$PURGE" = 1 ]; then
+                purge_state
+            else
+                echo "Instances and images kept in $STATE (use --purge to delete them)."
+            fi
             echo "Reboot to complete removing waydroid-manager."
             echo "Stock Waydroid was not touched."
         fi

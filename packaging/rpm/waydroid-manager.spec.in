@@ -13,11 +13,12 @@ License:        GPL-3.0-or-later AND BSD-3-Clause
 URL:            https://github.com/felipeoes/waydroid-manager
 
 BuildRequires:  systemd-rpm-macros
+%{?systemd_ordering}
 Requires:       waydroid
 Requires:       lxc
 Requires:       dnsmasq
 Requires:       iproute
-Requires:       (iptables-nft or nftables)
+Requires:       iptables-nft
 Requires:       dbus-common
 Requires:       openssl
 Requires:       python3
@@ -54,16 +55,18 @@ Includes a root daemon, the waydroid-manager command and a GTK app.
 cp -a "%{_stagedir}/." "%{buildroot}/"
 
 %pre
-# Moving from a source install (scripts/install.sh, files not owned by rpm).
+# Moving from a source install (scripts/install.sh).
 # Instances are kept; %%post restarts the daemon from the packaged files.
-if [ "$1" -eq 1 ] && [ -d /usr/lib/waydroid-manager ] && \
-   ! rpm -qf /usr/lib/waydroid-manager >/dev/null 2>&1; then
-    # its unit in /etc would shadow the packaged one
-    if grep -qs waydroid-manager-daemon /etc/systemd/system/waydroid-manager.service 2>/dev/null; then
-        if [ -d /run/systemd/system ]; then
-            systemctl disable waydroid-manager.service >/dev/null 2>&1 || true
+if [ "$1" -eq 1 ]; then
+    rm -f /usr/lib/waydroid-manager/install-paths
+    if [ -d /usr/lib/waydroid-manager ] || [ -d /usr/local/lib/waydroid-manager ]; then
+        # a script install's unit in /etc would shadow the packaged one
+        if grep -qs waydroid-manager-daemon /etc/systemd/system/waydroid-manager.service 2>/dev/null; then
+            if [ -d /run/systemd/system ]; then
+                systemctl disable waydroid-manager.service >/dev/null 2>&1 || true
+            fi
+            rm -f /etc/systemd/system/waydroid-manager.service
         fi
-        rm -f /etc/systemd/system/waydroid-manager.service
     fi
 fi
 
@@ -112,8 +115,10 @@ fi
 %systemd_postun_with_restart waydroid-manager.service
 
 %files
+%dir /usr/share/licenses/waydroid-manager
 %license /usr/share/licenses/waydroid-manager/LICENSE
 %license /usr/share/licenses/waydroid-manager/libgbinder.LICENSE
+%dir /usr/share/doc/waydroid-manager
 %doc /usr/share/doc/waydroid-manager/README.md
 %dir /etc/waydroid-manager
 %config(noreplace) /etc/waydroid-manager/daemon.conf
