@@ -6,6 +6,8 @@ follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions f
 
 ## [Unreleased]
 
+## [1.6.0] - 2026-11-26
+
 ### Added
 - **Digitalis ARM64 translation** on Android 16 and 17 (#113): choose "Digitalis (ARM64 only)"
   under Settings › System › ARM translation (or `arm_translation digitalis` in the CLI) to use
@@ -446,7 +448,8 @@ First release.
 - Root daemon hardened against symlink and race attacks, root-enabling Android properties,
   and misuse of passed file descriptors. Each user sees and controls only their own instances.
 
-[Unreleased]: https://github.com/felipeoes/waydroid-manager/compare/v1.5.0...HEAD
+[Unreleased]: https://github.com/felipeoes/waydroid-manager/compare/v1.6.0...HEAD
+[1.6.0]: https://github.com/felipeoes/waydroid-manager/compare/v1.5.0...v1.6.0
 [1.5.0]: https://github.com/felipeoes/waydroid-manager/compare/v1.4.0...v1.5.0
 [1.4.0]: https://github.com/felipeoes/waydroid-manager/compare/v1.3.6...v1.4.0
 [1.3.6]: https://github.com/felipeoes/waydroid-manager/compare/v1.3.5...v1.3.6
