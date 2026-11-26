@@ -36,7 +36,7 @@ DIGITALIS_VERSIONS = ("16", "17")
 
 def arm_supported(kind, android):
     """Whether an ARM translation layer is available for the given Android version."""
-    return not (kind == "digitalis" and android in catalog.VERSIONS and android not in DIGITALIS_VERSIONS)
+    return kind != "digitalis" or android in DIGITALIS_VERSIONS
 
 
 def validate_id(iid):

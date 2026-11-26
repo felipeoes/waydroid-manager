@@ -5,6 +5,7 @@ import platform
 import shutil
 import tarfile
 import zipfile
+import zlib
 
 from .. import paths
 from . import layers
@@ -100,7 +101,7 @@ def layer(kind, sdk):
     d = os.path.join(paths.STATE_DIR, "arm", "{}-3-{}".format(kind, sha[:12]))
     try:
         return layers.layer(d, url, sha, lambda a, tmp: _unpack(a, tmp, kind), kind)
-    except (CommandError, OSError, zipfile.BadZipFile, tarfile.TarError) as e:
+    except (CommandError, OSError, EOFError, zlib.error, zipfile.BadZipFile, tarfile.TarError) as e:
         log.warning("starting without ARM translation: %s", e)
         return None
 
@@ -109,13 +110,13 @@ def _unpack_tar(tpath, sysdir):
     """Extract <top>/system/<rel> regular files from a gzipped tarball into sysdir."""
     with tarfile.open(tpath, "r:gz") as t:
         for m in t.getmembers():
-            if not m.isfile():
+            if not m.isfile() or "\0" in m.name:
                 continue
             top, sep, rel = m.name.partition("/system/")
             if not sep or not top or "/" in top or top in (".", "..") or not rel:
                 continue
             parts = rel.split("/")
-            if rel.startswith("/") or any(p in ("", ".", "..") for p in parts):
+            if any(p in ("", ".", "..") for p in parts):
                 continue
             dst = os.path.join(sysdir, *parts)
             os.makedirs(os.path.dirname(dst), exist_ok=True)
@@ -131,9 +132,13 @@ def _unpack(archive, tmp, kind):
     sysdir = os.path.join(tmp, "system")
     if kind == "digitalis":
         _unpack_tar(archive, sysdir)
+        if not os.path.isfile(os.path.join(sysdir, "lib64/libberberis_arm64.so")):
+            raise tarfile.TarError("digitalis archive missing lib64/libberberis_arm64.so")
         # Hide any Houdini or libndk files shipped in the base system.img or stock overlay
         for rel in HOUDINI_WHITEOUTS + NDK_WHITEOUTS:
-            layers.whiteout(os.path.join(sysdir, rel))
+            p = os.path.join(sysdir, rel)
+            if not os.path.lexists(p):
+                layers.whiteout(p)
         return
     with zipfile.ZipFile(archive) as z:
         for name in z.namelist():

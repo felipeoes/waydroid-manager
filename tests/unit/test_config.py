@@ -187,7 +187,7 @@ class InstanceTest(unittest.TestCase):
         for ver in ("11", "13", "14", "15"):
             self.assertFalse(arm_supported("digitalis", ver))
         for unknown in (None, "", "10"):
-            self.assertTrue(arm_supported("digitalis", unknown))
+            self.assertFalse(arm_supported("digitalis", unknown))
         for kind in ("houdini", "libndk", "none"):
             for ver in ("11", "13", "14", "15", "16", "17", None):
                 self.assertTrue(arm_supported(kind, ver))

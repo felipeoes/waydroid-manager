@@ -233,6 +233,25 @@ class CheckAndroidTest(unittest.TestCase):
                     check(None, ver, {"arm_translation": kind})
             check(None, None, {"arm_translation": "digitalis"})
 
+    def test_container_start_rejects_digitalis_on_unsupported_android(self):
+        from waydroid_manager.instance import Instance
+        for iid, idx, detected in (("0", 0, "13"), ("0", 0, None), ("5", 5, "13")):
+            inst = Instance.new(iid, idx, 1000, "img1", {}, {})
+            inst.set("arm_translation", "digitalis")
+            if idx:
+                inst.set("android", detected)
+            with self.subTest(iid=iid, android=detected), \
+                    mock.patch.object(container.pwd, "getpwuid"), \
+                    mock.patch.object(container.os.path, "exists", return_value=True), \
+                    mock.patch.object(container, "_stock_stopped"), \
+                    mock.patch.object(container, "select_image", return_value="/img"), \
+                    mock.patch.object(container.images, "stock_image_id", return_value="img1"), \
+                    mock.patch.object(container, "android_of", return_value=detected), \
+                    mock.patch.object(container, "ensure_dirs") as ensure_dirs:
+                with self.assertRaisesRegex(RuntimeError, "Android 16 and 17"):
+                    container.start(inst, mock.Mock(), [], {}, 1000, list)
+                ensure_dirs.assert_not_called()
+
 
 class RotationTest(unittest.TestCase):
     def test_gone_reader_ends_the_watch_without_more_output(self):

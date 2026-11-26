@@ -10,7 +10,7 @@ gi.require_version("Pango", "1.0")
 from gi.repository import Adw, GLib, Gtk, Pango  # noqa: E402
 
 from .. import catalog, devices, gpu  # noqa: E402
-from ..instance import (DIGITALIS_VERSIONS, RESTART_SETTINGS,  # noqa: E402
+from ..instance import (RESTART_SETTINGS, arm_supported,  # noqa: E402
                         host_memory_bytes, setting_default)
 from ..session import desktop  # noqa: E402
 
@@ -25,7 +25,7 @@ ANDROID = [(k, catalog.label(k)) for k in catalog.VERSIONS]
 
 def arm_options(android_key, current=None):
     """ARM translation choices for android_key; Digitalis is only offered on Android 16 and 17."""
-    allow_digitalis = android_key in DIGITALIS_VERSIONS or current == "digitalis"
+    allow_digitalis = arm_supported("digitalis", android_key) or current == "digitalis"
     return [opt for opt in ARM if opt[0] != "digitalis" or allow_digitalis]
 
 

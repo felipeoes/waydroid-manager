@@ -23,7 +23,7 @@ import dbus
 import dbus.service
 
 from .. import catalog, devices, gpu, lxcconfig, paths, stock, stockctl
-from ..instance import PROTECTED_PROP_RE, Instance
+from ..instance import PROTECTED_PROP_RE, Instance, arm_supported
 from . import armtrans, binder, images, magisk, nvidia, storage, webview
 from .util import (CommandError, apparmor_profile_loaded, attach, bind, bind_file, bind_mount, chown_tree_top,
                    container_pid, is_mount, log, lxc_state, mount_image, mount_overlay, open_beneath,
@@ -804,10 +804,10 @@ def fix_property_contexts(inst):
         bind_patched(inst, src, data + ISA_PROP_CONTEXTS, "plat_property_contexts", 0o644)
 
 
-def fix_cpuinfo(inst):
+def fix_cpuinfo(inst, arm=None):
     """Bind the fake ARM64 cpuinfo over any static cpuinfo templates in /system/etc."""
     # Digitalis synthesizes its own ARM64 /proc/cpuinfo; don't overwrite with Houdini's template
-    if inst.get("arm_translation") == "digitalis":
+    if arm and inst.get("arm_translation") == "digitalis":
         return
     for name, features in HOUDINI_FEATURES.items():
         data = cpuinfo_text(cpu_count(inst), features).encode()
@@ -898,7 +898,7 @@ def _replace_prop_area(dir_fd, name, updates):
         raise
 
 
-def hide_emulator_props(inst):
+def hide_emulator_props(inst, arm=None):
     """Once Android has booted (zygote initialized the native bridge and system_server cached
     SUPPORTED_ABIS and mapped dalvik_prop), scrub the emulator-identifying properties in
     /dev/__properties__ so apps see an ARM64 device with no native bridge."""
@@ -926,12 +926,13 @@ def hide_emulator_props(inst):
                 updates["ro.product.{}.{}".format(part, f)] = v
     kind = inst.get("arm_translation")
     if kind != "none":
+        digitalis = bool(arm) and kind == "digitalis"
         updates["ro.product.cpu.abi"] = "arm64-v8a"
         updates["ro.arch"] = "arm64"
         updates["ro.berberis.version"] = ""
-        updates["ro.berberis.flags"] = ""
         updates["ro.ndk_translation.version"] = ""
-        if kind == "digitalis":
+        if digitalis:
+            updates["ro.berberis.flags"] = ""
             abilist, abilist32, abilist64 = "arm64-v8a", "", "arm64-v8a"
         else:
             abilist, abilist32, abilist64 = "arm64-v8a,armeabi-v7a,armeabi", "armeabi-v7a,armeabi", "arm64-v8a"
@@ -964,14 +965,14 @@ def hide_emulator_props(inst):
         os.close(dir_fd)
 
 
-def finish_boot(inst):
+def finish_boot(inst, arm=None):
     try:
         # LXC's proc:mixed bind-mounts /proc/sys after lxc.mount.entry, covering proc/sys/dev;
         # mounting it here propagates via shared /proc/sys to zygote and all apps.
         attach(inst.id, ["/system/bin/mount", "-t", "tmpfs", "-o", "nosuid,nodev,noexec,size=4k,mode=755",
                          "tmpfs", "/proc/sys/dev"], check=False)
         if wait_boot(inst):
-            hide_emulator_props(inst)
+            hide_emulator_props(inst, arm)
     except Exception:  # noqa: BLE001
         log.exception("%s: post-boot property scrub failed", inst.id)
 
@@ -1035,7 +1036,7 @@ def mount_rootfs(inst, images_dir, gpu_layers=()):
     fix_heap(inst)
     fix_ndk_translation(inst)
     fix_property_contexts(inst)
-    fix_cpuinfo(inst)
+    fix_cpuinfo(inst, arm)
     if gpu_layers:
         fix_angle(inst)
     for egl_path in ("/vendor/lib/egl", "/vendor/lib64/egl"):
@@ -1225,6 +1226,8 @@ def start(inst, net, hosts, session_in, uid, in_use, cpus_busy=list):
     if inst.index == 0 and inst.image_id != images.stock_image_id():
         # stock's data must never boot an older Android than stock's own
         raise RuntimeError("stock Waydroid's images are changing; try again in a minute")
+    if not arm_supported(inst.get("arm_translation"), android_of(inst)):
+        raise RuntimeError("Digitalis ARM64 translation is only available on Android 16 and 17")
     ensure_dirs(inst)
     a = stock_args(inst)
     binder.ensure_binderfs(a)
@@ -1286,7 +1289,7 @@ def start(inst, net, hosts, session_in, uid, in_use, cpus_busy=list):
         if lxc_state(inst.id) != "RUNNING":
             raise RuntimeError("container failed to start; see {}".format(os.path.join(inst.dir, "container.log")))
         net.isolate(inst.veth)
-        threading.Thread(target=finish_boot, args=(inst,), daemon=True, name="boot-" + inst.id).start()
+        threading.Thread(target=finish_boot, args=(inst, arm), daemon=True, name="boot-" + inst.id).start()
     except Exception:
         cleanup(inst)
         raise
