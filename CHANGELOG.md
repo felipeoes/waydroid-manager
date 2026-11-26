@@ -6,6 +6,16 @@ follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions f
 
 ## [Unreleased]
 
+### Added
+- `.rpm` package for Fedora and Bazzite (#114), with a systemd preset and `rpm-ostree`-safe
+  scriptlets, built automatically in release CI.
+- Prebuilt Linux release tarball (`.tar.gz`) shipping `libgbinder.so.1` so non-Debian/Fedora and
+  immutable distributions can install with `sudo scripts/install.sh` without compiling anything.
+- Read-only `/usr` support in `scripts/install.sh` and `scripts/uninstall.sh`: automatically
+  installs under `/usr/local` and `/etc` when `/usr` is read-only (or with `--immutable`),
+  restores SELinux contexts when enforcing, tracks installed paths for clean removal, and handles
+  `rpm` / `rpm-ostree` uninstalls.
+
 ### Fixed
 - On X11 desktops, a landscape app (e.g. a game) left the window black and restarted Android: the
   window now turns with Android, taking the landscape shape and back.

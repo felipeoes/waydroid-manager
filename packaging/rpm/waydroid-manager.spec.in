@@ -1,0 +1,133 @@
+# Private libgbinder for Android 15+ must not advertise a system-wide provide.
+%global __provides_exclude_from ^/usr/lib/waydroid-manager/lib/
+# OpenRC and runit templates are unused on RPM distros; skip their shebangs (e.g. /sbin/openrc-run).
+%global __requires_exclude_from ^/usr/lib/waydroid-manager/data/(openrc|runit)/
+%global debug_package %{nil}
+%global _build_id_links none
+
+Name:           waydroid-manager
+Version:        @VERSION@
+Release:        1
+Summary:        Create and run Android devices with Waydroid
+License:        GPL-3.0-or-later AND BSD-3-Clause
+URL:            https://github.com/felipeoes/waydroid-manager
+
+BuildRequires:  systemd-rpm-macros
+Requires:       waydroid
+Requires:       lxc
+Requires:       dnsmasq
+Requires:       iproute
+Requires:       (iptables-nft or nftables)
+Requires:       dbus-common
+Requires:       openssl
+Requires:       python3
+Requires:       python3-dbus
+Requires:       python3-gobject
+Requires:       python3-cairo
+Requires:       python3-gbinder
+Requires:       libglibutil >= 1.0.52
+Requires:       libepoxy
+Requires:       mesa-libgbm
+Requires:       gtk4
+Requires:       libadwaita >= 1.5
+Requires:       librsvg2
+Requires:       pango
+Recommends:     wl-clipboard
+Recommends:     weston
+Recommends:     xclip
+Recommends:     polkit
+Conflicts:      waydroid-multi
+Obsoletes:      waydroid-multi < 1.0.0
+
+%description
+Waydroid Manager creates and runs Android devices on Linux with Waydroid.
+Each device picks its Android version (11 to 17, with Google Play), runs
+with full GPU acceleration (NVIDIA's proprietary driver included) and has
+its own apps, accounts, settings, window, network address and resource
+limits. Run as many side by side as the machine allows, create them fresh
+or clone one (with a new device identity); your normal Waydroid keeps
+working and appears as device #0.
+
+Includes a root daemon, the waydroid-manager command and a GTK app.
+
+%install
+cp -a "%{_stagedir}/." "%{buildroot}/"
+
+%pre
+# Moving from a source install (scripts/install.sh, files not owned by rpm).
+# Instances are kept; %%post restarts the daemon from the packaged files.
+if [ "$1" -eq 1 ] && [ -d /usr/lib/waydroid-manager ] && \
+   ! rpm -qf /usr/lib/waydroid-manager >/dev/null 2>&1; then
+    # its unit in /etc would shadow the packaged one
+    if grep -qs waydroid-manager-daemon /etc/systemd/system/waydroid-manager.service 2>/dev/null; then
+        if [ -d /run/systemd/system ]; then
+            systemctl disable waydroid-manager.service >/dev/null 2>&1 || true
+        fi
+        rm -f /etc/systemd/system/waydroid-manager.service
+    fi
+fi
+
+%post
+%systemd_post waydroid-manager.service
+if [ -d /run/systemd/system ]; then
+    /usr/lib/waydroid-manager/migrate-from-waydroid-multi.sh || true
+    systemctl daemon-reload >/dev/null 2>&1 || true
+    systemctl reload dbus >/dev/null 2>&1 || true
+    if command -v udevadm >/dev/null 2>&1; then
+        udevadm control --reload >/dev/null 2>&1 || true
+    fi
+    # Fresh install: start now (upgrades restart once via %%systemd_postun_with_restart
+    # after old files are removed, and the restarted daemon adopts running instances)
+    if [ "$1" -eq 1 ]; then
+        systemctl restart waydroid-manager.service >/dev/null 2>&1 || true
+    fi
+fi
+
+%preun
+# Only on removal: upgrades keep instances running
+if [ "$1" -eq 0 ] && [ -d /run/systemd/system ] && \
+   [ -x /usr/lib/waydroid-manager/uninstall.sh ]; then
+    /usr/lib/waydroid-manager/uninstall.sh --stop-only || true
+fi
+# byte-code caches Python may have written at runtime: clean on both removal and upgrade
+find /usr/lib/waydroid-manager -name __pycache__ -type d -prune -exec rm -rf {} + 2>/dev/null || true
+%systemd_preun waydroid-manager.service
+
+%postun
+if [ "$1" -eq 0 ] && [ -d /run/systemd/system ]; then
+    rm -rf /run/waydroid-manager
+    # the instance names adb uses (only our lines, even if END was deleted)
+    sed -i --follow-symlinks '/^# BEGIN waydroid-manager /,/^# END waydroid-manager$/{/^# BEGIN waydroid-manager \|^# END waydroid-manager$\|^[0-9a-fA-F.:]\+ waydroid-[a-z0-9-]\+$/d}' /etc/hosts 2>/dev/null || true
+    # our override hiding stock's Waydroid icon, removed as each user: stock's icon shows again
+    getent passwd | while IFS=: read -r user _ uid _ _ home _; do
+        f="$home/.local/share/applications/Waydroid.desktop"
+        [ "$uid" -ge 1000 ] 2>/dev/null && [ "$uid" -lt 60000 ] && [ -f "$f" ] || continue
+        runuser -u "$user" -- sh -c '! grep -qx X-WaydroidManager=true "$1" || rm -f "$1"' sh "$f" 2>/dev/null || true
+    done
+    systemctl reload dbus >/dev/null 2>&1 || true
+    if command -v udevadm >/dev/null 2>&1; then
+        udevadm control --reload >/dev/null 2>&1 || true
+    fi
+fi
+%systemd_postun_with_restart waydroid-manager.service
+
+%files
+%license /usr/share/licenses/waydroid-manager/LICENSE
+%license /usr/share/licenses/waydroid-manager/libgbinder.LICENSE
+%doc /usr/share/doc/waydroid-manager/README.md
+%dir /etc/waydroid-manager
+%config(noreplace) /etc/waydroid-manager/daemon.conf
+/usr/bin/waydroid-manager
+/usr/bin/waydroid-manager-gui
+/usr/bin/waydroid-manager-daemon
+/usr/lib/waydroid-manager
+/usr/lib/systemd/system/waydroid-manager.service
+/usr/lib/systemd/system-preset/85-waydroid-manager.preset
+/usr/lib/udev/rules.d/70-waydroid-manager.rules
+/usr/share/applications/io.github.waydroidmanager.desktop
+/usr/share/dbus-1/system.d/io.github.waydroidmanager.Manager.conf
+/usr/share/dbus-1/system-services/io.github.waydroidmanager.Manager.service
+
+%changelog
+* @CHANGELOG_DATE@ Felipe Santo <felipeoes@hotmail.com> - @VERSION@-1
+- Release @VERSION@ (see CHANGELOG.md)

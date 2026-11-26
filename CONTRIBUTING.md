@@ -191,6 +191,8 @@ entry it first loaded.
 | `data/` | network script, LXC hooks, D-Bus policy and activation, systemd unit, OpenRC and runit services, desktop file |
 | `scripts/` | `install.sh` (the installed file layout), `uninstall.sh`, `spike/` (original feasibility scripts) |
 | `packaging/deb/` | `.deb` build script, control template and maintainer scripts |
+| `packaging/rpm/` | `.rpm` build script, spec template and systemd preset |
+| `packaging/tarball/` | prebuilt Linux release tarball build script |
 | `.github/workflows/release.yml` | builds and publishes a release when a version tag is pushed |
 | `.github/pull_request_template.md` | what a PR describes and checks |
 | `tests/unit/`, `tests/integration/smoke.sh` | unit tests; end-to-end test on a real host |
@@ -200,9 +202,10 @@ entry it first loaded.
 
 | Path | Contents |
 |---|---|
-| `/usr/lib/waydroid-manager/` | the program, `data/`, `lib/libgbinder.so.1` and its license, `uninstall.sh` and `install-method` (`script` or `deb`) |
-| `/usr/lib/udev/rules.d/70-waydroid-manager.rules` | keeps GNOME off our vkms device |
-| `/usr/lib/systemd/system/waydroid-manager.service` | the daemon's unit |
+| `/usr/lib/waydroid-manager/` | the program, `data/`, `lib/libgbinder.so.1` and its license, `uninstall.sh`, `install-method` (`script`, `deb` or `rpm`), and `install-paths` (for `script` installs). On read-only `/usr` systems, `install.sh` puts this under `/usr/local/lib/waydroid-manager/` and system integration files under `/etc` |
+| `/usr/lib/udev/rules.d/70-waydroid-manager.rules` | keeps GNOME off our vkms device (`/etc/udev/rules.d/` on immutable/local installs) |
+| `/usr/lib/systemd/system/waydroid-manager.service` | the daemon's unit (`/etc/systemd/system/` on immutable/local installs) |
+| `/usr/lib/systemd/system-preset/85-waydroid-manager.preset` | enables the daemon unit by default on RPM / `rpm-ostree` installs |
 | `/etc/init.d/waydroid-manager`, `/etc/runit/sv/waydroid-manager/` or `/etc/sv/waydroid-manager/` | the daemon's OpenRC or runit service (installed on those inits) |
 | `/var/log/waydroid-manager.log` | the daemon's log without systemd's journal |
 | `/etc/waydroid-manager/daemon.conf` | bridge name, subnet, instance isolation, nftables |
@@ -307,11 +310,13 @@ which Android reads last.
 - **Android 14 to 17 get the host's loop devices** (`/dev/loop-control` and the loop nodes; apexd
   mounts APEXes through them). device-mapper (`c 10:236`) is denied: apexd made host-wide dm
   devices that outlived the device.
-- **AppArmor:** containers run under `lxc-waydroid-manager`, stock's `lxc-waydroid` profile plus
-  `deny /**/uevent w`: the newer images' ueventd remounts sysfs and replays every host device
-  event, which made GNOME re-probe its GPUs and could end the session. lxc-start only switches to
-  `lxc-*` profiles. Each start regenerates it from stock's and loads it
-  (`container.load_apparmor_profile`).
+- **AppArmor / SELinux:** on AppArmor hosts (Ubuntu/Debian), containers run under
+  `lxc-waydroid-manager`, stock's `lxc-waydroid` profile plus `deny /**/uevent w`: the newer
+  images' ueventd remounts sysfs and replays every host device event, which made GNOME re-probe
+  its GPUs and could end the session. lxc-start only switches to `lxc-*` profiles. Each start
+  regenerates it from stock's and loads it (`container.load_apparmor_profile`). On SELinux hosts
+  without AppArmor (Fedora/Bazzite), no AppArmor profile is loaded and `install.sh` runs
+  `restorecon` on installed files when SELinux is enforcing.
 - **Instance names are visible to every local user:** the daemon keeps a marked block in the
   world-readable `/etc/hosts` (`netconfig.etc_hosts_text`) with one `waydroid-<name>` per instance,
   so adb can show instances by name. The names are reduced to `[a-z0-9-]`, so a display name can't
@@ -394,21 +399,28 @@ the Wayland proxy, the GUI and shell scripts, tests, and commits.
 ## Packaging
 
 The installed file layout has a single source: `scripts/install.sh`. It installs and starts the
-daemon for a source install. With `--destdir DIR --no-activate` it only stages the files, and
-that staged tree is what the package is built from. A new installed file therefore goes into
-`install.sh` only.
+daemon for a source or tarball install (automatically targeting `/usr/local` and `/etc` when `/usr`
+is read-only, or when `--immutable` is passed). With `--destdir DIR --no-activate` it only stages
+the files, and that staged tree is what both the `.deb` and `.rpm` are built from. A new installed
+file therefore goes into `install.sh` only (and `%files` in `packaging/rpm/waydroid-manager.spec.in`
+if it adds a top-level path outside `/usr/lib/waydroid-manager`).
 
 ```sh
 packaging/deb/build.sh                     # → dist/waydroid-manager_<version>_amd64.deb (no root needed)
+packaging/rpm/build.sh                     # → dist/waydroid-manager-<version>-1.<arch>.rpm (needs rpmbuild)
+packaging/tarball/build.sh                 # → dist/waydroid-manager-<version>-linux-<arch>.tar.gz
 sudo apt install ./dist/waydroid-manager_*_amd64.deb
 ```
 
 - **Version:** taken from `__version__` in `waydroid_manager/__init__.py`.
 - **libgbinder:** `packaging/build-libgbinder.sh` builds the pinned tag (and commit) into
-  `build/lib/`; `build.sh` runs it when needed and `install.sh` ships the result. Bump both pins together.
-- **Dependencies:** listed in `packaging/deb/control.in`. Keep them in sync with the code's
-  imports. libadwaita ≥ 1.5 means Ubuntu 24.04+ and Debian 13+.
-- **Maintainer scripts** (`packaging/deb/`):
+  `build/lib/`; each `build.sh` runs it when needed and `install.sh` (and the release tarball)
+  ships the result. Bump both pins together. In the `.rpm`, `__provides_exclude_from` hides our
+  private `/usr/lib/waydroid-manager/lib/libgbinder.so.1` from RPM's global provides.
+- **Dependencies:** listed in `packaging/deb/control.in` and `packaging/rpm/waydroid-manager.spec.in`.
+  Keep them in sync with the code's imports. libadwaita ≥ 1.5 means Ubuntu 24.04+, Debian 13+ and
+  current Fedora/Bazzite.
+- **Debian maintainer scripts** (`packaging/deb/`):
   - `preinst`: when moving from a source install, removes its `/etc` unit and an unmodified
     `daemon.conf`, so nothing shadows the package or prompts.
   - `postinst`: byte-compiles, then enables and restarts the daemon. A restarted daemon adopts
@@ -417,9 +429,15 @@ sudo apt install ./dist/waydroid-manager_*_amd64.deb
     removes per-user launchers). It always removes the byte-code caches.
   - `postrm purge`: deletes `/var/lib/waydroid-manager`, but only if nothing is mounted there,
     plus `/etc/waydroid-manager` and per-user caches.
+- **RPM scriptlets and preset** (`packaging/rpm/`):
+  - `85-waydroid-manager.preset` enables `waydroid-manager.service` via `%systemd_post`, which
+    works both on live `dnf` installs and offline `rpm-ostree` composes.
+  - Live `systemctl`, `dbus` reload, `udevadm`, migration, and `--stop-only` calls are guarded by
+    `[ -d /run/systemd/system ]` so `rpm-ostree` layering stays offline-safe.
 - **Uninstall from the app** runs `uninstall.sh` through pkexec. For a package install
-  (`install-method` = `deb`), that runs `apt-get remove` (or `purge`), so both install methods
-  share one entry point.
+  (`install-method` = `deb` or `rpm`), it delegates to `apt-get`, `dnf`/`rpm`, or `rpm-ostree`
+  (stopping live state first on `rpm-ostree`), while `script` installs remove the exact paths
+  recorded in `install-paths`.
 
 To test a package change: install it over a running instance (upgrade), then `apt remove` (data
 kept), then `apt purge` with your real `/var/lib/waydroid-manager` moved aside first. After that,
@@ -447,9 +465,9 @@ Versions follow [Semantic Versioning](https://semver.org/). Releases are publish
 4. **The workflow then:**
    - checks that the tag matches `__version__`, is on `main` and has a CHANGELOG section;
    - runs the unit tests;
-   - builds the `.deb`;
-   - publishes the GitHub release with the `.deb` attached and that CHANGELOG section as the
-     notes.
+   - builds the `.deb` and prebuilt `.tar.gz` on Ubuntu 24.04 and the `.rpm` in a `fedora:44` container;
+   - publishes the GitHub release with the `.deb`, `.rpm` and `.tar.gz` attached and that
+     CHANGELOG section as the notes.
 
    If it fails, fix the problem through `dev` → `main` again. Never move a published tag.
 5. **Merge `main` back into `dev`.** The release PR's merge commit exists only on `main`, so

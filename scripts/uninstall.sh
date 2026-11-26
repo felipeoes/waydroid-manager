@@ -2,10 +2,11 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Uninstall waydroid-manager.  Usage: sudo uninstall.sh [--purge] [PREFIX]
 #   --purge      also delete every instance (all their Android data) and the image store
-#   --stop-only  only stop everything and remove per-user launchers (the .deb's prerm)
+#   --stop-only  only stop everything and remove per-user launchers (package pre-remove)
 # install.sh copies this script to PREFIX/lib/waydroid-manager/uninstall.sh (the GUI runs
 # it from there through pkexec); PREFIX then defaults to the one it was installed to.
-# A .deb install is removed through apt, whose prerm calls back into --stop-only.
+# A .deb or .rpm install is removed through the package manager, whose pre-remove calls
+# back into --stop-only (on rpm-ostree, this script stops everything before rpm-ostree uninstall).
 set -u
 
 PURGE=0
@@ -123,12 +124,32 @@ remove_user_files() {
 
 remove_files() {
     echo "Removing program files"
+    UNITDIR="$PREFIX/lib/systemd/system"
+    DBUS_CONF_DIR=/usr/share/dbus-1/system.d
+    DBUS_SVC_DIR=/usr/share/dbus-1/system-services
+    UDEV_DIR=/usr/lib/udev/rules.d
+    DESKTOP_DIR=/usr/share/applications
+    if [ -f "$LIBDIR/install-paths" ]; then
+        while IFS='=' read -r key val; do
+            case "$val" in
+                /*) ;;
+                *) continue ;;
+            esac
+            case "$key" in
+                UNITDIR) UNITDIR="$val" ;;
+                DBUS_CONF_DIR) DBUS_CONF_DIR="$val" ;;
+                DBUS_SVC_DIR) DBUS_SVC_DIR="$val" ;;
+                UDEV_DIR) UDEV_DIR="$val" ;;
+                DESKTOP_DIR) DESKTOP_DIR="$val" ;;
+            esac
+        done < "$LIBDIR/install-paths"
+    fi
     rm -rf "$SV_DIR/waydroid-manager"
-    rm -f "$PREFIX/lib/systemd/system/waydroid-manager.service" /etc/init.d/waydroid-manager \
-          /usr/share/dbus-1/system.d/io.github.waydroidmanager.Manager.conf \
-          /usr/share/dbus-1/system-services/io.github.waydroidmanager.Manager.service \
-          /usr/share/applications/io.github.waydroidmanager.desktop \
-          /usr/lib/udev/rules.d/70-waydroid-manager.rules \
+    rm -f "$UNITDIR/waydroid-manager.service" /etc/init.d/waydroid-manager \
+          "$DBUS_CONF_DIR/io.github.waydroidmanager.Manager.conf" \
+          "$DBUS_SVC_DIR/io.github.waydroidmanager.Manager.service" \
+          "$DESKTOP_DIR/io.github.waydroidmanager.desktop" \
+          "$UDEV_DIR/70-waydroid-manager.rules" \
           "$PREFIX/bin/waydroid-manager" "$PREFIX/bin/waydroid-manager-gui" "$PREFIX/bin/waydroid-manager-daemon"
     rm -rf "$LIBDIR" "$RUNDIR"
     # the instance names adb uses (only our lines, even if END was deleted)
@@ -138,6 +159,9 @@ remove_files() {
         systemctl reload dbus 2>/dev/null || true
     else
         dbus-send --system --type=method_call --dest=org.freedesktop.DBus / org.freedesktop.DBus.ReloadConfig
+    fi
+    if command -v udevadm >/dev/null 2>&1; then
+        udevadm control --reload 2>/dev/null || true
     fi
 }
 
@@ -164,7 +188,8 @@ if [ "$STOP_ONLY" = 1 ]; then
     exit 0
 fi
 
-if [ "$(cat "$LIBDIR/install-method" 2>/dev/null)" = deb ]; then
+METHOD="$(cat "$LIBDIR/install-method" 2>/dev/null || true)"
+if [ "$METHOD" = deb ]; then
     # Installed as a package: the package manager removes it (prerm stops everything,
     # postrm purges the data)
     if [ "$PURGE" = 1 ]; then action=purge; else action=remove; fi
@@ -177,6 +202,49 @@ if [ "$(cat "$LIBDIR/install-method" 2>/dev/null)" = deb ]; then
         dpkg -r waydroid-manager
     fi
     exit $?
+fi
+
+if [ "$METHOD" = rpm ]; then
+    if [ -e /run/ostree-booted ] && command -v rpm-ostree >/dev/null 2>&1; then
+        # rpm-ostree uninstall runs scriptlets offline in the new deployment, so stop
+        # running instances and clean live state here first
+        stop_all
+        [ "$PURGE" = 1 ] && check_unmounted
+        rm -rf "$RUNDIR"
+        sed -i --follow-symlinks '/^# BEGIN waydroid-manager /,/^# END waydroid-manager$/{/^# BEGIN waydroid-manager \|^# END waydroid-manager$\|^[0-9a-fA-F.:]\+ waydroid-[a-z0-9-]\+$/d}' /etc/hosts 2>/dev/null || true
+        remove_user_files "$PURGE"
+        if [ "$PURGE" = 1 ]; then
+            purge_state
+        else
+            echo "Instances and images kept in $STATE (use --purge to delete them)."
+        fi
+        echo "Removing the waydroid-manager package (rpm-ostree)"
+        rpm-ostree uninstall waydroid-manager
+        rc=$?
+        if [ "$rc" = 0 ]; then
+            echo "Reboot to complete removing waydroid-manager."
+            echo "Stock Waydroid was not touched."
+        fi
+        exit "$rc"
+    fi
+    echo "Removing the waydroid-manager package"
+    if command -v dnf >/dev/null 2>&1; then
+        dnf remove -y waydroid-manager
+    else
+        rpm -e waydroid-manager
+    fi
+    rc=$?
+    if [ "$rc" = 0 ]; then
+        if [ "$PURGE" = 1 ]; then
+            check_unmounted
+            remove_user_files 1
+            purge_state
+        else
+            echo "Instances and images kept in $STATE (use --purge to delete them)."
+        fi
+        echo "Stock Waydroid was not touched."
+    fi
+    exit "$rc"
 fi
 
 stop_all
