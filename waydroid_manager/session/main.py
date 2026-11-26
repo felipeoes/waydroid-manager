@@ -43,6 +43,19 @@ def wayland_socket():
     return os.path.join(xdg, disp)
 
 
+def _cli_path():
+    """Path to the waydroid-manager CLI for pkexec (whose secure_path may omit /usr/local/bin)."""
+    found = shutil.which("waydroid-manager")
+    if found:
+        return found
+    # Installed layout: <prefix>/lib/waydroid-manager/waydroid_manager -> <prefix>/bin/waydroid-manager
+    prefix = os.path.dirname(os.path.dirname(os.path.dirname(paths.PKG_DIR)))
+    candidate = os.path.join(prefix, "bin", "waydroid-manager")
+    if os.path.isfile(candidate) and os.access(candidate, os.X_OK):
+        return candidate
+    return "waydroid-manager"
+
+
 def nested_size(width, height):
     """Size of the Weston window a device opens in on X11: the device's, shrunk to fit 90% of
     the X screen (the proxy fits Android into whatever size it gets). A device matching the
@@ -359,8 +372,7 @@ class Session:
     def open_firewall(self):
         """`waydroid-manager firewall allow` as root: the daemon takes that answer from root only."""
         try:
-            proc = Gio.Subprocess.new(["pkexec", shutil.which("waydroid-manager") or "waydroid-manager",
-                                       "firewall", "allow"],
+            proc = Gio.Subprocess.new(["pkexec", _cli_path(), "firewall", "allow"],
                                       Gio.SubprocessFlags.STDOUT_SILENCE | Gio.SubprocessFlags.STDERR_SILENCE)
         except GLib.Error as e:
             return notify("Could not open your firewall", e.message, "dialog-error-symbolic")

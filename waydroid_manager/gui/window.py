@@ -24,8 +24,24 @@ STATE_LABEL = {"RUNNING": "Running", "FROZEN": "Paused", "STOPPED": "Stopped", "
                "STOPPING": "Stopping…", "CLONING": "Cloning…", "DELETING": "Deleting…"}
 # install.sh puts the uninstaller next to the package (PREFIX/lib/waydroid-manager/)
 UNINSTALL_SCRIPT = os.path.join(os.path.dirname(paths.PKG_DIR), "uninstall.sh")
+INSTALL_METHOD_FILE = os.path.join(os.path.dirname(paths.PKG_DIR), "install-method")
 # The instance list's rows scroll inside a card; plain lists would draw the view's colour over it
 CSS = ".instances list { background: none; }"
+
+
+def _install_method():
+    try:
+        with open(INSTALL_METHOD_FILE) as f:
+            return f.read().strip()
+    except OSError:
+        return ""
+
+
+def _uninstall_reboot_needed(out, method=""):
+    """Whether an rpm-ostree uninstall requires a reboot to complete."""
+    if not os.path.exists("/run/ostree-booted"):
+        return False
+    return method == "rpm" or "Reboot to complete" in (out or "")
 
 
 def gigabytes(n):
@@ -549,6 +565,7 @@ class MainWindow(Adw.ApplicationWindow):
         dlg.present(self)
 
     def _uninstall_now(self, purge):
+        method = _install_method()
         argv = ["pkexec", UNINSTALL_SCRIPT] + (["--purge"] if purge else [])
         try:
             proc = Gio.Subprocess.new(argv, Gio.SubprocessFlags.STDOUT_PIPE | Gio.SubprocessFlags.STDERR_MERGE)
@@ -567,10 +584,12 @@ class MainWindow(Adw.ApplicationWindow):
                 self.toast("Uninstall cancelled")
                 return
             if status == 0:
-                dlg = Adw.AlertDialog(heading="Waydroid Manager was uninstalled",
-                                      body="Instances and their data were deleted." if purge else
-                                      "Your instances were kept in /var/lib/waydroid-manager. Reinstall to "
-                                      "use them again.")
+                body = ("Instances and their data were deleted." if purge else
+                        "Your instances were kept in /var/lib/waydroid-manager. Reinstall to "
+                        "use them again.")
+                if _uninstall_reboot_needed(out, method):
+                    body += " Reboot to finish removing Waydroid Manager."
+                dlg = Adw.AlertDialog(heading="Waydroid Manager was uninstalled", body=body)
                 dlg.add_response("close", "Close")
                 dlg.connect("response", lambda *_: self.get_application().quit())
             else:
