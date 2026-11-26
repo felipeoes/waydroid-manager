@@ -266,7 +266,7 @@ Stored in `instance.cfg` and changed with `waydroid-manager config N set KEY VAL
 | `idle_action` | `freeze` | Android idle-suspend: `freeze`, `stop` or `none` |
 | `root` | false | install Magisk into the instance (`daemon/magisk.py`, restart) |
 | `system_writable` | false | mount system/vendor overlays writable (restart) |
-| `arm_translation` | `houdini` | `houdini`, `libndk` or `none`: a shared read-only system layer (`daemon/armtrans.py`) plus native bridge props (restart). 14 to 17 use their image's own; `none` turns it off |
+| `arm_translation` | `houdini` | `houdini`, `libndk`, `digitalis` (ARM64-only, Android 16–17) or `none`: a shared read-only system layer (`daemon/armtrans.py`) plus native bridge props (restart). Versions without a pinned layer use their image's own; `none` turns it off |
 | `android` | `13` | Android version (`catalog.VERSIONS`), set at creation only |
 | `gpu` | `auto` | `auto`, `software` or a GPU's PCI address (`gpu.mode`, restart) |
 | `desktop_apps` | false | launchers for the instance's apps |
@@ -299,8 +299,9 @@ which Android reads last.
   (`ro.debuggable`, `ro.secure`, `ro.adb.*`, `service.adb.*`, `ro.boot.*`, …; `PROTECTED_PROP_RE`
   in `instance.py`) still can only be set by root and are filtered when props are written.
 - **ARM translation runs third-party binaries in every instance by default.** The Houdini and
-  libndk builds are the ones `waydroid_script` uses, pinned by commit and sha256 in
-  `daemon/armtrans.py`, and unpacked once into a root-owned layer under
+  libndk builds are the ones `waydroid_script` uses, and the optional Digitalis (ARM64-only,
+  Android 16–17) builds come from `DigitalisX64/digitalis_prebuilts`; all are pinned by commit or
+  release tag and sha256 in `daemon/armtrans.py`, and unpacked once into a root-owned layer under
   `/var/lib/waydroid-manager/arm/` that all instances share read-only. Their init scripts register
   binfmt_misc handlers, which are host-wide (the containers are privileged) and stay until reboot.
 - **NVIDIA mode runs third-party binaries too:** waydroid-nvidia's renderer runs as the user, and

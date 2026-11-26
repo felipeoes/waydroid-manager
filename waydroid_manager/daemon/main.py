@@ -28,8 +28,8 @@ import dbus.service
 from gi.repository import GLib
 
 from .. import __version__, catalog, gpu, paths, stock, stockctl
-from ..instance import (CREATE_ONLY, Instance, SETTINGS, list_ids, validate_adb_key, validate_id, validate_prop,
-                        validate_setting)
+from ..instance import (CREATE_ONLY, Instance, SETTINGS, arm_supported, list_ids, validate_adb_key,
+                        validate_id, validate_prop, validate_setting)
 from ..netconfig import describe_blockers, host_names
 from ..registry import allocate_index
 from . import container, images, nvidia, storage
@@ -182,6 +182,8 @@ class Manager(dbus.service.Object):
             raise Error("Android {} has no NVIDIA build".format(android), "InvalidArgs")
         if settings.get("gpu") == "software" and catalog.get(android, "software", True) is False:
             raise Error("Android {} can't render in software".format(android), "InvalidArgs")
+        if not arm_supported(settings.get("arm_translation"), android):
+            raise Error("Digitalis ARM64 translation is only available on Android 16 and 17", "InvalidArgs")
 
     def cpus_busy(self, iid):
         """The other instances' (cpus limit, pinned CPUs), for iid's pick: called under

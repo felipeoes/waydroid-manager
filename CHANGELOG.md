@@ -7,6 +7,10 @@ follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions f
 ## [Unreleased]
 
 ### Added
+- **Digitalis ARM64 translation** on Android 16 and 17 (#113): choose "Digitalis (ARM64 only)"
+  under Settings › System › ARM translation (or `arm_translation digitalis` in the CLI) to use
+  pinned `DigitalisX64/digitalis_prebuilts` Berberis builds instead of the image's built-in
+  translation.
 - `.rpm` package for Fedora and Bazzite (#114), with a systemd preset and `rpm-ostree`-safe
   scriptlets, built automatically in release CI.
 - Prebuilt Linux release tarball (`.tar.gz`) shipping `libgbinder.so.1` so non-Debian/Fedora and
