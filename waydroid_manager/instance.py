@@ -30,7 +30,13 @@ MEM_RE = re.compile(r"^[0-9]+[KMG]?$")
 MAX_INDEX = 240
 ADB_KEY_RE = re.compile(r"^[A-Za-z0-9+/]{100,4096}={0,2}( [A-Za-z0-9@._+-]{1,128})?$")   # adbkey.pub: base64 user@host
 ACTIONS = ("stop", "freeze", "none")
-ARM = ("houdini", "libndk", "none")
+ARM = ("houdini", "libndk", "digitalis", "none")
+DIGITALIS_VERSIONS = ("16", "17")
+
+
+def arm_supported(kind, android):
+    """Whether an ARM translation layer is available for the given Android version."""
+    return not (kind == "digitalis" and android in catalog.VERSIONS and android not in DIGITALIS_VERSIONS)
 
 
 def validate_id(iid):
@@ -165,7 +171,8 @@ SETTINGS = {
     "idle_action": (_choice(ACTIONS), "freeze", "what Android idle-suspend does: freeze|stop|none"),
     "root": (_bool, "false", "Root: Magisk in the instance (restart)"),
     "system_writable": (_bool, "false", "Android system partition is writable (restart)"),
-    "arm_translation": (_choice(ARM), "houdini", "runs ARM apps: houdini|libndk|none (restart)"),
+    "arm_translation": (_choice(ARM), "houdini",
+                        "runs ARM apps: houdini|libndk|digitalis (ARM64-only, Android 16-17)|none (restart)"),
     "android": (_choice(tuple(catalog.VERSIONS)), catalog.DEFAULT,
                 "Android version: " + "|".join(catalog.VERSIONS) + " (chosen at creation)"),
     "gpu": (_gpu, "auto", "graphics: auto (the GPU that shows the desktop, if usable; NVIDIA if none does) | "

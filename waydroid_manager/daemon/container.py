@@ -806,6 +806,9 @@ def fix_property_contexts(inst):
 
 def fix_cpuinfo(inst):
     """Bind the fake ARM64 cpuinfo over any static cpuinfo templates in /system/etc."""
+    # Digitalis synthesizes its own ARM64 /proc/cpuinfo; don't overwrite with Houdini's template
+    if inst.get("arm_translation") == "digitalis":
+        return
     for name, features in HOUDINI_FEATURES.items():
         data = cpuinfo_text(cpu_count(inst), features).encode()
         try:
@@ -921,15 +924,21 @@ def hide_emulator_props(inst):
             updates["ro.product." + f] = v
             for part in ("system", "vendor", "odm", "product", "system_ext", "bootimage", "vendor_dlkm", "odm_dlkm"):
                 updates["ro.product.{}.{}".format(part, f)] = v
-    if inst.get("arm_translation") != "none":
+    kind = inst.get("arm_translation")
+    if kind != "none":
         updates["ro.product.cpu.abi"] = "arm64-v8a"
         updates["ro.arch"] = "arm64"
         updates["ro.berberis.version"] = ""
+        updates["ro.berberis.flags"] = ""
         updates["ro.ndk_translation.version"] = ""
+        if kind == "digitalis":
+            abilist, abilist32, abilist64 = "arm64-v8a", "", "arm64-v8a"
+        else:
+            abilist, abilist32, abilist64 = "arm64-v8a,armeabi-v7a,armeabi", "armeabi-v7a,armeabi", "arm64-v8a"
         for pfx in ("ro.", "ro.system.", "ro.vendor.", "ro.odm.", "ro.product.", "ro.system_ext."):
-            updates[pfx + "product.cpu.abilist"] = "arm64-v8a,armeabi-v7a,armeabi"
-            updates[pfx + "product.cpu.abilist32"] = "armeabi-v7a,armeabi"
-            updates[pfx + "product.cpu.abilist64"] = "arm64-v8a"
+            updates[pfx + "product.cpu.abilist"] = abilist
+            updates[pfx + "product.cpu.abilist32"] = abilist32
+            updates[pfx + "product.cpu.abilist64"] = abilist64
     try:
         dir_fd = open_in_container(pid, "dev/__properties__", os.O_RDONLY | os.O_DIRECTORY)
     except OSError:
@@ -948,7 +957,7 @@ def hide_emulator_props(inst):
                 if patched is not None:
                     f.seek(0)
                     f.write(patched)
-        if inst.get("arm_translation") != "none":
+        if kind != "none":
             _replace_prop_area(dir_fd, "u:object_r:dalvik_prop:s0",
                                {"ro.dalvik.vm.isa.arm": "", "ro.dalvik.vm.isa.arm64": ""})
     finally:

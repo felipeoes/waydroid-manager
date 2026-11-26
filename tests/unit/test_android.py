@@ -546,6 +546,89 @@ class EmulatorStealthTest(unittest.TestCase):
                 armtrans._unpack(zpath, n_dir, "libndk")
                 self.assertIn(os.path.join(n_dir, "system/lib64/libhoudini.so"), whiteouts)
 
+    def test_armtrans_digitalis_tarball_unpacks_safely_and_whiteouts_old_layers(self):
+        from waydroid_manager.daemon import armtrans
+        with tempfile.TemporaryDirectory() as d:
+            tpath = os.path.join(d, "digitalis.tar.gz")
+            with tarfile.open(tpath, "w:gz") as t:
+                def add_file(name, data):
+                    info = tarfile.TarInfo(name)
+                    info.size = len(data)
+                    t.addfile(info, io.BytesIO(data))
+
+                add_file("digitalis-a16/system/lib64/libberberis_arm64.so", b"BERBERIS")
+                add_file("digitalis-a16/system/bin/berberis_program_runner_arm64", b"RUNNER")
+                add_file("digitalis-a16/system/etc/init/berberis.rc", b"on early-init\n")
+                # Hostile and out-of-scope entries that must be ignored
+                add_file("digitalis-a16/system/lib64/../../escaped.so", b"BAD")
+                add_file("digitalis-a16/system/./lib64/dot.so", b"BAD")
+                add_file("digitalis-a16/system//etc/shadow", b"BAD")
+                add_file("a/b/system/lib64/nested.so", b"BAD")
+                add_file("/system/lib64/abs.so", b"BAD")
+                add_file("./system/lib64/dottop.so", b"BAD")
+                add_file("../system/lib64/dotdottop.so", b"BAD")
+                add_file("digitalis-a16/README.md", b"doc")
+                dinfo = tarfile.TarInfo("digitalis-a16/system/lib64")
+                dinfo.type = tarfile.DIRTYPE
+                t.addfile(dinfo)
+                sinfo = tarfile.TarInfo("digitalis-a16/system/lib64/link.so")
+                sinfo.type = tarfile.SYMTYPE
+                sinfo.linkname = "/etc/passwd"
+                t.addfile(sinfo)
+                hinfo = tarfile.TarInfo("digitalis-a16/system/lib64/hard.so")
+                hinfo.type = tarfile.LNKTYPE
+                hinfo.linkname = "digitalis-a16/system/lib64/libberberis_arm64.so"
+                t.addfile(hinfo)
+                finfo = tarfile.TarInfo("digitalis-a16/system/lib64/fifo")
+                finfo.type = tarfile.FIFOTYPE
+                t.addfile(finfo)
+
+            whiteouts = []
+            out = os.path.join(d, "out")
+            with mock.patch.object(layers, "whiteout", side_effect=whiteouts.append):
+                armtrans._unpack(tpath, out, "digitalis")
+
+            extracted = []
+            for root, _, files in os.walk(out):
+                for name in files:
+                    extracted.append(os.path.relpath(os.path.join(root, name), out))
+            self.assertEqual(sorted(extracted), [
+                "system/bin/berberis_program_runner_arm64",
+                "system/etc/init/berberis.rc",
+                "system/lib64/libberberis_arm64.so",
+            ])
+            with open(os.path.join(out, "system/lib64/libberberis_arm64.so"), "rb") as f:
+                self.assertEqual(f.read(), b"BERBERIS")
+            self.assertFalse(os.path.exists(os.path.join(d, "escaped.so")))
+            expected_whiteouts = [os.path.join(out, "system", rel)
+                                  for rel in armtrans.HOUDINI_WHITEOUTS + armtrans.NDK_WHITEOUTS]
+            self.assertEqual(whiteouts, expected_whiteouts)
+            for rel in ("etc/init/berberis_arm_or_arm64.rc", "etc/berberis/cpuinfo.arm.txt",
+                        "etc/berberis/cpuinfo.arm64.txt"):
+                self.assertIn(os.path.join(out, "system", rel), whiteouts)
+
+        self.assertEqual(armtrans.PROPS["digitalis"], {
+            "ro.product.cpu.abilist": "x86_64,x86,arm64-v8a",
+            "ro.product.cpu.abilist32": "x86",
+            "ro.product.cpu.abilist64": "x86_64,arm64-v8a",
+            "ro.enable.native.bridge.exec": "1",
+            "ro.dalvik.vm.isa.arm": "",
+            "ro.dalvik.vm.isa.arm64": "x86_64",
+            "ro.dalvik.vm.native.bridge": "libberberis_arm64.so",
+            "ro.berberis.flags": "disable-ir-check",
+        })
+        self.assertEqual(armtrans.ALL_PROPS, set().union(*armtrans.PROPS.values()))
+        self.assertIn("ro.berberis.flags", armtrans.ALL_PROPS)
+        with mock.patch.object(armtrans.platform, "machine", return_value="x86_64"):
+            for sdk in ("36", "37"):
+                with mock.patch.object(armtrans.layers, "layer", return_value="/digitalis") as build:
+                    self.assertEqual(armtrans.layer("digitalis", sdk), "/digitalis")
+                    self.assertEqual(build.call_args.args[1:3], armtrans.BUILDS[("digitalis", sdk)])
+            with mock.patch.object(armtrans.layers, "layer", side_effect=tarfile.TarError("corrupt")), \
+                    mock.patch.object(armtrans, "log"):
+                self.assertIsNone(armtrans.layer("digitalis", "36"))
+            self.assertIsNone(armtrans.layer("digitalis", "33"))
+
     def test_cpuinfo_hides_host_x86_markers(self):
         text = container.cpuinfo_text(4)
         self.assertEqual(text.count("processor\t:"), 4)
@@ -625,6 +708,84 @@ class EmulatorStealthTest(unittest.TestCase):
                     self.assertEqual(self.read_prop(f.read(), "ro.dalvik.vm.isa.arm64"), "")
             finally:
                 os.close(ss_fd)
+
+    def test_hide_emulator_props_digitalis_reports_arm64_only_and_scrubs_berberis(self):
+        with tempfile.TemporaryDirectory() as d:
+            props_dir = os.path.join(d, "dev", "__properties__")
+            os.makedirs(props_dir)
+            with open(os.path.join(props_dir, "u:object_r:build_prop:s0"), "wb") as f:
+                f.write(self.make_prop_area({
+                    "ro.product.cpu.abilist": "x86_64,x86,arm64-v8a",
+                    "ro.product.cpu.abilist32": "x86",
+                    "ro.product.cpu.abilist64": "x86_64,arm64-v8a",
+                    "ro.product.cpu.abi": "x86_64",
+                }))
+            with open(os.path.join(props_dir, "u:object_r:build_vendor_prop:s0"), "wb") as f:
+                f.write(self.make_prop_area({
+                    "ro.vendor.product.cpu.abilist": "x86_64,x86,arm64-v8a",
+                    "ro.vendor.product.cpu.abilist32": "x86",
+                    "ro.vendor.product.cpu.abilist64": "x86_64,arm64-v8a",
+                }))
+            with open(os.path.join(props_dir, "u:object_r:vendor_default_prop:s0"), "wb") as f:
+                f.write(self.make_prop_area({
+                    "ro.berberis.flags": "disable-ir-check",
+                    "ro.berberis.version": "1.0",
+                    "ro.ndk_translation.version": "0.2.3",
+                }))
+            with open(os.path.join(props_dir, "u:object_r:dalvik_config_prop:s0"), "wb") as f:
+                f.write(self.make_prop_area({"ro.dalvik.vm.native.bridge": "libberberis_arm64.so"}))
+            dalvik_path = os.path.join(props_dir, "u:object_r:dalvik_prop:s0")
+            with open(dalvik_path, "wb") as f:
+                f.write(self.make_prop_area({"ro.dalvik.vm.isa.arm": "", "ro.dalvik.vm.isa.arm64": "x86_64"}))
+            ss_fd = os.open(dalvik_path, os.O_RDONLY)
+            try:
+                inst = Instance.new("12", 12, 1000, "", {}, {})
+                inst.set("arm_translation", "digitalis")
+                with mock.patch.object(container, "container_pid", return_value=os.getpid()), \
+                        mock.patch.object(container, "open_in_container",
+                                          side_effect=lambda _, rel, flags: util.open_beneath(d, rel, flags)):
+                    container.hide_emulator_props(inst)
+                with open(os.path.join(props_dir, "u:object_r:build_prop:s0"), "rb") as f:
+                    build_data = f.read()
+                self.assertEqual(self.read_prop(build_data, "ro.product.cpu.abilist"), "arm64-v8a")
+                self.assertEqual(self.read_prop(build_data, "ro.product.cpu.abilist32"), "")
+                self.assertEqual(self.read_prop(build_data, "ro.product.cpu.abilist64"), "arm64-v8a")
+                self.assertEqual(self.read_prop(build_data, "ro.product.cpu.abi"), "arm64-v8a")
+                with open(os.path.join(props_dir, "u:object_r:build_vendor_prop:s0"), "rb") as f:
+                    vendor_data = f.read()
+                self.assertEqual(self.read_prop(vendor_data, "ro.vendor.product.cpu.abilist"), "arm64-v8a")
+                self.assertEqual(self.read_prop(vendor_data, "ro.vendor.product.cpu.abilist32"), "")
+                self.assertEqual(self.read_prop(vendor_data, "ro.vendor.product.cpu.abilist64"), "arm64-v8a")
+                with open(os.path.join(props_dir, "u:object_r:vendor_default_prop:s0"), "rb") as f:
+                    vdef = f.read()
+                self.assertEqual(self.read_prop(vdef, "ro.berberis.flags"), "")
+                self.assertEqual(self.read_prop(vdef, "ro.berberis.version"), "")
+                self.assertEqual(self.read_prop(vdef, "ro.ndk_translation.version"), "")
+                with open(os.path.join(props_dir, "u:object_r:dalvik_config_prop:s0"), "rb") as f:
+                    self.assertEqual(self.read_prop(f.read(), "ro.dalvik.vm.native.bridge"), "0")
+                self.assertEqual(self.read_prop(os.pread(ss_fd, 4096, 0), "ro.dalvik.vm.isa.arm64"), "x86_64")
+                with open(dalvik_path, "rb") as f:
+                    self.assertEqual(self.read_prop(f.read(), "ro.dalvik.vm.isa.arm64"), "")
+            finally:
+                os.close(ss_fd)
+
+    def test_fix_cpuinfo_skipped_for_digitalis(self):
+        with tempfile.TemporaryDirectory() as d:
+            etc = os.path.join(d, "rootfs/system/etc")
+            os.makedirs(etc)
+            for name in container.HOUDINI_FEATURES:
+                with open(os.path.join(etc, name), "w") as f:
+                    f.write("template\n")
+            inst = Instance.new("13", 13, 1000, "", {}, {})
+            inst.set("arm_translation", "digitalis")
+            with mock.patch.object(Instance, "dir", d), \
+                    mock.patch.object(Instance, "rootfs", os.path.join(d, "rootfs")), \
+                    mock.patch.object(container, "bind_mount") as bm:
+                container.fix_cpuinfo(inst)
+                bm.assert_not_called()
+                inst.set("arm_translation", "houdini")
+                container.fix_cpuinfo(inst)
+                self.assertEqual(bm.call_count, len(container.HOUDINI_FEATURES))
 
     def test_lxc_config_fakes_cmdline_and_hides_host_sensors(self):
         with tempfile.TemporaryDirectory() as d:

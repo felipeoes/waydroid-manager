@@ -6,6 +6,12 @@ follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions f
 
 ## [Unreleased]
 
+### Added
+- **Digitalis ARM64 translation** on Android 16 and 17 (#113): choose "Digitalis (ARM64 only)"
+  under Settings › System › ARM translation (or `arm_translation digitalis` in the CLI) to use
+  pinned `DigitalisX64/digitalis_prebuilts` Berberis builds instead of the image's built-in
+  translation.
+
 ### Fixed
 - On X11 desktops, a landscape app (e.g. a game) left the window black and restarted Android: the
   window now turns with Android, taking the landscape shape and back.

@@ -4,7 +4,7 @@ import tempfile
 import unittest
 
 from waydroid_manager import lxcconfig
-from waydroid_manager.instance import (Instance, mac_for_index, validate_id, validate_prop,
+from waydroid_manager.instance import (Instance, arm_supported, mac_for_index, validate_id, validate_prop,
                                      validate_setting)
 from waydroid_manager.netconfig import (HOSTS_BEGIN, HOSTS_END, NetConfig, describe_blockers, dhcp_hosts_text,
                                         etc_hosts_text, firewall_blockers, host_names, opening_rules)
@@ -178,6 +178,19 @@ class InstanceTest(unittest.TestCase):
                      ("zoom", "10"), ("device_model", "nokia3310")):
             with self.assertRaises(ValueError):
                 validate_setting(k, v)
+
+    def test_arm_translation_digitalis_validation_and_support(self):
+        self.assertEqual(validate_setting("arm_translation", "digitalis"), "digitalis")
+        self.assertEqual(validate_setting("arm_translation", " Digitalis "), "digitalis")
+        for ver in ("16", "17"):
+            self.assertTrue(arm_supported("digitalis", ver))
+        for ver in ("11", "13", "14", "15"):
+            self.assertFalse(arm_supported("digitalis", ver))
+        for unknown in (None, "", "10"):
+            self.assertTrue(arm_supported("digitalis", unknown))
+        for kind in ("houdini", "libndk", "none"):
+            for ver in ("11", "13", "14", "15", "16", "17", None):
+                self.assertTrue(arm_supported(kind, ver))
 
     def test_resource_defaults_follow_host_memory(self):
         from unittest import mock

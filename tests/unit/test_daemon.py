@@ -216,6 +216,24 @@ class CreateTest(unittest.TestCase):
         self.assertEqual(sorted(alloc.call_args.args[0]), [0, 1])
 
 
+class CheckAndroidTest(unittest.TestCase):
+    def test_digitalis_only_accepted_on_android_16_and_17(self):
+        check = main.Manager.check_android
+        with mock.patch.object(main.gpu, "gpus", return_value=[]):
+            for ver in ("11", "13", "14", "15"):
+                with self.subTest(rejected=ver):
+                    with self.assertRaisesRegex(main.Error, "Android 16 and 17") as ctx:
+                        check(None, ver, {"arm_translation": "digitalis"})
+                    self.assertTrue(ctx.exception.get_dbus_name().endswith(".InvalidArgs"))
+            for ver in ("16", "17"):
+                with self.subTest(accepted=ver):
+                    check(None, ver, {"arm_translation": "digitalis"})
+            for ver in ("11", "13", "14", "15", "16", "17"):
+                for kind in ("houdini", "libndk", "none"):
+                    check(None, ver, {"arm_translation": kind})
+            check(None, None, {"arm_translation": "digitalis"})
+
+
 class RotationTest(unittest.TestCase):
     def test_gone_reader_ends_the_watch_without_more_output(self):
         real = subprocess.Popen
