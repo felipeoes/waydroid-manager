@@ -6,8 +6,10 @@ import time
 import unittest
 from unittest import mock
 
+import dbus
+
 from waydroid_manager.instance import Instance
-from waydroid_manager.session import main
+from waydroid_manager.session import main, services
 
 
 class ProxyStartupTest(unittest.TestCase):
@@ -96,6 +98,33 @@ class NestedWestonTest(unittest.TestCase):
         os.close(r)
         os.close(session.rotation_w)
 
+    def test_window_turns_with_android(self):
+        """Weston's window is the device's: Android turned for a landscape app, it takes that shape
+        (the proxy fills it), unless it has it already, is fullscreen or sizes Android (0x0)."""
+        session = self.session()
+        size = {"width": "720", "height": "1280"}
+        session.inst = mock.Mock(get=size.get)
+        session.x11, session.xwin = mock.Mock(), 0x20
+        session.x11.is_fullscreen.return_value = False
+        tb = main.TOOLBAR_W
+        with mock.patch.object(main, "nested_size", side_effect=lambda w, h: (w, h)) as fit:
+            session.x11.size.return_value = (500 + tb, 909)
+            session.handle_proxy_event("rotation 1")
+            session.x11.resize.assert_called_once_with(0x20, 909 + tb, 500)
+            fit.assert_called_once_with(909 + tb, 500)                     # kept on the screen
+            session.x11.resize.reset_mock()
+            session.x11.size.return_value = (909 + tb, 500)
+            session.handle_proxy_event("rotation 3")                       # landscape already
+            session.handle_proxy_event("rotation 2")                       # upside down: portrait
+            session.x11.resize.assert_called_once_with(0x20, 500 + tb, 909)
+            session.x11.resize.reset_mock()
+            session.x11.is_fullscreen.return_value = True
+            session.handle_proxy_event("rotation 0")
+            session.x11.is_fullscreen.return_value = False
+            size.update(width="0", height="0")
+            session.handle_proxy_event("rotation 0")
+            session.x11.resize.assert_not_called()
+
     def test_frames_go_through_shared_memory_under_weston(self):
         session = self.session()
         gpus = [main.gpu.Gpu("0000:21:00.0", "GPU 0", "nvidia", "/dev/dri/renderD129")]
@@ -182,3 +211,25 @@ class ShutdownTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class NotificationTest(unittest.TestCase):
+    def test_null_texts_reach_the_desktop_as_empty_strings(self):
+        """Android sends null for a notification without a title, text or action label."""
+        sent = []
+
+        def notify(*args):
+            # what dbus-python does to the call: a None string raises TypeError there
+            dbus.lowlevel.MethodCallMessage("org.freedesktop.Notifications", "/org/freedesktop/Notifications",
+                                            "org.freedesktop.Notifications", "Notify").append(
+                signature="susssasa{sv}i", *args)
+            sent.append(args)
+            return 7
+        n = services.Notifications.__new__(services.Notifications)
+        n.inst_id, n.inst_name, n.I = "1", "Phone", mock.Mock(ID_NONE=0)
+        n.proxy = mock.Mock(Notify=notify)
+        nid = n._notify(0, None, None, None, None, [("open", None)], None, None, False, -1, False, False, 1)
+        self.assertEqual(nid, 7)
+        label, _, _, summary, body, actions = sent[0][:6]
+        self.assertEqual((summary, body, actions), ("", "", ["open", ""]))
+        self.assertNotIn("None", label)

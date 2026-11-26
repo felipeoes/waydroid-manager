@@ -10,7 +10,8 @@ gi.require_version("Pango", "1.0")
 from gi.repository import Adw, GLib, Gtk, Pango  # noqa: E402
 
 from .. import catalog, devices, gpu  # noqa: E402
-from ..instance import RESTART_SETTINGS, host_memory_bytes, setting_default  # noqa: E402
+from ..instance import (RESTART_SETTINGS, arm_supported,  # noqa: E402
+                        host_memory_bytes, setting_default)
 from ..session import desktop  # noqa: E402
 
 # LDPlayer-style presets: (width, height, dpi)
@@ -18,8 +19,14 @@ TABLET = [(960, 540, 160), (1280, 720, 240), (1600, 900, 240), (1920, 1080, 280)
 PHONE = [(540, 960, 240), (720, 1280, 320), (900, 1600, 320), (1080, 1920, 440), (1440, 2560, 560)]
 ACTIONS = [("stop", "Stop the instance"), ("freeze", "Freeze (pause)"), ("none", "Keep running")]
 IDLE = [("freeze", "Freeze (pause)"), ("none", "Keep running"), ("stop", "Stop the instance")]
-ARM = [("houdini", "Houdini"), ("libndk", "libndk"), ("none", "Off")]
+ARM = [("houdini", "Houdini"), ("libndk", "libndk"), ("digitalis", "Digitalis (ARM64 only)"), ("none", "Off")]
 ANDROID = [(k, catalog.label(k)) for k in catalog.VERSIONS]
+
+
+def arm_options(android_key, current=None):
+    """ARM translation choices for android_key; Digitalis is only offered on Android 16 and 17."""
+    allow_digitalis = arm_supported("digitalis", android_key) or current == "digitalis"
+    return [opt for opt in ARM if opt[0] != "digitalis" or allow_digitalis]
 
 
 def gpu_options(current):
@@ -288,8 +295,11 @@ class InstanceDialog(_Dialog):
                                       subtitle="Installs Magisk; needs internet the first time")
         self.root_row.set_active(self.info.get("root", "false") == "true")
         g.add(self.root_row)
-        self.arm_row = _combo("ARM translation", ARM, subtitle="Runs ARM-only apps; needs internet the first time")
-        _select(self.arm_row, ARM, self.info.get("arm_translation", "houdini"))
+        cur_arm = self.info.get("arm_translation", "houdini")
+        self.arm_opts = arm_options(self.android(), cur_arm if edit else None)
+        self.arm_row = _combo("ARM translation", self.arm_opts,
+                              subtitle="Runs ARM-only apps; needs internet the first time")
+        _select(self.arm_row, self.arm_opts, cur_arm)
         g.add(self.arm_row)
         self._android_changed()
 
@@ -364,6 +374,13 @@ class InstanceDialog(_Dialog):
         if catalog.get(key, "software", True) is False and \
                 self.gpu_opts[self.gpu_row.get_selected()][0] == "software":
             _select(self.gpu_row, self.gpu_opts, "auto")     # it can't render in software
+        cur = self.arm_opts[self.arm_row.get_selected()][0]
+        opts = arm_options(key, self.info.get("arm_translation") if self.mode == "edit" else None)
+        if opts != self.arm_opts:
+            self.arm_opts = opts
+            self.arm_row.set_model(Gtk.StringList.new([label for _, label in opts]))
+            if not _select(self.arm_row, opts, cur):
+                _select(self.arm_row, opts, "houdini")
         if self.mode == "create":
             self.android_row.set_subtitle("About {:.1f} GB to download the first time".format(catalog.get(key, "gb")))
 
@@ -393,7 +410,7 @@ class InstanceDialog(_Dialog):
         v["idle_action"] = IDLE[self.idle_row.get_selected()][0]
         v["system_writable"] = "true" if self.writable_row.get_active() else "false"
         v["root"] = "true" if self.root_row.get_active() else "false"
-        v["arm_translation"] = ARM[self.arm_row.get_selected()][0]
+        v["arm_translation"] = self.arm_opts[self.arm_row.get_selected()][0]
         v["gpu"] = self.gpu_opts[self.gpu_row.get_selected()][0]
         if self.mode == "edit":
             v["desktop_apps"] = "true" if self.apps_row.get_active() else "false"

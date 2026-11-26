@@ -6,17 +6,21 @@ on:
     tags: ["v*"]
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
-  release:
+  check:
     runs-on: ubuntu-24.04
+    outputs:
+      version: ${{ steps.meta.outputs.version }}
+      source_date_epoch: ${{ steps.meta.outputs.source_date_epoch }}
     steps:
       - uses: actions/checkout@v7
         with:
           fetch-depth: 0
 
       - name: Check tag, version and branch
+        id: meta
         run: |
           tag="${GITHUB_REF_NAME}"
           version="$(sed -n 's/^__version__ = "\(.*\)"/\1/p' waydroid_manager/__init__.py)"
@@ -25,7 +29,8 @@ jobs:
             { echo "::error::$tag is not on main (release from main only)"; exit 1; }
           grep -q "^## \[$version\]" CHANGELOG.md ||
             { echo "::error::CHANGELOG.md has no section for $version"; exit 1; }
-          echo "VERSION=$version" >> "$GITHUB_ENV"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "source_date_epoch=$(git log -1 --format=%ct)" >> "$GITHUB_OUTPUT"
 
       - name: Unit tests
         run: |
@@ -33,14 +38,78 @@ jobs:
           sudo apt-get install -y -qq python3-gi python3-gi-cairo python3-cairo python3-dbus gir1.2-rsvg-2.0 gir1.2-pango-1.0
           /usr/bin/python3 -m unittest discover -s tests/unit -t .
 
-      - name: Build the .deb
+  build-deb:
+    needs: check
+    runs-on: ubuntu-24.04
+    env:
+      SOURCE_DATE_EPOCH: ${{ needs.check.outputs.source_date_epoch }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Build .deb and prebuilt release tarball
         run: |
+          sudo apt-get update -qq
           sudo apt-get install -y -qq git make gcc pkg-config libglib2.0-dev
           packaging/deb/build.sh
           dpkg-deb --info dist/*.deb
           dpkg-deb --contents dist/*.deb | grep -q './usr/lib/waydroid-manager/waydroid_manager/daemon/main.py'
           dpkg-deb --contents dist/*.deb | grep -q './usr/lib/waydroid-manager/lib/libgbinder.so.1'
           dpkg-deb --contents dist/*.deb | grep -q './usr/lib/waydroid-manager/lib/libgbinder.LICENSE'
+          packaging/tarball/build.sh
+          tar -tzf dist/*.tar.gz | grep -q '/waydroid_manager/daemon/main.py$'
+          tar -tzf dist/*.tar.gz | grep -q '/scripts/install.sh$'
+          tar -tzf dist/*.tar.gz | grep -q '/build/lib/libgbinder.so.1$'
+          tar -tzf dist/*.tar.gz | grep -q '/build/lib/libgbinder.LICENSE$'
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist-deb-tarball
+          path: |
+            dist/*.deb
+            dist/*.tar.gz
+
+  build-rpm:
+    needs: check
+    runs-on: ubuntu-24.04
+    container: fedora:44
+    env:
+      SOURCE_DATE_EPOCH: ${{ needs.check.outputs.source_date_epoch }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Build .rpm
+        run: |
+          dnf install -y rpm-build systemd-rpm-macros git make gcc pkg-config glib2-devel
+          packaging/rpm/build.sh
+          rpm -qpi dist/*.rpm
+          rpm -qp --requires dist/*.rpm
+          rpm -qpl dist/*.rpm | grep -q '^/usr/lib/waydroid-manager/waydroid_manager/daemon/main.py$'
+          rpm -qpl dist/*.rpm | grep -q '^/usr/lib/waydroid-manager/lib/libgbinder.so.1$'
+          rpm -qpl dist/*.rpm | grep -q '^/usr/lib/waydroid-manager/lib/libgbinder.LICENSE$'
+          rpm -qpl dist/*.rpm | grep -q '^/usr/lib/systemd/system-preset/85-waydroid-manager.preset$'
+          rpm -qp --requires dist/*.rpm | grep -qx 'iptables-nft'
+          ! rpm -qp --provides dist/*.rpm | grep -q 'libgbinder\.so\.1'
+          ! rpm -qp --requires dist/*.rpm | grep -q 'openrc-run'
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist-rpm
+          path: dist/*.rpm
+
+  publish:
+    needs: [check, build-deb, build-rpm]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    env:
+      VERSION: ${{ needs.check.outputs.version }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
 
       - name: Release notes from CHANGELOG.md
         run: |
@@ -50,18 +119,37 @@ jobs:
             on {print}' CHANGELOG.md > notes.md
           cat >> notes.md <<'NOTES'
 
-          ### Install (Ubuntu 24.04+ / Debian 13+)
+          ### Install
+
+          **Ubuntu 24.04+ / Debian 13+ (`.deb`):**
           First set up Waydroid as [its install guide](https://docs.waydro.id/usage/install-on-desktops)
           says: its package repository has `waydroid` and `python3-gbinder`, which this package needs.
-          Then download the `.deb` below and install it (apt installs the rest):
+          Then download the `.deb` below and install it:
           ```sh
           sudo apt install ./waydroid-manager_*_amd64.deb
           ```
-          Other distributions: install from source, see the README.
+
+          **Fedora / Bazzite (`.rpm`):**
+          ```sh
+          # Fedora
+          sudo dnf install ./waydroid-manager-*.x86_64.rpm
+          # Bazzite / Fedora Atomic
+          rpm-ostree install ./waydroid-manager-*.x86_64.rpm
+          systemctl reboot
+          ```
+
+          **Other or immutable Linux (prebuilt `.tar.gz`):**
+          Includes prebuilt `libgbinder.so.1` and automatically installs under `/usr/local` and `/etc`
+          on read-only `/usr` systems:
+          ```sh
+          tar -xf waydroid-manager-*-linux-x86_64.tar.gz
+          cd waydroid-manager-*
+          sudo scripts/install.sh
+          ```
           NOTES
           cat notes.md
 
       - name: Publish
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release create "$GITHUB_REF_NAME" dist/*.deb --title "waydroid-manager $VERSION" --notes-file notes.md --verify-tag
+        run: gh release create "$GITHUB_REF_NAME" dist/*.deb dist/*.rpm dist/*.tar.gz --title "waydroid-manager $VERSION" --notes-file notes.md --verify-tag

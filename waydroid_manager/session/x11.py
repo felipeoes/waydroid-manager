@@ -41,6 +41,10 @@ class Display:
                                          ctypes.POINTER(_UL), ctypes.POINTER(_P)]
         x.XChangeProperty.argtypes = [_P, _UL, _UL, _UL, ctypes.c_int, ctypes.c_int, ctypes.c_char_p, ctypes.c_int]
         x.XSendEvent.argtypes = [_P, _UL, ctypes.c_int, _L, ctypes.POINTER(_Event)]
+        _U = ctypes.POINTER(ctypes.c_uint)
+        x.XGetGeometry.argtypes = [_P, _UL, ctypes.POINTER(_UL), ctypes.POINTER(ctypes.c_int),
+                                   ctypes.POINTER(ctypes.c_int), _U, _U, _U, _U]
+        x.XResizeWindow.argtypes = [_P, _UL, ctypes.c_uint, ctypes.c_uint]
         x.XFree.argtypes, x.XFlush.argtypes, x.XCloseDisplay.argtypes = [_P], [_P], [_P]
         self.dpy = x.XOpenDisplay(None)
         if not self.dpy:
@@ -99,6 +103,20 @@ class Display:
         for name in ("_NET_WM_NAME", "_NET_WM_ICON_NAME"):
             self.x.XChangeProperty(self.dpy, win, self.atom(name), self.atom("UTF8_STRING"), 8,
                                    PROP_MODE_REPLACE, data, len(data))
+        self.x.XFlush(self.dpy)
+
+    def size(self, win):
+        """(width, height) of the window, or None."""
+        root, x, y = _UL(), ctypes.c_int(), ctypes.c_int()
+        w, h, border, depth = (ctypes.c_uint() for _ in range(4))
+        if not self.x.XGetGeometry(self.dpy, win, ctypes.byref(root), ctypes.byref(x), ctypes.byref(y),
+                                   ctypes.byref(w), ctypes.byref(h), ctypes.byref(border), ctypes.byref(depth)):
+            return None
+        return w.value, h.value
+
+    def resize(self, win, width, height):
+        """Weston's x11 backend follows its window's size: its output, then the proxy, refit."""
+        self.x.XResizeWindow(self.dpy, win, width, height)
         self.x.XFlush(self.dpy)
 
     def is_fullscreen(self, win):

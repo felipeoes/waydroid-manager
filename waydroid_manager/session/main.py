@@ -43,6 +43,19 @@ def wayland_socket():
     return os.path.join(xdg, disp)
 
 
+def _cli_path():
+    """Path to the waydroid-manager CLI for pkexec (whose secure_path may omit /usr/local/bin)."""
+    found = shutil.which("waydroid-manager")
+    if found:
+        return found
+    # Installed layout: <prefix>/lib/waydroid-manager/waydroid_manager -> <prefix>/bin/waydroid-manager
+    prefix = os.path.dirname(os.path.dirname(os.path.dirname(paths.PKG_DIR)))
+    candidate = os.path.join(prefix, "bin", "waydroid-manager")
+    if os.path.isfile(candidate) and os.access(candidate, os.X_OK):
+        return candidate
+    return "waydroid-manager"
+
+
 def nested_size(width, height):
     """Size of the Weston window a device opens in on X11: the device's, shrunk to fit 90% of
     the X screen (the proxy fits Android into whatever size it gets). A device matching the
@@ -159,6 +172,19 @@ class Session:
             time.sleep(0.1)
         return None
 
+    def turn_window(self, rotation):
+        """Android turned its display (nested): Weston's X11 window, which the proxy fills, takes
+        the new shape, its picture area's sides swapped. Not when it has that shape already, is
+        fullscreen, or sizes Android (0x0: a new size there would resize Android, not turn it)."""
+        w, h = int(self.inst.get("width")), int(self.inst.get("height"))
+        size = getattr(self, "xwin", None) and self.x11.size(self.xwin)
+        if not (w and h and size) or self.x11.is_fullscreen(self.xwin):
+            return
+        pw, ph = size[0] - TOOLBAR_W, size[1]
+        if (pw > ph) == ((w > h) != bool(rotation & 1)):
+            return
+        self.x11.resize(self.xwin, *nested_size(ph + TOOLBAR_W, pw))
+
     def report_fullscreen(self, was, deadline):
         """Once the X11 window's fullscreen changed (or not, by the deadline), tell the proxy (it then
         drops or brings back its toolbar), on the pipe that carries Android's rotation (WatchRotation).
@@ -265,6 +291,8 @@ class Session:
                 self.confirm_close()
             else:
                 self._async("ReportClose", self.iid)
+        elif ev.startswith("rotation "):
+            self.turn_window(int(ev.split()[1]))
         elif ev.startswith("zoom "):
             # remember the window size the user picked (debounced)
             self.pending_zoom = ev.split()[1]
@@ -344,8 +372,7 @@ class Session:
     def open_firewall(self):
         """`waydroid-manager firewall allow` as root: the daemon takes that answer from root only."""
         try:
-            proc = Gio.Subprocess.new(["pkexec", shutil.which("waydroid-manager") or "waydroid-manager",
-                                       "firewall", "allow"],
+            proc = Gio.Subprocess.new(["pkexec", _cli_path(), "firewall", "allow"],
                                       Gio.SubprocessFlags.STDOUT_SILENCE | Gio.SubprocessFlags.STDERR_SILENCE)
         except GLib.Error as e:
             return notify("Could not open your firewall", e.message, "dialog-error-symbolic")

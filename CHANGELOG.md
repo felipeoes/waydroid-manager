@@ -6,6 +6,28 @@ follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions f
 
 ## [Unreleased]
 
+## [1.6.0] - 2026-11-26
+
+### Added
+- **Digitalis ARM64 translation** on Android 16 and 17 (#113): choose "Digitalis (ARM64 only)"
+  under Settings › System › ARM translation (or `arm_translation digitalis` in the CLI) to use
+  pinned `DigitalisX64/digitalis_prebuilts` Berberis builds instead of the image's built-in
+  translation.
+- `.rpm` package for Fedora and Bazzite (#114), with a systemd preset and `rpm-ostree`-safe
+  scriptlets, built automatically in release CI.
+- Prebuilt Linux release tarball (`.tar.gz`) shipping `libgbinder.so.1` so non-Debian/Fedora and
+  immutable distributions can install with `sudo scripts/install.sh` without compiling anything.
+- Read-only `/usr` support in `scripts/install.sh` and `scripts/uninstall.sh`: automatically
+  installs under `/usr/local` and `/etc` when `/usr` is read-only (or with `--immutable`),
+  restores SELinux contexts when SELinux is enabled, tracks installed paths for clean removal,
+  and handles `rpm` / `rpm-ostree` uninstalls.
+
+### Fixed
+- On X11 desktops, a landscape app (e.g. a game) left the window black and restarted Android: the
+  window now turns with Android, taking the landscape shape and back.
+- Android notifications without a title, text or button label, which some apps post, never
+  reached the desktop: the device's window process dropped them with an error.
+
 ## [1.5.0] - 2026-11-08
 
 ### Added
@@ -426,7 +448,8 @@ First release.
 - Root daemon hardened against symlink and race attacks, root-enabling Android properties,
   and misuse of passed file descriptors. Each user sees and controls only their own instances.
 
-[Unreleased]: https://github.com/felipeoes/waydroid-manager/compare/v1.5.0...HEAD
+[Unreleased]: https://github.com/felipeoes/waydroid-manager/compare/v1.6.0...HEAD
+[1.6.0]: https://github.com/felipeoes/waydroid-manager/compare/v1.5.0...v1.6.0
 [1.5.0]: https://github.com/felipeoes/waydroid-manager/compare/v1.4.0...v1.5.0
 [1.4.0]: https://github.com/felipeoes/waydroid-manager/compare/v1.3.6...v1.4.0
 [1.3.6]: https://github.com/felipeoes/waydroid-manager/compare/v1.3.5...v1.3.6

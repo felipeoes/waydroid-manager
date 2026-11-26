@@ -36,6 +36,18 @@ class PresentAloneTest(unittest.TestCase):
         dlg.get_root.return_value.connect.assert_not_called()
 
 
+@unittest.skipIf(settings is None, "needs GTK 4 and libadwaita")
+class ArmOptionsTest(unittest.TestCase):
+    def test_arm_options_offers_digitalis_only_on_android_16_and_17(self):
+        for ver in ("11", "13", "14", "15", "", None):
+            self.assertEqual([k for k, _ in dialogs.arm_options(ver)], ["houdini", "libndk", "none"])
+        for ver in ("16", "17"):
+            opts = dialogs.arm_options(ver)
+            self.assertEqual([k for k, _ in opts], ["houdini", "libndk", "digitalis", "none"])
+            self.assertIn(("digitalis", "Digitalis (ARM64 only)"), opts)
+        self.assertIn(("digitalis", "Digitalis (ARM64 only)"), dialogs.arm_options("13", current="digitalis"))
+
+
 @unittest.skipUnless(DISPLAY, "needs GTK 4, libadwaita and a display")
 class MatchDisplayTest(unittest.TestCase):
     INFO = {"id": "3", "name": "T", "android": "13", "width": "0", "height": "0", "dpi": "320", "state": "STOPPED"}
@@ -49,6 +61,27 @@ class MatchDisplayTest(unittest.TestCase):
 
     def test_new_devices_get_a_size(self):
         self.assertNotEqual(dialogs.InstanceDialog("create", lambda *a: None)._kind(), "display")
+
+    def test_switching_android_between_16_and_13_updates_arm_options(self):
+        d = dialogs.InstanceDialog("create", lambda *a: None)
+        self.assertNotIn("digitalis", [k for k, _ in d.arm_opts])
+        dialogs._select(d.arm_row, d.arm_opts, "none")
+        dialogs._select(d.android_row, dialogs.ANDROID, "16")
+        self.assertIn("digitalis", [k for k, _ in d.arm_opts])
+        self.assertEqual(d.values()["arm_translation"], "none")     # kept across model rebuild
+        dialogs._select(d.arm_row, d.arm_opts, "digitalis")
+        self.assertEqual(d.values()["arm_translation"], "digitalis")
+        dialogs._select(d.android_row, dialogs.ANDROID, "17")
+        self.assertEqual(d.values()["arm_translation"], "digitalis")
+        dialogs._select(d.android_row, dialogs.ANDROID, "13")
+        self.assertNotIn("digitalis", [k for k, _ in d.arm_opts])
+        self.assertEqual(d.values()["arm_translation"], "houdini")
+
+    def test_edit_dialog_preserves_digitalis_on_android_16(self):
+        info = dict(self.INFO, android="16", arm_translation="digitalis")
+        d = dialogs.InstanceDialog("edit", lambda *a: None, info=info)
+        self.assertIn("digitalis", [k for k, _ in d.arm_opts])
+        self.assertEqual(d.values()["arm_translation"], "digitalis")
 
 
 if __name__ == "__main__":

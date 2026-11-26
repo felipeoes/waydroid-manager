@@ -308,11 +308,22 @@ class RotationTest(unittest.TestCase):
         self.assertEqual(args(d[XS, P.XDG_SURFACE_SET_WINDOW_GEOMETRY], "iiii"), [0, 0, 640, 360])
         self.assertEqual(args(d[V0, P.WP_VIEWPORT_SET_DESTINATION], "ii"), [640, 360])
         self.assertEqual(args(d[LV, P.WP_VIEWPORT_SET_DESTINATION], "ii"), [640, 360])
-        self.assertEqual(args(d[LV, P.WP_VIEWPORT_SET_SOURCE], "iiii"), [0, 0, fixed(1280), fixed(720)])
+        # committed without a new buffer, Weston checks a source against the old transform's size
+        # ("viewport source outside buffer" for 1280x720 on 720x1280): unset until the next frame
+        self.assertEqual(args(d[LV, P.WP_VIEWPORT_SET_SOURCE], "iiii"), [-256] * 4)
         self.assertEqual(args(d[L, P.WL_SURFACE_SET_BUFFER_TRANSFORM], "i"), [3])
         self.assertEqual(args(d[LSUB, P.WL_SUBSURFACE_SET_POSITION], "ii"), [0, 0])
         self.assertIn((L, P.WL_SURFACE_COMMIT), order)
         self.assertIn((S, P.WL_SURFACE_COMMIT), order)
+        # Weston sizes a surface at attach only: a refit before the HWC's next frame (the session
+        # turning Weston's window) still can't send the turned crop
+        self.h.s.request_apply()
+        d = {(o, op): p for o, op, p in self.h.server_out()}
+        self.assertEqual(args(d[LV, P.WP_VIEWPORT_SET_SOURCE], "iiii"), [-256] * 4)
+        self.h.req(msg(L, P.WL_SURFACE_ATTACH, "oii", 90, 0, 0), msg(L, P.WL_SURFACE_COMMIT))
+        self.h.s.request_apply()                # after it, the HWC's crop, turned
+        d = {(o, op): p for o, op, p in self.h.server_out()}
+        self.assertEqual(args(d[LV, P.WP_VIEWPORT_SET_SOURCE], "iiii"), [0, 0, fixed(1280), fixed(720)])
         # the HWC's next frame is turned too
         out = self.h.req(msg(L, P.WL_SURFACE_SET_BUFFER_TRANSFORM, "i", 0),
                          msg(LV, P.WP_VIEWPORT_SET_SOURCE, "iiii", 0, 0, fixed(720), fixed(1280)))
@@ -775,6 +786,20 @@ class NestedWindowTest(unittest.TestCase):
         self.assertAlmostEqual(h.s.zoom, 1.5)                   # 1920x1080: all of it
         h.ev(msg(KBD, P.WL_KEYBOARD_EV_ENTER, "uoa", 3, S, b""), msg(KBD, P.WL_KEYBOARD_EV_KEY, "uuuu", 4, 0, 1, 1))
         self.assertEqual(h.events[-1], "fullscreen")            # Esc: the session's toggle
+        os.close(w)
+        proxy.sel.unregister(r)
+        os.close(r)
+
+    def test_rotation_goes_to_the_session(self):
+        """Nested, the session's X11 window takes Android's new shape."""
+        proxy = wp.Proxy("", "", self.h.s.cfg)
+        proxy.conns, proxy.emit = [mock.Mock(session=self.h.s)], mock.Mock()
+        r, w = os.pipe()
+        proxy.watch_rotation(r)
+        for line in (b"1\n", b"1\n", b"fullscreen 1\n", b"0\n"):
+            os.write(w, line)
+            proxy.on_event(None, None)
+        self.assertEqual(proxy.emit.call_args_list, [mock.call("rotation 1"), mock.call("rotation 0")])
         os.close(w)
         proxy.sel.unregister(r)
         os.close(r)

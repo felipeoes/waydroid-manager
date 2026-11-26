@@ -504,7 +504,7 @@ class Clip:
 
 class Surf:
     __slots__ = ("id", "viewport", "parent", "sub", "dirty", "req_dest", "req_pos", "req_transform", "req_src",
-                 "children")
+                 "children", "attached", "buf_turn")
 
     def __init__(self, sid):
         self.id = sid
@@ -517,6 +517,8 @@ class Surf:
         self.req_transform = 0  # buffer transform the HWC asked for
         self.req_src = None    # viewport source the HWC asked for (wl_fixed x, y, w, h)
         self.children = []
+        self.attached = False  # the HWC's pending state has a buffer
+        self.buf_turn = 0      # the turn its buffer was committed with: Weston's size of it
 
 
 class Window:
@@ -1112,6 +1114,7 @@ class Session:
         if s is None:
             return None
         if op == P.WL_SURFACE_ATTACH:
+            s.attached = True
             copy = self.copies.get(r.o())
             if copy:
                 self.cfg.gpu.read(*copy)    # the frame Android drew, into the memory the compositor reads
@@ -1128,6 +1131,8 @@ class Session:
         if op == P.WL_SURFACE_COMMIT:
             out = []
             s.dirty = False
+            if s.attached:
+                s.attached, s.buf_turn = False, self.turn
             out.append(msg(sid, P.WL_SURFACE_COMMIT))
             w = self.window
             if w and sid == w.surface and not w.committed:
@@ -1752,7 +1757,7 @@ class Session:
         turning = bool(self.turn or self.shown_turn)
         self.shown_turn = self.turn
         if turning:
-            out.extend(self._turn_messages(S))
+            out.extend(self._turn_messages(S, commit and not S.dirty))
         if S.viewport and S.req_dest:
             out.append(msg(S.viewport, P.WP_VIEWPORT_SET_DESTINATION, "ii", *self.scaled_dest(S.id, *S.req_dest)))
         elif not S.viewport and (w.own_vp or self._own_viewport()):
@@ -1762,7 +1767,7 @@ class Session:
             if not c or c.parent != S.id:
                 continue
             if turning:
-                out.extend(self._turn_messages(c))
+                out.extend(self._turn_messages(c, commit and not c.dirty))
             if c.sub and c.req_pos is not None:
                 out.append(msg(c.sub, P.WL_SUBSURFACE_SET_POSITION, "ii", *self.scaled_pos(*self.turned_pos(c))))
             if c.viewport and c.req_dest:
@@ -1776,11 +1781,16 @@ class Session:
             out.append(msg(S.id, P.WL_SURFACE_COMMIT))
         return out
 
-    def _turn_messages(self, s):
-        """The buffer transform (and viewport source) a tree surface needs for the current turn."""
+    def _turn_messages(self, s, bufferless=False):
+        """The buffer transform (and viewport source) a tree surface needs for the current turn.
+        bufferless: we commit it with no new buffer. Weston checks a source against the size it
+        took at the buffer's attach, under the turn then (else a protocol error, and the HWC
+        aborts): turned since, the source is unset until the HWC's next frame sets its crop."""
         out = [msg(s.id, P.WL_SURFACE_SET_BUFFER_TRANSFORM, "i", self.turned_transform(s.req_transform))]
         if s.viewport and s.req_src:
-            out.append(msg(s.viewport, P.WP_VIEWPORT_SET_SOURCE, "iiii", *self.turned_src(s.req_src)))
+            stale = bufferless and (self.turn - s.buf_turn) & 1
+            src = (-256,) * 4 if stale else self.turned_src(s.req_src)
+            out.append(msg(s.viewport, P.WP_VIEWPORT_SET_SOURCE, "iiii", *src))
         return out
 
     def rotated(self):
@@ -2561,14 +2571,16 @@ class Proxy:
             self.sel.unregister(self.rot_fd)
             return
         *lines, self.rot_buf = (self.rot_buf + data).split(b"\n")
-        changed = False
+        changed = turned = False
         for line in (l.strip() for l in lines):
             if line in (b"0", b"1", b"2", b"3") and int(line) != self.cfg.rotation:
-                self.cfg.rotation, changed = int(line), True
+                self.cfg.rotation, changed, turned = int(line), True, True
             elif line in (b"fullscreen 0", b"fullscreen 1") and (line[-1:] == b"1") != self.cfg.x11_fullscreen:
                 self.cfg.x11_fullscreen, changed = line[-1:] == b"1", True
         if not changed:
             return
+        if turned and self.cfg.nested:
+            self.emit("rotation {}".format(self.cfg.rotation))   # Weston's window takes the shape
         for c in self.conns:
             try:
                 c.session.rotated()
