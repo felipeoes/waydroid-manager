@@ -4,7 +4,7 @@ set -e
 STATE=/var/lib/waydroid-manager
 case "$1" in
 remove)
-    rm -rf /run/waydroid-manager
+    rm -rf /run/waydroid-manager /run/dnsmasq-waydroid-manager
     # the instance names adb uses (only our lines, even if END was deleted)
     sed -i --follow-symlinks '/^# BEGIN waydroid-manager /,/^# END waydroid-manager$/{/^# BEGIN waydroid-manager \|^# END waydroid-manager$\|^[0-9a-fA-F.:]\+ waydroid-[a-z0-9-]\+$/d}' /etc/hosts 2>/dev/null || true
     # our override hiding stock's Waydroid icon, removed as each user: stock's icon shows again

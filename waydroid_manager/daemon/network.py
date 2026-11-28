@@ -23,7 +23,7 @@ DNSMASQ_UNIT = "waydroid-manager-dnsmasq.service"
 def dnsmasq_pid():
     """Our dnsmasq without systemd (net.sh's pidfile; it may be stale)."""
     try:
-        with open(os.path.join(paths.RUN_DIR, "dnsmasq.pid")) as f:
+        with open(os.path.join(paths.DNSMASQ_RUN_DIR, "dnsmasq.pid")) as f:
             pid = int(f.read().strip())
         with open("/proc/{}/comm".format(pid)) as f:
             return pid if f.read().strip() == "dnsmasq" else None
@@ -121,7 +121,10 @@ class Network:
         run(cmd)
 
     def write_hosts(self, entries):
-        os.makedirs(paths.RUN_DIR, exist_ok=True)
+        hosts_dir = os.path.dirname(paths.DHCP_HOSTS_FILE)
+        os.makedirs(hosts_dir, exist_ok=True)
+        if os.path.exists("/sys/fs/selinux/enforce") and shutil.which("restorecon"):
+            run(["restorecon", hosts_dir], check=False)
         tmp = paths.DHCP_HOSTS_FILE + ".tmp"
         with open(tmp, "w") as f:
             f.write(dhcp_hosts_text(entries))
@@ -141,6 +144,7 @@ class Network:
                                    .format(self.cfg.network, ", ".join(bad), paths.CONFIG_FILE))
             log.info("bringing up network %s on %s", self.cfg.network, self.cfg.bridge)
             self._dnsmasq_stop()
+            os.makedirs(paths.RUN_DIR, exist_ok=True)
             with open(paths.NET_ENV_FILE, "w") as f:  # lets uninstall.sh tear down a custom setup
                 f.write(self.cfg.env_file_text())
             run(["sh", paths.NET_SCRIPT, "setup"], env=self._env())

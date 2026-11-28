@@ -26,7 +26,8 @@
 : "${WDM_NETWORK:=192.168.241.0/24}"
 : "${WDM_DHCP_START:=192.168.241.0}"
 : "${WDM_VARRUN:=/run/waydroid-manager}"
-: "${WDM_HOSTSFILE:=${WDM_VARRUN}/dhcp-hosts}"
+: "${WDM_DNSMASQ_DIR:=/run/dnsmasq-waydroid-manager}"
+: "${WDM_HOSTSFILE:=${WDM_DNSMASQ_DIR}/dhcp-hosts}"
 : "${WDM_LEASEFILE:=/var/lib/misc/dnsmasq.${WDM_BRIDGE}.leases}"
 : "${WDM_USE_NFT:=false}"
 : "${WDM_NFT_TABLE:=waydroid_manager}"
@@ -127,11 +128,20 @@ setup() {
     trap cleanup EXIT HUP INT TERM
     set -e
 
-    mkdir -p "$WDM_VARRUN"
+    mkdir -p "$WDM_VARRUN" "$WDM_DNSMASQ_DIR"
     if command -v restorecon >/dev/null 2>&1; then
-        restorecon "$WDM_VARRUN" || true
+        restorecon "$WDM_VARRUN" "$WDM_DNSMASQ_DIR" || true
     fi
     [ -f "$WDM_HOSTSFILE" ] || : > "$WDM_HOSTSFILE"
+
+    # Android 14-17's netd configures legacy iptables/ip6tables tables inside the container,
+    # where CAP_SYS_MODULE is dropped; pre-load them on nftables-only hosts (Fedora, Bazzite).
+    if command -v modprobe >/dev/null 2>&1; then
+        for mod in iptable_filter iptable_mangle iptable_raw iptable_nat \
+                   ip6table_filter ip6table_mangle ip6table_raw ip6table_nat; do
+            modprobe "$mod" 2>/dev/null || true
+        done
+    fi
 
     [ -d "/sys/class/net/${WDM_BRIDGE}" ] || ip link add dev "$WDM_BRIDGE" type bridge
     echo 1 > /proc/sys/net/ipv4/ip_forward
@@ -175,10 +185,13 @@ teardown() {
     if use_nft; then
         nft_teardown
     elif [ -f "${WDM_VARRUN}/network_up" ]; then
-        # From both backends: older versions put the rules in iptables-legacy whenever it existed
+        # From both backends: older versions put the rules in iptables-legacy whenever it existed.
+        # Save/restore IPTABLES_BIN: setup() calls teardown force first and must keep its resolved binary.
+        saved_ipt="$IPTABLES_BIN"
         for bin in iptables iptables-legacy; do
             IPTABLES_BIN="$(command -v "$bin")" && iptables_rules -D 2>/dev/null
         done
+        IPTABLES_BIN="$saved_ipt"
     fi
     if [ -d "/sys/class/net/${WDM_BRIDGE}" ]; then
         ip addr flush dev "$WDM_BRIDGE"
@@ -193,12 +206,15 @@ run_dnsmasq() {
     for DNSMASQ_USER in lxc-dnsmasq dnsmasq nobody; do
         getent passwd "$DNSMASQ_USER" >/dev/null && break
     done
-    mkdir -p "$(dirname "$WDM_LEASEFILE")"
+    mkdir -p "$(dirname "$WDM_LEASEFILE")" "$WDM_DNSMASQ_DIR"
+    if command -v restorecon >/dev/null 2>&1; then
+        restorecon -R "$WDM_DNSMASQ_DIR" || true
+    fi
     [ -f "$WDM_HOSTSFILE" ] || : > "$WDM_HOSTSFILE"
     # Static mode: only MACs listed in the hosts file get an address, so every
     # instance always gets the same IP. SIGHUP re-reads the hosts file.
     exec dnsmasq "$@" --conf-file=/dev/null -u "$DNSMASQ_USER" \
-        --strict-order --bind-interfaces --pid-file="${WDM_VARRUN}/dnsmasq.pid" \
+        --strict-order --bind-interfaces --pid-file="${WDM_DNSMASQ_DIR}/dnsmasq.pid" \
         --listen-address "$WDM_ADDR" --dhcp-range "${WDM_DHCP_START},static" \
         --dhcp-hostsfile="$WDM_HOSTSFILE" --dhcp-no-override \
         --except-interface=lo --interface="$WDM_BRIDGE" \
@@ -206,7 +222,7 @@ run_dnsmasq() {
 }
 
 reload() {
-    pid=$(cat "${WDM_VARRUN}/dnsmasq.pid" 2>/dev/null) && kill -HUP "$pid"
+    pid=$(cat "${WDM_DNSMASQ_DIR}/dnsmasq.pid" 2>/dev/null) && kill -HUP "$pid"
 }
 
 case "$1" in

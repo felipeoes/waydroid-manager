@@ -33,6 +33,7 @@ PREFIX="${1:-$DEFAULT_PREFIX}"
 LIBDIR="$PREFIX/lib/waydroid-manager"
 STATE=/var/lib/waydroid-manager
 RUNDIR=/run/waydroid-manager
+DNSMASQ_RUNDIR=/run/dnsmasq-waydroid-manager
 
 [ "$(id -u)" = 0 ] || { echo "run as root: sudo $0" >&2; exit 1; }
 if [ -d /etc/runit/sv ]; then
@@ -68,8 +69,10 @@ stop_all() {
     fi
     pkill -f -- "$DAEMON_RE" 2>/dev/null    # D-Bus started it (no systemd, OpenRC or runit)
     systemctl stop waydroid-manager-dnsmasq.service 2>/dev/null
-    pid="$(cat "$RUNDIR/dnsmasq.pid" 2>/dev/null)" && [ "$(cat "/proc/$pid/comm" 2>/dev/null)" = dnsmasq ] &&
-        kill "$pid"     # without systemd it runs on its own
+    for pidfile in "$DNSMASQ_RUNDIR/dnsmasq.pid" "$RUNDIR/dnsmasq.pid"; do
+        pid="$(cat "$pidfile" 2>/dev/null)" && [ "$(cat "/proc/$pid/comm" 2>/dev/null)" = dnsmasq ] &&
+            kill "$pid"     # without systemd it runs on its own
+    done
     # the daemon's hardware helpers (KillMode=process leaves them to us) and the per-user
     # instance sessions, which normally exit on their own once their instance stops
     pkill -f -- '-m waydroid_manager\.daemon\.hwhelper ' 2>/dev/null
@@ -157,7 +160,10 @@ remove_files() {
           "$DESKTOP_DIR/io.github.waydroidmanager.desktop" \
           "$UDEV_DIR/70-waydroid-manager.rules" \
           "$PREFIX/bin/waydroid-manager" "$PREFIX/bin/waydroid-manager-gui" "$PREFIX/bin/waydroid-manager-daemon"
-    rm -rf "$LIBDIR" "$RUNDIR"
+    rm -rf "$LIBDIR" "$RUNDIR" "${DNSMASQ_RUNDIR:-/run/dnsmasq-waydroid-manager}"
+    if command -v semodule >/dev/null 2>&1; then
+        semodule -X 400 -r waydroid-manager >/dev/null 2>&1 || true
+    fi
     # the instance names adb uses (only our lines, even if END was deleted)
     sed -i --follow-symlinks '/^# BEGIN waydroid-manager /,/^# END waydroid-manager$/{/^# BEGIN waydroid-manager \|^# END waydroid-manager$\|^[0-9a-fA-F.:]\+ waydroid-[a-z0-9-]\+$/d}' /etc/hosts 2>/dev/null || true
     if [ -d /run/systemd/system ]; then
@@ -224,7 +230,7 @@ if [ "$METHOD" = rpm ]; then
         rc=$?
         if [ "$rc" -eq 0 ]; then
             [ "$PURGE" = 1 ] || stop_all
-            rm -rf "$RUNDIR"
+            rm -rf "$RUNDIR" "$DNSMASQ_RUNDIR"
             sed -i --follow-symlinks '/^# BEGIN waydroid-manager /,/^# END waydroid-manager$/{/^# BEGIN waydroid-manager \|^# END waydroid-manager$\|^[0-9a-fA-F.:]\+ waydroid-[a-z0-9-]\+$/d}' /etc/hosts 2>/dev/null || true
             remove_user_files "$PURGE"
             if [ "$PURGE" = 1 ]; then

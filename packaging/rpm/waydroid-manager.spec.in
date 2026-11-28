@@ -15,6 +15,7 @@ URL:            https://github.com/felipeoes/waydroid-manager
 BuildRequires:  systemd-rpm-macros
 %{?systemd_ordering}
 Requires:       waydroid
+Requires:       (policycoreutils if selinux-policy-targeted)
 Requires:       lxc
 Requires:       dnsmasq
 Requires:       iproute
@@ -72,6 +73,17 @@ fi
 
 %post
 %systemd_post waydroid-manager.service
+# Install SELinux policy module for Android 14-17 APEX binder calls (rpm-ostree safe:
+# semodule -n updates the policy store offline; load_policy runs only on a live host).
+if [ -e /etc/selinux/config ] && command -v semodule >/dev/null 2>&1; then
+    SELINUXTYPE="$(awk -F= '/^[[:space:]]*SELINUXTYPE=/{gsub(/[[:space:]]/, "", $2); print $2; exit}' /etc/selinux/config)"
+    if [ -n "$SELINUXTYPE" ] && [ -d "/var/lib/selinux/$SELINUXTYPE" ]; then
+        semodule -n -s "$SELINUXTYPE" -X 400 -i /usr/lib/waydroid-manager/data/selinux/waydroid-manager.cil >/dev/null 2>&1 || true
+        if [ -d /run/systemd/system ] && command -v selinuxenabled >/dev/null 2>&1 && selinuxenabled; then
+            load_policy >/dev/null 2>&1 || true
+        fi
+    fi
+fi
 if [ -d /run/systemd/system ]; then
     /usr/lib/waydroid-manager/migrate-from-waydroid-multi.sh || true
     systemctl daemon-reload >/dev/null 2>&1 || true
@@ -97,8 +109,17 @@ find /usr/lib/waydroid-manager -name __pycache__ -type d -prune -exec rm -rf {} 
 %systemd_preun waydroid-manager.service
 
 %postun
+if [ "$1" -eq 0 ] && [ -e /etc/selinux/config ] && command -v semodule >/dev/null 2>&1; then
+    SELINUXTYPE="$(awk -F= '/^[[:space:]]*SELINUXTYPE=/{gsub(/[[:space:]]/, "", $2); print $2; exit}' /etc/selinux/config)"
+    if [ -n "$SELINUXTYPE" ] && [ -d "/var/lib/selinux/$SELINUXTYPE" ]; then
+        semodule -n -s "$SELINUXTYPE" -X 400 -r waydroid-manager >/dev/null 2>&1 || true
+        if [ -d /run/systemd/system ] && command -v selinuxenabled >/dev/null 2>&1 && selinuxenabled; then
+            load_policy >/dev/null 2>&1 || true
+        fi
+    fi
+fi
 if [ "$1" -eq 0 ] && [ -d /run/systemd/system ]; then
-    rm -rf /run/waydroid-manager
+    rm -rf /run/waydroid-manager /run/dnsmasq-waydroid-manager
     # the instance names adb uses (only our lines, even if END was deleted)
     sed -i --follow-symlinks '/^# BEGIN waydroid-manager /,/^# END waydroid-manager$/{/^# BEGIN waydroid-manager \|^# END waydroid-manager$\|^[0-9a-fA-F.:]\+ waydroid-[a-z0-9-]\+$/d}' /etc/hosts 2>/dev/null || true
     # our override hiding stock's Waydroid icon, removed as each user: stock's icon shows again

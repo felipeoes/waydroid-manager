@@ -26,6 +26,7 @@ def read_text(path):
 class ShellSyntaxTest(unittest.TestCase):
     def test_shell_scripts_have_valid_posix_syntax(self):
         scripts = [
+            "data/waydroid-manager-net.sh",
             "scripts/install.sh",
             "scripts/uninstall.sh",
             "scripts/migrate-from-waydroid-multi.sh",
@@ -42,6 +43,43 @@ class ShellSyntaxTest(unittest.TestCase):
             path = os.path.join(ROOT, rel)
             res = subprocess.run(["sh", "-n", path], capture_output=True, text=True)
             self.assertEqual(res.returncode, 0, "{}: {}".format(rel, res.stderr))
+
+    def test_net_script_teardown_preserves_iptables_bin_without_legacy(self):
+        """When iptables-legacy is absent (Fedora/Bazzite), teardown must not clear IPTABLES_BIN."""
+        net_sh = os.path.join(ROOT, "data", "waydroid-manager-net.sh")
+        text = read_text(net_sh)
+        self.assertIn('saved_ipt="$IPTABLES_BIN"', text)
+        m = re.search(r"(?m)^teardown\(\) \{\n.*?\n\}", text, re.S)
+        self.assertIsNotNone(m)
+        tmp = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, tmp)
+        fakebin = os.path.join(tmp, "bin")
+        os.makedirs(fakebin)
+        ipt = os.path.join(fakebin, "iptables")
+        with open(ipt, "w") as f:
+            f.write("#!/bin/sh\nexit 0\n")
+        os.chmod(ipt, 0o755)
+        varrun = os.path.join(tmp, "run")
+        os.makedirs(varrun)
+        with open(os.path.join(varrun, "network_up"), "w") as f:
+            f.write("iptables-nft\n")
+        harness = (
+            'PATH="{fakebin}:/usr/bin:/bin"\n'
+            'WDM_VARRUN="{varrun}"\n'
+            'WDM_BRIDGE=wdm_test_none\n'
+            'WDM_USE_NFT=false\n'
+            'IPTABLES_BIN="{ipt}"\n'
+            'close_firewall() {{ :; }}\n'
+            'firewalld_running() {{ return 1; }}\n'
+            'use_nft() {{ return 1; }}\n'
+            'iptables_rules() {{ :; }}\n'
+            "{fn}\n"
+            "teardown force\n"
+            'printf "%s" "$IPTABLES_BIN"\n'
+        ).format(fakebin=fakebin, varrun=varrun, ipt=ipt, fn=m.group(0))
+        res = subprocess.run(["sh", "-c", harness], capture_output=True, text=True)
+        self.assertEqual(res.returncode, 0, res.stderr)
+        self.assertEqual(res.stdout, ipt)
 
 
 class InstallLayoutTest(unittest.TestCase):
@@ -69,6 +107,7 @@ class InstallLayoutTest(unittest.TestCase):
             self.assertTrue(os.path.isfile(os.path.join(
                 dest, "usr/lib/udev/rules.d/70-waydroid-manager.rules")))
             self.assertTrue(os.path.isfile(os.path.join(dest, "etc/waydroid-manager/daemon.conf")))
+            self.assertTrue(os.path.isfile(os.path.join(libdir, "data/selinux/waydroid-manager.cil")))
 
             desktop = os.path.join(dest, "usr/share/applications/io.github.waydroidmanager.desktop")
             self.assertIn("\nExec=waydroid-manager-gui\n", read_text(desktop))
@@ -98,6 +137,7 @@ class InstallLayoutTest(unittest.TestCase):
         self.assertTrue(os.path.isfile(os.path.join(
             dest, "etc/udev/rules.d/70-waydroid-manager.rules")))
         self.assertTrue(os.path.isfile(os.path.join(dest, "etc/waydroid-manager/daemon.conf")))
+        self.assertTrue(os.path.isfile(os.path.join(libdir, "data/selinux/waydroid-manager.cil")))
 
         desktop = os.path.join(dest, "usr/local/share/applications/io.github.waydroidmanager.desktop")
         self.assertIn("\nExec=/usr/local/bin/waydroid-manager-gui\n", read_text(desktop))
@@ -155,6 +195,11 @@ class UninstallTest(unittest.TestCase):
             with open(stub, "w") as f:
                 f.write("#!/bin/sh\nexit 0\n")
             os.chmod(stub, 0o755)
+        semodule_log = os.path.join(tmp, "semodule.txt")
+        semodule_stub = os.path.join(fakebin, "semodule")
+        with open(semodule_stub, "w") as f:
+            f.write('#!/bin/sh\nprintf "%s\\n" "$*" >> "{}"\n'.format(semodule_log))
+        os.chmod(semodule_stub, 0o755)
         fn = self._extract_remove_files()
         harness = (
             "set -u\n"
@@ -163,11 +208,12 @@ class UninstallTest(unittest.TestCase):
             'LIBDIR="{libdir}"\n'
             'SV_DIR="{sv}"\n'
             'RUNDIR="{run}"\n'
+            'DNSMASQ_RUNDIR="{dnsrun}"\n'
             'rm() {{ for a in "$@"; do case "$a" in -*) ;; *) printf "%s\\n" "$a" >> "{log}" ;; esac; done; }}\n'
             "{fn}\n"
             "remove_files\n"
         ).format(fakebin=fakebin, prefix=prefix, libdir=libdir, sv=os.path.join(tmp, "sv"),
-                 run=os.path.join(tmp, "run"), log=removed_log, fn=fn)
+                 run=os.path.join(tmp, "run"), dnsrun=os.path.join(tmp, "dnsrun"), log=removed_log, fn=fn)
         res = subprocess.run(["sh", "-c", harness], capture_output=True, text=True)
         self.assertEqual(res.returncode, 0, res.stderr)
         return read_text(removed_log).splitlines(), tmp
@@ -186,6 +232,8 @@ class UninstallTest(unittest.TestCase):
         self.assertIn("/usr/local/share/dbus-1/system-services/io.github.waydroidmanager.Manager.service", removed)
         self.assertIn("/etc/udev/rules.d/70-waydroid-manager.rules", removed)
         self.assertIn("/usr/local/share/applications/io.github.waydroidmanager.desktop", removed)
+        self.assertIn(os.path.join(_tmp, "dnsrun"), removed)
+        self.assertIn("-X 400 -r waydroid-manager", read_text(os.path.join(_tmp, "semodule.txt")))
 
     def test_remove_files_ignores_relative_and_unsafe_install_paths(self):
         marker = tempfile.mkdtemp()
@@ -248,6 +296,7 @@ class RpmSpecTest(unittest.TestCase):
         self.assertIn("%global __requires_exclude_from ^/usr/lib/waydroid-manager/data/(openrc|runit)/", spec)
         self.assertIn("%{?systemd_ordering}", spec)
         self.assertRegex(spec, r"(?m)^Requires:\s+iptables-nft$")
+        self.assertIn("Requires:       (policycoreutils if selinux-policy-targeted)", spec)
         self.assertNotIn("(iptables-nft or nftables)", spec)
         self.assertIn("%config(noreplace) /etc/waydroid-manager/daemon.conf", spec)
         self.assertIn("%dir /usr/share/licenses/waydroid-manager", spec)
@@ -281,6 +330,13 @@ class RpmSpecTest(unittest.TestCase):
         # %post only restarts on fresh install ($1 -eq 1); upgrades use %systemd_postun_with_restart
         self.assertIn('[ "$1" -eq 1 ]', sections["post"])
         self.assertNotIn("try-restart", sections["post"])
+
+        # SELinux policy module installed in %post and removed in %postun (offline-safe with -n)
+        self.assertIn("waydroid-manager.cil", sections["post"])
+        self.assertIn("semodule -n -s", sections["post"])
+        self.assertIn("semodule -n -s", sections["postun"])
+        self.assertIn("-r waydroid-manager", sections["postun"])
+        self.assertIn("/run/dnsmasq-waydroid-manager", sections["postun"])
 
 
 class PkexecCliPathTest(unittest.TestCase):

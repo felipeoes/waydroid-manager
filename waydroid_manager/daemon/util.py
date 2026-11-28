@@ -152,24 +152,97 @@ def umount_tree(path):
 # Our own mount helpers. Stock tools.helpers.mount runs commands through
 # run_core.foreground_pipe, which leaks a pipe and an epoll fd per call.
 
+SELINUX_ROOTFS_CONTEXT = "system_u:object_r:waydroid_rootfs_t:s0"
+
+
+def selinux_mode():
+    """Active SELinux mode: 'enforcing', 'permissive', or None when disabled/absent."""
+    try:
+        with open("/sys/fs/selinux/enforce") as f:
+            return "enforcing" if f.read().strip() == "1" else "permissive"
+    except OSError:
+        return None
+
+
+def selinux_context_valid(context):
+    """Whether context is valid in the loaded kernel SELinux policy (works without root)."""
+    try:
+        fd = os.open("/sys/fs/selinux/context", os.O_RDWR)
+        try:
+            os.write(fd, context.encode())
+            return True
+        finally:
+            os.close(fd)
+    except OSError:
+        return False
+
+
+def selinux_rootfs_context():
+    """SELinux mount context for Android rootfs/vendor mounts, or None when not applicable."""
+    if selinux_mode() is not None and selinux_context_valid(SELINUX_ROOTFS_CONTEXT):
+        return SELINUX_ROOTFS_CONTEXT
+    return None
+
+
+def selinux_binder_allowed():
+    """Whether the active SELinux policy allows spc_t -> container_runtime_t binder calls
+    (needed for Android 14-17 binaries executed from loop-mounted APEXes). Returns None
+    when SELinux or those types/class aren't present."""
+    if selinux_mode() is None:
+        return None
+    try:
+        with open("/sys/fs/selinux/class/binder/index") as f:
+            cls = f.read().strip()
+        with open("/sys/fs/selinux/class/binder/perms/call") as f:
+            bit = int(f.read().strip())
+    except (OSError, ValueError):
+        return None
+    if not (selinux_context_valid("system_u:system_r:spc_t:s0")
+            and selinux_context_valid("system_u:system_r:container_runtime_t:s0")):
+        return None
+    try:
+        fd = os.open("/sys/fs/selinux/access", os.O_RDWR)
+        try:
+            query = "system_u:system_r:spc_t:s0 system_u:system_r:container_runtime_t:s0 {}".format(cls)
+            os.write(fd, query.encode())
+            resp = os.read(fd, 256).decode("ascii", "replace").split()
+            return bool(resp and (int(resp[0], 16) & (1 << (bit - 1))))
+        finally:
+            os.close(fd)
+    except (OSError, ValueError):
+        return None
+
+
 def mount_image(image, target):
     os.makedirs(target, exist_ok=True)
-    run(["mount", "-o", "ro", image, target])
+    opts = "ro"
+    ctx = selinux_rootfs_context()
+    if ctx:
+        opts += ',context="{}"'.format(ctx)
+    run(["mount", "-o", opts, image, target])
     if not is_mount(target):
         raise RuntimeError("mount failed: {} -> {}".format(image, target))
 
 
-def overlay_opts(lowers, upper, work, writable):
+def overlay_opts(lowers, upper, work, writable, context=None):
     if writable:
-        return ",".join(["lowerdir=" + ":".join(lowers), "upperdir=" + upper, "workdir=" + work, "xino=off"])
-    # The upper layer becomes the top read-only lower: earlier changes stay visible, nothing new is written.
-    return "ro,lowerdir=" + ":".join([upper] + list(lowers)) + ",xino=off"
+        opts = ",".join(["lowerdir=" + ":".join(lowers), "upperdir=" + upper, "workdir=" + work, "xino=off"])
+    else:
+        # The upper layer becomes the top read-only lower: earlier changes stay visible, nothing new is written.
+        opts = "ro,lowerdir=" + ":".join([upper] + list(lowers)) + ",xino=off"
+    if context:
+        opts += ',context="{}"'.format(context)
+    return opts
 
 
 def mount_overlay(lowers, target, upper, work, writable=False):
     for d in (upper, work):
         os.makedirs(d, exist_ok=True)
-    run(["mount", "-t", "overlay", "-o", overlay_opts(lowers, upper, work, writable), "overlay", target])
+    opts = overlay_opts(lowers, upper, work, writable, context=selinux_rootfs_context())
+    # util-linux >= 2.39's fd-based fsconfig() rejects single mount option values >= 256 bytes,
+    # which stacked lowerdir= lists easily exceed; mount(2) allows up to PAGE_SIZE on all kernels.
+    run(["mount", "-t", "overlay", "-o", opts, "overlay", target],
+        env={"LIBMOUNT_FORCE_MOUNT2": "always"})
 
 
 def bind(src, dst):

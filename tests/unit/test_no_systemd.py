@@ -26,6 +26,7 @@ class DnsmasqTest(unittest.TestCase):
         self.tmp = tempfile.mkdtemp()
         self.addCleanup(shutil.rmtree, self.tmp)
         for p in (mock.patch.object(paths, "RUN_DIR", self.tmp),
+                  mock.patch.object(paths, "DNSMASQ_RUN_DIR", self.tmp),
                   mock.patch.object(paths, "systemd_booted", return_value=False),
                   mock.patch.object(network, "run", side_effect=no_systemctl)):
             p.start()
@@ -72,6 +73,35 @@ class DnsmasqTest(unittest.TestCase):
     def test_start_daemonizes_through_the_script(self):
         self.net._dnsmasq_start()
         network.run.assert_called_once_with(["sh", paths.NET_SCRIPT, "start-dnsmasq"], env={"WDM_BRIDGE": "wdm0"})
+
+    def test_write_hosts_creates_dnsmasq_dir_and_restores_selinux_context(self):
+        dnsdir = os.path.join(self.tmp, "dnsmasq")
+        hosts = os.path.join(dnsdir, "dhcp-hosts")
+        with mock.patch.object(paths, "DHCP_HOSTS_FILE", hosts), \
+                mock.patch.object(network.os.path, "exists", side_effect=lambda p: p == "/sys/fs/selinux/enforce"), \
+                mock.patch.object(network.shutil, "which", return_value="/usr/sbin/restorecon"):
+            self.net.write_hosts([("02:57:44:4d:ff:00", "192.168.241.10")])
+        self.assertTrue(os.path.isfile(hosts))
+        network.run.assert_called_once_with(["restorecon", dnsdir], check=False)
+
+    def test_ensure_up_creates_run_dir_before_net_env(self):
+        rundir = os.path.join(self.tmp, "wdm-run")
+        dnsdir = os.path.join(self.tmp, "wdm-dnsmasq")
+        net = network.Network.__new__(network.Network)
+        net.lock = threading.Lock()
+        net.blockers = []
+        net.cfg = mock.Mock(bridge="wdm0", network="192.168.241.0/24",
+                            overlapping_routes=lambda: [],
+                            env=lambda: {"WDM_BRIDGE": "wdm0"},
+                            env_file_text=lambda: "WDM_BRIDGE=wdm0\n")
+        with mock.patch.object(paths, "RUN_DIR", rundir), \
+                mock.patch.object(paths, "DNSMASQ_RUN_DIR", dnsdir), \
+                mock.patch.object(paths, "NET_ENV_FILE", os.path.join(rundir, "net.env")), \
+                mock.patch.object(paths, "DHCP_HOSTS_FILE", os.path.join(dnsdir, "dhcp-hosts")), \
+                mock.patch.object(net, "sync_firewall"):
+            net.ensure_up([("02:57:44:4d:ff:00", "192.168.241.10")])
+        self.assertTrue(os.path.isfile(os.path.join(rundir, "net.env")))
+        self.assertTrue(os.path.isfile(os.path.join(dnsdir, "dhcp-hosts")))
 
 
 class StockHoldTest(unittest.TestCase):

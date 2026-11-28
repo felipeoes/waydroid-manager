@@ -13,8 +13,10 @@ INSTANCES_DIR = STATE_DIR + "/instances"
 LXC_PATH = STATE_DIR + "/lxc"
 IMAGES_DIR = STATE_DIR + "/images"
 RUN_DIR = "/run/waydroid-manager"
+# Under /run/dnsmasq* so upstream SELinux targeted policy labels it dnsmasq_var_run_t
+DNSMASQ_RUN_DIR = "/run/dnsmasq-waydroid-manager"
 NET_ENV_FILE = RUN_DIR + "/net.env"
-DHCP_HOSTS_FILE = RUN_DIR + "/dhcp-hosts"
+DHCP_HOSTS_FILE = DNSMASQ_RUN_DIR + "/dhcp-hosts"
 CONFIG_FILE = "/etc/waydroid-manager/daemon.conf"
 DAEMON_LOG = "/var/log/waydroid-manager.log"       # without systemd's journal
 # "allow" or "deny" opening the host's own firewall for the bridge (none yet: ask)

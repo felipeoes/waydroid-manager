@@ -203,6 +203,24 @@ if command -v restorecon >/dev/null 2>&1 && [ -e /sys/fs/selinux/enforce ]; then
         "$DESKTOP_DIR/io.github.waydroidmanager.desktop" \
         /etc/waydroid-manager 2>/dev/null || true
 fi
+# Install the SELinux policy module for Android 14-17 APEX binder calls whenever SELinux is enabled
+if [ -e /sys/fs/selinux/enforce ]; then
+    SELINUX_ENFORCING="$(cat /sys/fs/selinux/enforce 2>/dev/null || true)"
+    if command -v semodule >/dev/null 2>&1; then
+        if ! semodule -X 400 -i "$LIBDIR/data/selinux/waydroid-manager.cil"; then
+            if [ "$SELINUX_ENFORCING" = 1 ]; then
+                echo "failed to install SELinux policy module ($LIBDIR/data/selinux/waydroid-manager.cil)" >&2
+                exit 1
+            fi
+            echo "warning: could not install SELinux policy module; Android 14-17 need it under SELinux enforcing" >&2
+        fi
+    elif [ "$SELINUX_ENFORCING" = 1 ]; then
+        echo "SELinux is enforcing, but semodule is missing (install policycoreutils)" >&2
+        exit 1
+    else
+        echo "warning: semodule not found; SELinux policy module was not installed" >&2
+    fi
+fi
 if command -v udevadm >/dev/null 2>&1; then
     udevadm control --reload 2>/dev/null || true
 fi
