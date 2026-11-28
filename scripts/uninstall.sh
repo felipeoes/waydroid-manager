@@ -161,7 +161,7 @@ remove_files() {
           "$UDEV_DIR/70-waydroid-manager.rules" \
           "$PREFIX/bin/waydroid-manager" "$PREFIX/bin/waydroid-manager-gui" "$PREFIX/bin/waydroid-manager-daemon"
     rm -rf "$LIBDIR" "$RUNDIR" "${DNSMASQ_RUNDIR:-/run/dnsmasq-waydroid-manager}"
-    if command -v semodule >/dev/null 2>&1; then
+    if { [ -e /sys/fs/selinux/enforce ] || [ -e /etc/selinux/config ]; } && command -v semodule >/dev/null 2>&1; then
         semodule -X 400 -r waydroid-manager >/dev/null 2>&1 || true
     fi
     # the instance names adb uses (only our lines, even if END was deleted)

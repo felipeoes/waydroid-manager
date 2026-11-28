@@ -86,6 +86,11 @@ class DoctorSelinuxTest(unittest.TestCase):
         self.assertEqual(rc, 0)
         self.assertNotIn("SELinux", out)
 
+    def test_confined_user_permission_denied_does_not_false_fail(self):
+        rc, out = self._run_doctor("enforcing", None, None)
+        self.assertEqual(rc, 0)
+        self.assertNotIn("waydroid-selinux policy is missing", out)
+
     def test_netconfig_and_software_props(self):
         env = netconfig.NetConfig("wdm0", "192.168.241.0/24").env()
         self.assertEqual(env["WDM_DNSMASQ_DIR"], paths.DNSMASQ_RUN_DIR)

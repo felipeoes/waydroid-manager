@@ -175,7 +175,7 @@ EDGE_CURSOR = {"top": "n_resize", "bottom": "s_resize", "left": "w_resize", "rig
                "bottom_right": "se_resize"}
 BTN_LEFT = 0x110
 DND_ACTION_COPY = 1
-WL_SHM_FORMAT_ARGB8888 = 0
+WL_SHM_FORMAT_ARGB8888, WL_SHM_FORMAT_XRGB8888 = 0, 1
 DRM_FORMAT_ARGB8888, DRM_FORMAT_XRGB8888 = 0x34325241, 0x34325258   # wl_shm calls these 0 and 1
 DRM_FORMAT_ABGR8888, DRM_FORMAT_XBGR8888 = 0x34324241, 0x34324258
 DRM_FORMAT_MOD_LINEAR, DRM_FORMAT_MOD_INVALID = 0, 0x00ffffffffffffff

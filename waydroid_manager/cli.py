@@ -547,10 +547,11 @@ def cmd_doctor(o):
     se_mode = selinux_mode()
     if se_mode is not None:
         has_ctx = selinux_context_valid(SELINUX_ROOTFS_CONTEXT)
-        check(has_ctx or se_mode != "enforcing",
-              "SELinux {} ({})".format(se_mode, "waydroid-selinux policy loaded" if has_ctx
-                                       else "waydroid-selinux not loaded"),
-              "SELinux is enforcing, but waydroid-selinux policy is missing: install waydroid-selinux")
+        if has_ctx is not None:
+            check(has_ctx or se_mode != "enforcing",
+                  "SELinux {} ({})".format(se_mode, "waydroid-selinux policy loaded" if has_ctx
+                                           else "waydroid-selinux not loaded"),
+                  "SELinux is enforcing, but waydroid-selinux policy is missing: install waydroid-selinux")
         binder_ok = selinux_binder_allowed()
         if binder_ok is not None:
             cil = os.path.join(paths.DATA_DIR, "selinux", "waydroid-manager.cil")

@@ -2,6 +2,7 @@
 """Small root-side helpers: running commands, mounts, attaching to containers."""
 import ctypes
 import ctypes.util
+import errno
 import glob
 import hashlib
 import http.client
@@ -165,7 +166,8 @@ def selinux_mode():
 
 
 def selinux_context_valid(context):
-    """Whether context is valid in the loaded kernel SELinux policy (works without root)."""
+    """Whether context is valid in the loaded kernel SELinux policy (works without root);
+    returns None if access to /sys/fs/selinux/context is denied."""
     try:
         fd = os.open("/sys/fs/selinux/context", os.O_RDWR)
         try:
@@ -173,8 +175,8 @@ def selinux_context_valid(context):
             return True
         finally:
             os.close(fd)
-    except OSError:
-        return False
+    except OSError as e:
+        return None if e.errno in (errno.EACCES, errno.EPERM) else False
 
 
 def selinux_rootfs_context():

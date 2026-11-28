@@ -130,7 +130,8 @@ setup() {
 
     mkdir -p "$WDM_VARRUN" "$WDM_DNSMASQ_DIR"
     if command -v restorecon >/dev/null 2>&1; then
-        restorecon "$WDM_VARRUN" "$WDM_DNSMASQ_DIR" || true
+        restorecon "$WDM_VARRUN" || true
+        restorecon -R "$WDM_DNSMASQ_DIR" || true
     fi
     [ -f "$WDM_HOSTSFILE" ] || : > "$WDM_HOSTSFILE"
 

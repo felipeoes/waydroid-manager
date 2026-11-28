@@ -82,7 +82,78 @@ class DnsmasqTest(unittest.TestCase):
                 mock.patch.object(network.shutil, "which", return_value="/usr/sbin/restorecon"):
             self.net.write_hosts([("02:57:44:4d:ff:00", "192.168.241.10")])
         self.assertTrue(os.path.isfile(hosts))
-        network.run.assert_called_once_with(["restorecon", dnsdir], check=False)
+        network.run.assert_called_once_with(["restorecon", "-R", dnsdir], check=False)
+
+    def test_upgrade_from_legacy_dnsmasq_migrates_without_systemd(self):
+        rundir = os.path.join(self.tmp, "wdm-run")
+        dnsdir = os.path.join(self.tmp, "wdm-dnsmasq")
+        os.makedirs(rundir)
+        with open(os.path.join(rundir, "network_up"), "w") as f:
+            f.write("iptables-nft\n")
+        with open(os.path.join(rundir, "dhcp-hosts"), "w") as f:
+            f.write("02:57:44:4d:00:01,192.168.241.10\n")
+        exe = os.path.join(self.tmp, "dnsmasq")
+        shutil.copy(shutil.which("sleep"), exe)
+        proc = subprocess.Popen([exe, "30"])
+        self.addCleanup(proc.kill)
+        threading.Thread(target=proc.wait, daemon=True).start()
+        with open(os.path.join(rundir, "dnsmasq.pid"), "w") as f:
+            f.write("{}\n".format(proc.pid))
+
+        net = network.Network.__new__(network.Network)
+        net.lock = threading.Lock()
+        net.blockers = []
+        net.cfg = mock.Mock(bridge="wdm0", env=lambda: {"WDM_BRIDGE": "wdm0"})
+        with mock.patch.object(paths, "RUN_DIR", rundir), \
+                mock.patch.object(paths, "DNSMASQ_RUN_DIR", dnsdir), \
+                mock.patch.object(paths, "DHCP_HOSTS_FILE", os.path.join(dnsdir, "dhcp-hosts")), \
+                mock.patch.object(network.os.path, "isdir", return_value=True), \
+                mock.patch.object(net, "sync_firewall"):
+            self.assertEqual(network.dnsmasq_pid(), proc.pid)
+            net.ensure_up([("02:57:44:4d:00:01", "192.168.241.10")])
+        self.assertIsNotNone(proc.poll())
+        self.assertFalse(os.path.exists(os.path.join(rundir, "dnsmasq.pid")))
+        self.assertFalse(os.path.exists(os.path.join(rundir, "dhcp-hosts")))
+        self.assertTrue(os.path.isfile(os.path.join(dnsdir, "dhcp-hosts")))
+        cmds = [c.args[0] for c in network.run.call_args_list]
+        self.assertEqual(cmds, [["sh", paths.NET_SCRIPT, "start-dnsmasq"]])
+
+    def test_upgrade_from_legacy_dnsmasq_migrates_with_systemd(self):
+        rundir = os.path.join(self.tmp, "wdm-run")
+        dnsdir = os.path.join(self.tmp, "wdm-dnsmasq")
+        os.makedirs(rundir)
+        with open(os.path.join(rundir, "network_up"), "w") as f:
+            f.write("iptables-nft\n")
+        with open(os.path.join(rundir, "dhcp-hosts"), "w") as f:
+            f.write("02:57:44:4d:00:01,192.168.241.10\n")
+        exe = os.path.join(self.tmp, "dnsmasq")
+        shutil.copy(shutil.which("sleep"), exe)
+        proc = subprocess.Popen([exe, "30"])
+        self.addCleanup(proc.kill)
+        threading.Thread(target=proc.wait, daemon=True).start()
+        with open(os.path.join(rundir, "dnsmasq.pid"), "w") as f:
+            f.write("{}\n".format(proc.pid))
+
+        net = network.Network.__new__(network.Network)
+        net.lock = threading.Lock()
+        net.blockers = []
+        net.cfg = mock.Mock(bridge="wdm0", env=lambda: {"WDM_BRIDGE": "wdm0"})
+        calls = []
+        def fake_run(cmd, *a, **kw):
+            calls.append(cmd)
+            return subprocess.CompletedProcess(cmd, 0, "", "")
+        with mock.patch.object(paths, "RUN_DIR", rundir), \
+                mock.patch.object(paths, "DNSMASQ_RUN_DIR", dnsdir), \
+                mock.patch.object(paths, "DHCP_HOSTS_FILE", os.path.join(dnsdir, "dhcp-hosts")), \
+                mock.patch.object(paths, "systemd_booted", return_value=True), \
+                mock.patch.object(network, "run", side_effect=fake_run), \
+                mock.patch.object(network.os.path, "isdir", return_value=True):
+            net.reload_hosts([("02:57:44:4d:00:01", "192.168.241.10")])
+        self.assertFalse(os.path.exists(os.path.join(rundir, "dnsmasq.pid")))
+        self.assertFalse(os.path.exists(os.path.join(rundir, "dhcp-hosts")))
+        self.assertIn(["systemctl", "stop", network.DNSMASQ_UNIT], calls)
+        self.assertTrue(any(c[0] == "systemd-run" and c[-1] == "run-dnsmasq" for c in calls))
+        self.assertFalse(any(c[:2] == ["sh", paths.NET_SCRIPT] and c[2] == "setup" for c in calls))
 
     def test_ensure_up_creates_run_dir_before_net_env(self):
         rundir = os.path.join(self.tmp, "wdm-run")

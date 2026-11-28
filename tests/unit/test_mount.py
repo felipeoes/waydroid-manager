@@ -66,6 +66,11 @@ class OverlayOptsTest(unittest.TestCase):
             self.assertIsNone(util.selinux_mode())
             self.assertIsNone(util.selinux_binder_allowed())
 
+        with mock.patch.object(util.os, "open", side_effect=PermissionError(13, "denied")):
+            self.assertIsNone(util.selinux_context_valid(SELINUX_ROOTFS_CONTEXT))
+        with mock.patch.object(util.os, "open", side_effect=OSError(22, "invalid")):
+            self.assertIs(util.selinux_context_valid(SELINUX_ROOTFS_CONTEXT), False)
+
         files = {
             "/sys/fs/selinux/class/binder/index": "77\n",
             "/sys/fs/selinux/class/binder/perms/call": "2\n",
