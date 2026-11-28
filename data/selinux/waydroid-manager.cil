@@ -1,0 +1,9 @@
+; SPDX-License-Identifier: GPL-3.0-or-later
+; Allow Android 14-17 processes executed from loop-mounted APEXes (whose
+; unmapped Android xattrs transition container_runtime_t -> spc_t under
+; Fedora's container-selinux) to use binder with servicemanager.
+(optional waydroid_manager_apex_binder
+    (allow spc_t container_runtime_t (binder (call transfer)))
+    (allow container_runtime_t spc_t (binder (call transfer)))
+    (allow spc_t spc_t (binder (call set_context_mgr transfer)))
+)

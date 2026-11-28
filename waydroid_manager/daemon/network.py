@@ -20,15 +20,23 @@ from .util import log, run
 DNSMASQ_UNIT = "waydroid-manager-dnsmasq.service"
 
 
-def dnsmasq_pid():
-    """Our dnsmasq without systemd (net.sh's pidfile; it may be stale)."""
+def _dnsmasq_pid_in(rundir):
+    """Live dnsmasq pid from rundir/dnsmasq.pid, or None if missing/stale."""
     try:
-        with open(os.path.join(paths.RUN_DIR, "dnsmasq.pid")) as f:
+        with open(os.path.join(rundir, "dnsmasq.pid")) as f:
             pid = int(f.read().strip())
         with open("/proc/{}/comm".format(pid)) as f:
             return pid if f.read().strip() == "dnsmasq" else None
     except (OSError, ValueError):
         return None
+
+
+def dnsmasq_pid():
+    """Our dnsmasq without systemd (net.sh's pidfile; also finds a pre-1.6.1 pidfile on upgrade)."""
+    pid = _dnsmasq_pid_in(paths.DNSMASQ_RUN_DIR)
+    if pid is not None or paths.RUN_DIR == paths.DNSMASQ_RUN_DIR:
+        return pid
+    return _dnsmasq_pid_in(paths.RUN_DIR)
 
 
 def signal_dnsmasq(sig):
@@ -121,18 +129,45 @@ class Network:
         run(cmd)
 
     def write_hosts(self, entries):
-        os.makedirs(paths.RUN_DIR, exist_ok=True)
+        hosts_dir = os.path.dirname(paths.DHCP_HOSTS_FILE)
+        os.makedirs(hosts_dir, exist_ok=True)
+        if os.path.exists("/sys/fs/selinux/enforce") and shutil.which("restorecon"):
+            run(["restorecon", "-R", hosts_dir], check=False)
         tmp = paths.DHCP_HOSTS_FILE + ".tmp"
         with open(tmp, "w") as f:
             f.write(dhcp_hosts_text(entries))
         os.replace(tmp, paths.DHCP_HOSTS_FILE)
+
+    def _dnsmasq_using_legacy(self):
+        """True when a pre-1.6.1 dnsmasq is still watching paths.RUN_DIR/dhcp-hosts."""
+        if paths.RUN_DIR == paths.DNSMASQ_RUN_DIR:
+            return False
+        return _dnsmasq_pid_in(paths.DNSMASQ_RUN_DIR) is None and _dnsmasq_pid_in(paths.RUN_DIR) is not None
+
+    def _clean_legacy_dnsmasq(self):
+        if paths.RUN_DIR == paths.DNSMASQ_RUN_DIR:
+            return
+        for name in ("dnsmasq.pid", "dhcp-hosts"):
+            try:
+                os.unlink(os.path.join(paths.RUN_DIR, name))
+            except FileNotFoundError:
+                pass
+
+    def _dnsmasq_reload_or_migrate(self):
+        if self._dnsmasq_using_legacy():
+            log.info("restarting dnsmasq to use %s", paths.DNSMASQ_RUN_DIR)
+            self._dnsmasq_stop()
+            self._clean_legacy_dnsmasq()
+            self._dnsmasq_start()
+        else:
+            self._dnsmasq_reload()
 
     def ensure_up(self, hosts):
         """hosts: iterable of (mac, ip) for every known instance."""
         with self.lock:
             self.write_hosts(hosts)
             if self.is_up():
-                self._dnsmasq_reload()
+                self._dnsmasq_reload_or_migrate()
                 self.sync_firewall()    # a reload of the host's firewall drops our rules there
                 return
             bad = self.cfg.overlapping_routes()
@@ -141,6 +176,8 @@ class Network:
                                    .format(self.cfg.network, ", ".join(bad), paths.CONFIG_FILE))
             log.info("bringing up network %s on %s", self.cfg.network, self.cfg.bridge)
             self._dnsmasq_stop()
+            self._clean_legacy_dnsmasq()
+            os.makedirs(paths.RUN_DIR, exist_ok=True)
             with open(paths.NET_ENV_FILE, "w") as f:  # lets uninstall.sh tear down a custom setup
                 f.write(self.cfg.env_file_text())
             run(["sh", paths.NET_SCRIPT, "setup"], env=self._env())
@@ -189,7 +226,7 @@ class Network:
         with self.lock:
             self.write_hosts(hosts)
             if self.is_up():
-                self._dnsmasq_reload()
+                self._dnsmasq_reload_or_migrate()
 
     def ensure_down(self):
         with self.lock:

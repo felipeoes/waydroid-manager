@@ -26,6 +26,7 @@ def read_text(path):
 class ShellSyntaxTest(unittest.TestCase):
     def test_shell_scripts_have_valid_posix_syntax(self):
         scripts = [
+            "data/waydroid-manager-net.sh",
             "scripts/install.sh",
             "scripts/uninstall.sh",
             "scripts/migrate-from-waydroid-multi.sh",
@@ -42,6 +43,45 @@ class ShellSyntaxTest(unittest.TestCase):
             path = os.path.join(ROOT, rel)
             res = subprocess.run(["sh", "-n", path], capture_output=True, text=True)
             self.assertEqual(res.returncode, 0, "{}: {}".format(rel, res.stderr))
+
+    def test_net_script_teardown_preserves_iptables_bin_without_legacy(self):
+        """When iptables-legacy is absent (Fedora/Bazzite), teardown must not clear IPTABLES_BIN."""
+        net_sh = os.path.join(ROOT, "data", "waydroid-manager-net.sh")
+        text = read_text(net_sh)
+        self.assertIn('saved_ipt="$IPTABLES_BIN"', text)
+        m = re.search(r"(?m)^teardown\(\) \{\n.*?\n\}", text, re.S)
+        self.assertIsNotNone(m)
+        tmp = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, tmp)
+        fakebin = os.path.join(tmp, "bin")
+        os.makedirs(fakebin)
+        for name in ("iptables", "rm"):
+            cmd = os.path.join(fakebin, name)
+            with open(cmd, "w") as f:
+                f.write("#!/bin/sh\nexit 0\n")
+            os.chmod(cmd, 0o755)
+        ipt = os.path.join(fakebin, "iptables")
+        varrun = os.path.join(tmp, "run")
+        os.makedirs(varrun)
+        with open(os.path.join(varrun, "network_up"), "w") as f:
+            f.write("iptables-nft\n")
+        harness = (
+            'PATH="{fakebin}"\n'
+            'WDM_VARRUN="{varrun}"\n'
+            'WDM_BRIDGE=wdm_test_none\n'
+            'WDM_USE_NFT=false\n'
+            'IPTABLES_BIN="{ipt}"\n'
+            'close_firewall() {{ :; }}\n'
+            'firewalld_running() {{ return 1; }}\n'
+            'use_nft() {{ return 1; }}\n'
+            'iptables_rules() {{ :; }}\n'
+            "{fn}\n"
+            "teardown force\n"
+            'printf "%s" "$IPTABLES_BIN"\n'
+        ).format(fakebin=fakebin, varrun=varrun, ipt=ipt, fn=m.group(0))
+        res = subprocess.run(["sh", "-c", harness], capture_output=True, text=True)
+        self.assertEqual(res.returncode, 0, res.stderr)
+        self.assertEqual(res.stdout, ipt)
 
 
 class InstallLayoutTest(unittest.TestCase):
@@ -69,6 +109,7 @@ class InstallLayoutTest(unittest.TestCase):
             self.assertTrue(os.path.isfile(os.path.join(
                 dest, "usr/lib/udev/rules.d/70-waydroid-manager.rules")))
             self.assertTrue(os.path.isfile(os.path.join(dest, "etc/waydroid-manager/daemon.conf")))
+            self.assertTrue(os.path.isfile(os.path.join(libdir, "data/selinux/waydroid-manager.cil")))
 
             desktop = os.path.join(dest, "usr/share/applications/io.github.waydroidmanager.desktop")
             self.assertIn("\nExec=waydroid-manager-gui\n", read_text(desktop))
@@ -98,6 +139,7 @@ class InstallLayoutTest(unittest.TestCase):
         self.assertTrue(os.path.isfile(os.path.join(
             dest, "etc/udev/rules.d/70-waydroid-manager.rules")))
         self.assertTrue(os.path.isfile(os.path.join(dest, "etc/waydroid-manager/daemon.conf")))
+        self.assertTrue(os.path.isfile(os.path.join(libdir, "data/selinux/waydroid-manager.cil")))
 
         desktop = os.path.join(dest, "usr/local/share/applications/io.github.waydroidmanager.desktop")
         self.assertIn("\nExec=/usr/local/bin/waydroid-manager-gui\n", read_text(desktop))
@@ -138,7 +180,7 @@ class UninstallTest(unittest.TestCase):
         self.assertIsNotNone(m)
         return m.group(0)
 
-    def _run_remove_files(self, install_paths_content=None):
+    def _run_remove_files(self, install_paths_content=None, selinux=True):
         tmp = tempfile.mkdtemp()
         self.addCleanup(shutil.rmtree, tmp)
         prefix = os.path.join(tmp, "prefix")
@@ -155,7 +197,18 @@ class UninstallTest(unittest.TestCase):
             with open(stub, "w") as f:
                 f.write("#!/bin/sh\nexit 0\n")
             os.chmod(stub, 0o755)
+        semodule_log = os.path.join(tmp, "semodule.txt")
+        semodule_stub = os.path.join(fakebin, "semodule")
+        with open(semodule_stub, "w") as f:
+            f.write('#!/bin/sh\nprintf "%s\\n" "$*" >> "{}"\n'.format(semodule_log))
+        os.chmod(semodule_stub, 0o755)
+        se_enforce = os.path.join(tmp, "selinux_enforce")
+        se_cfg = os.path.join(tmp, "selinux_config")
+        if selinux:
+            with open(se_enforce, "w") as f:
+                f.write("1\n")
         fn = self._extract_remove_files()
+        fn = fn.replace("/sys/fs/selinux/enforce", se_enforce).replace("/etc/selinux/config", se_cfg)
         harness = (
             "set -u\n"
             'PATH="{fakebin}:$PATH"\n'
@@ -163,11 +216,12 @@ class UninstallTest(unittest.TestCase):
             'LIBDIR="{libdir}"\n'
             'SV_DIR="{sv}"\n'
             'RUNDIR="{run}"\n'
+            'DNSMASQ_RUNDIR="{dnsrun}"\n'
             'rm() {{ for a in "$@"; do case "$a" in -*) ;; *) printf "%s\\n" "$a" >> "{log}" ;; esac; done; }}\n'
             "{fn}\n"
             "remove_files\n"
         ).format(fakebin=fakebin, prefix=prefix, libdir=libdir, sv=os.path.join(tmp, "sv"),
-                 run=os.path.join(tmp, "run"), log=removed_log, fn=fn)
+                 run=os.path.join(tmp, "run"), dnsrun=os.path.join(tmp, "dnsrun"), log=removed_log, fn=fn)
         res = subprocess.run(["sh", "-c", harness], capture_output=True, text=True)
         self.assertEqual(res.returncode, 0, res.stderr)
         return read_text(removed_log).splitlines(), tmp
@@ -180,12 +234,18 @@ class UninstallTest(unittest.TestCase):
             "UDEV_DIR=/etc/udev/rules.d\n"
             "DESKTOP_DIR=/usr/local/share/applications"  # intentionally no trailing newline
         )
-        removed, _tmp = self._run_remove_files(content)
+        removed, _tmp = self._run_remove_files(content, selinux=True)
         self.assertIn("/etc/systemd/system/waydroid-manager.service", removed)
         self.assertIn("/etc/dbus-1/system.d/io.github.waydroidmanager.Manager.conf", removed)
         self.assertIn("/usr/local/share/dbus-1/system-services/io.github.waydroidmanager.Manager.service", removed)
         self.assertIn("/etc/udev/rules.d/70-waydroid-manager.rules", removed)
         self.assertIn("/usr/local/share/applications/io.github.waydroidmanager.desktop", removed)
+        self.assertIn(os.path.join(_tmp, "dnsrun"), removed)
+        self.assertIn("-X 400 -r waydroid-manager", read_text(os.path.join(_tmp, "semodule.txt")))
+
+        # Without SELinux files present, uninstall must not invoke semodule
+        _, tmp_no_se = self._run_remove_files(content, selinux=False)
+        self.assertFalse(os.path.exists(os.path.join(tmp_no_se, "semodule.txt")))
 
     def test_remove_files_ignores_relative_and_unsafe_install_paths(self):
         marker = tempfile.mkdtemp()
@@ -248,6 +308,10 @@ class RpmSpecTest(unittest.TestCase):
         self.assertIn("%global __requires_exclude_from ^/usr/lib/waydroid-manager/data/(openrc|runit)/", spec)
         self.assertIn("%{?systemd_ordering}", spec)
         self.assertRegex(spec, r"(?m)^Requires:\s+iptables-nft$")
+        self.assertIn("Requires:       (policycoreutils if selinux-policy-targeted)", spec)
+        self.assertIn("Requires(post): (policycoreutils if selinux-policy-targeted)", spec)
+        self.assertIn("Requires(postun): (policycoreutils if selinux-policy-targeted)", spec)
+        self.assertIn("OrderWithRequires: selinux-policy-targeted", spec)
         self.assertNotIn("(iptables-nft or nftables)", spec)
         self.assertIn("%config(noreplace) /etc/waydroid-manager/daemon.conf", spec)
         self.assertIn("%dir /usr/share/licenses/waydroid-manager", spec)
@@ -281,6 +345,120 @@ class RpmSpecTest(unittest.TestCase):
         # %post only restarts on fresh install ($1 -eq 1); upgrades use %systemd_postun_with_restart
         self.assertIn('[ "$1" -eq 1 ]', sections["post"])
         self.assertNotIn("try-restart", sections["post"])
+
+        # SELinux policy module installed in %post and removed in %postun (offline-safe with -n)
+        self.assertIn("waydroid-manager.cil", sections["post"])
+        self.assertIn("semodule -n -s", sections["post"])
+        self.assertIn("semodule -n -s", sections["postun"])
+        self.assertIn("-r waydroid-manager", sections["postun"])
+        self.assertIn("/run/dnsmasq-waydroid-manager", sections["postun"])
+
+    def _run_selinux_scriptlet_block(self, section_text, store_rel, config_text, live_systemd=True,
+                                     semodule_rc=0, arg1="1"):
+        tmp = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, tmp)
+        os.makedirs(os.path.join(tmp, "etc/selinux"), exist_ok=True)
+        with open(os.path.join(tmp, "etc/selinux/config"), "w") as f:
+            f.write(config_text)
+        if store_rel:
+            os.makedirs(os.path.join(tmp, store_rel), exist_ok=True)
+        if live_systemd:
+            os.makedirs(os.path.join(tmp, "run/systemd/system"), exist_ok=True)
+        fakebin = os.path.join(tmp, "bin")
+        os.makedirs(fakebin)
+        log = os.path.join(tmp, "calls.log")
+        for name, rc in (("semodule", semodule_rc), ("load_policy", 0), ("selinuxenabled", 0)):
+            p = os.path.join(fakebin, name)
+            with open(p, "w") as f:
+                f.write('#!/bin/sh\nprintf "%s %s\\n" "{}" "$*" >> "{}"\nexit {}\n'.format(name, log, rc))
+            os.chmod(p, 0o755)
+        m = re.search(r"(?m)^if .*?/etc/selinux/config.*?^fi$", section_text, re.S)
+        self.assertIsNotNone(m)
+        block = (m.group(0)
+                 .replace("/var/lib/selinux/", os.path.join(tmp, "var/lib/selinux/"))
+                 .replace("/etc/selinux/", os.path.join(tmp, "etc/selinux/"))
+                 .replace("/run/systemd/system", os.path.join(tmp, "run/systemd/system")))
+        res = subprocess.run(["sh", "-c", 'PATH="{}:$PATH"\nset -- {}\n{}'.format(fakebin, arg1, block)],
+                             capture_output=True, text=True)
+        self.assertEqual(res.returncode, 0, res.stderr)
+        return read_text(log).splitlines() if os.path.exists(log) else []
+
+    def test_rpm_selinux_scriptlets_support_fedora_and_rpm_ostree_stores(self):
+        spec = read_text(RPM_SPEC)
+        sec_end = r"(?=^%(?:description|prep|build|install|check|clean|pre|post|preun|postun|files|changelog)\b|\Z)"
+        post = re.search(r"(?m)^%post\n(.*?){}".format(sec_end), spec, re.S).group(1)
+        postun = re.search(r"(?m)^%postun\n(.*?){}".format(sec_end), spec, re.S).group(1)
+
+        cil = "/usr/lib/waydroid-manager/data/selinux/waydroid-manager.cil"
+        # Traditional Fedora live host: /var/lib/selinux/targeted/active + live load_policy
+        calls = self._run_selinux_scriptlet_block(
+            post, "var/lib/selinux/targeted/active", "SELINUX=enforcing\nSELINUXTYPE=targeted\n", live_systemd=True)
+        self.assertEqual(calls[0], "semodule -n -s targeted -X 400 -i " + cil)
+        self.assertIn("load_policy ", calls)
+
+        # Bazzite / Fedora Atomic rpm-ostree offline compose: /etc/selinux/targeted/active, quoted value, no load_policy
+        calls = self._run_selinux_scriptlet_block(
+            post, "etc/selinux/targeted/active", 'SELINUXTYPE="targeted" # atomic\n', live_systemd=False)
+        self.assertEqual(calls, ["semodule -n -s targeted -X 400 -i " + cil])
+
+        # Failed semodule must not invoke load_policy
+        calls = self._run_selinux_scriptlet_block(
+            post, "var/lib/selinux/targeted/active", "SELINUXTYPE=targeted\n", live_systemd=True, semodule_rc=1)
+        self.assertFalse(any(c.startswith("load_policy") for c in calls))
+
+        # %postun on uninstall ($1=0) removes module from /etc/selinux/targeted/active offline
+        calls = self._run_selinux_scriptlet_block(
+            postun, "etc/selinux/targeted/active", "SELINUXTYPE='targeted'\n", live_systemd=False, arg1="0")
+        self.assertEqual(calls, ["semodule -n -s targeted -X 400 -r waydroid-manager"])
+
+        # %postun on upgrade ($1=1) must not remove the module
+        calls = self._run_selinux_scriptlet_block(
+            postun, "etc/selinux/targeted/active", "SELINUXTYPE=targeted\n", live_systemd=True, arg1="1")
+        self.assertEqual(calls, [])
+
+    def test_install_sh_selinux_preflight_and_module_branches(self):
+        text = read_text(INSTALL_SH)
+        m_pre = re.search(r'(?m)^    if \[ "\$ACTIVATE" = 1 \].*?^    fi$', text, re.S)
+        m_post = re.search(r'(?m)^if \[ -e /sys/fs/selinux/enforce \]; then\n.*?^fi$', text, re.S)
+        self.assertIsNotNone(m_pre)
+        self.assertIsNotNone(m_post)
+
+        tmp = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, tmp)
+        enforce = os.path.join(tmp, "enforce")
+        fakebin = os.path.join(tmp, "bin")
+        os.makedirs(fakebin)
+        shutil.copy(shutil.which("cat"), os.path.join(fakebin, "cat"))
+
+        # Pre-flight fails cleanly when enforcing and semodule is absent
+        with open(enforce, "w") as f:
+            f.write("1\n")
+        pre = m_pre.group(0).replace("/sys/fs/selinux/enforce", enforce)
+        res = subprocess.run(["sh", "-c", 'PATH="{}"\nACTIVATE=1\n{}'.format(fakebin, pre)],
+                             capture_output=True, text=True)
+        self.assertNotEqual(res.returncode, 0)
+        self.assertIn("semodule is missing", res.stderr)
+
+        # Post-copy warns and continues in permissive mode when semodule fails
+        with open(enforce, "w") as f:
+            f.write("0\n")
+        sm = os.path.join(fakebin, "semodule")
+        with open(sm, "w") as f:
+            f.write("#!/bin/sh\nexit 1\n")
+        os.chmod(sm, 0o755)
+        post = m_post.group(0).replace("/sys/fs/selinux/enforce", enforce)
+        res = subprocess.run(["sh", "-c", 'PATH="{}"\nLIBDIR=/opt/wdm\n{}'.format(fakebin, post)],
+                             capture_output=True, text=True)
+        self.assertEqual(res.returncode, 0, res.stderr)
+        self.assertIn("warning: could not install SELinux policy module", res.stderr)
+
+        # Post-copy fails in enforcing mode when semodule fails
+        with open(enforce, "w") as f:
+            f.write("1\n")
+        res = subprocess.run(["sh", "-c", 'PATH="{}"\nLIBDIR=/opt/wdm\n{}'.format(fakebin, post)],
+                             capture_output=True, text=True)
+        self.assertNotEqual(res.returncode, 0)
+        self.assertIn("failed to install SELinux policy module", res.stderr)
 
 
 class PkexecCliPathTest(unittest.TestCase):

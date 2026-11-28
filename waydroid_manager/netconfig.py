@@ -58,6 +58,7 @@ class NetConfig:
             "WDM_NETWORK": str(self.network),
             "WDM_DHCP_START": str(self.network.network_address),
             "WDM_VARRUN": paths.RUN_DIR,
+            "WDM_DNSMASQ_DIR": paths.DNSMASQ_RUN_DIR,
             "WDM_HOSTSFILE": paths.DHCP_HOSTS_FILE,
             "WDM_LEASEFILE": "/var/lib/misc/dnsmasq.{}.leases".format(self.bridge),
             "WDM_USE_NFT": "true" if self.use_nft else "false",

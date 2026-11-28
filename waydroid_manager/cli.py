@@ -543,6 +543,22 @@ def cmd_doctor(o):
                        ("erofs", "Android 16 and 17's images")):
         check(subprocess.run(["modinfo", mod], capture_output=True).returncode == 0,
               "{} module ({})".format(mod, needs), "no {} module: {} can't run".format(mod, needs))
+    from .daemon.util import SELINUX_ROOTFS_CONTEXT, selinux_binder_allowed, selinux_context_valid, selinux_mode
+    se_mode = selinux_mode()
+    if se_mode is not None:
+        has_ctx = selinux_context_valid(SELINUX_ROOTFS_CONTEXT)
+        if has_ctx is not None:
+            check(has_ctx or se_mode != "enforcing",
+                  "SELinux {} ({})".format(se_mode, "waydroid-selinux policy loaded" if has_ctx
+                                           else "waydroid-selinux not loaded"),
+                  "SELinux is enforcing, but waydroid-selinux policy is missing: install waydroid-selinux")
+        binder_ok = selinux_binder_allowed()
+        if binder_ok is not None:
+            cil = os.path.join(paths.DATA_DIR, "selinux", "waydroid-manager.cil")
+            check(binder_ok or se_mode != "enforcing",
+                  "SELinux {} (Android 14-17 APEX binder {})".format(
+                      se_mode, "allowed" if binder_ok else "policy not loaded"),
+                  "SELinux blocks Android 14-17 APEX binder calls: run 'sudo semodule -X 400 -i {}'".format(cil))
     try:
         info = Daemon().info()
         check(True, "daemon {} running".format(info["version"]), "")

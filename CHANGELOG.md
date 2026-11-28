@@ -6,6 +6,29 @@ follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions f
 
 ## [Unreleased]
 
+## [1.6.1] - 2026-11-28
+
+### Fixed
+- **Fedora / Bazzite SELinux enforcing support (#120):**
+  - Mount Android rootfs/vendor images and overlays with `context="system_u:object_r:waydroid_rootfs_t:s0"`
+    when loaded in SELinux policy, and force `LIBMOUNT_FORCE_MOUNT2=always` on overlay mounts so
+    `util-linux >= 2.39` accepts stacked `lowerdir=` lists longer than 255 bytes (Android 16 + Digitalis).
+  - Move `dnsmasq.pid` and `dhcp-hosts` to `/run/dnsmasq-waydroid-manager` (`dnsmasq_var_run_t`)
+    with `restorecon -R`, and migrate running pre-1.6.1 `dnsmasq` instances smoothly on upgrade.
+  - Ship and auto-install `data/selinux/waydroid-manager.cil` (via `scripts/install.sh` and RPM
+    `%post`/`%postun`, supporting both `/var/lib/selinux` and `rpm-ostree`'s `/etc/selinux` store)
+    for Android 14–17 APEX binder calls under SELinux enforcing, and add SELinux checks to
+    `waydroid-manager doctor`.
+  - Preserve `IPTABLES_BIN` across network teardown when `iptables-legacy` is absent, pre-load
+    legacy `iptable_*`/`ip6table_*` kernel modules for Android 14–17 `netd` on nftables-only hosts,
+    and set `ro.waydroid.override_props=0` in software GPU mode.
+- **Wayland window proxy stability:**
+  - Fall back to `ARGB8888` when `wl_shm_pool.create_buffer` receives an invalid/unsupported format
+    (such as `-EINVAL` / `0xffffffea` on Android 16 inactive-window snapshots).
+  - Rewrite `wl_keyboard.enter`/`leave` targeting proxy-owned frame subsurfaces to the device
+    window surface so clicking or dragging the title bar on compositors such as Weston 15 no longer
+    disconnects `hwcomposer` and reboots Android.
+
 ## [1.6.0] - 2026-11-26
 
 ### Added
@@ -448,7 +471,8 @@ First release.
 - Root daemon hardened against symlink and race attacks, root-enabling Android properties,
   and misuse of passed file descriptors. Each user sees and controls only their own instances.
 
-[Unreleased]: https://github.com/felipeoes/waydroid-manager/compare/v1.6.0...HEAD
+[Unreleased]: https://github.com/felipeoes/waydroid-manager/compare/v1.6.1...HEAD
+[1.6.1]: https://github.com/felipeoes/waydroid-manager/compare/v1.6.0...v1.6.1
 [1.6.0]: https://github.com/felipeoes/waydroid-manager/compare/v1.5.0...v1.6.0
 [1.5.0]: https://github.com/felipeoes/waydroid-manager/compare/v1.4.0...v1.5.0
 [1.4.0]: https://github.com/felipeoes/waydroid-manager/compare/v1.3.6...v1.4.0

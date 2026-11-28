@@ -26,7 +26,8 @@ Gpu = collections.namedtuple("Gpu", "pci label driver node")
 VKMS_PROPS = {"ro.hardware.gralloc": "minigbm", "ro.hardware.egl": "angle", "ro.hardware.vulkan": "pastel",
               "ro.waydroid.override_props": "0"}
 OTHER_GPU_PROPS = {"ro.hardware.gralloc": "minigbm_gbm_mesa", "ro.waydroid.override_props": "0"}
-SOFTWARE_PROPS = {"ro.hardware.gralloc": "default", "ro.hardware.egl": "swiftshader", "gralloc.gbm.device": ""}
+SOFTWARE_PROPS = {"ro.hardware.gralloc": "default", "ro.hardware.egl": "swiftshader",
+                  "gralloc.gbm.device": "", "ro.waydroid.override_props": "0"}
 # Venus over the socket the session's renderer listens on, bound at /dev/venus. minigbm still
 # opens a DRM device before the wrapper takes over: our vkms device stands in.
 NVIDIA_PROPS = {
