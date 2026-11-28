@@ -6,9 +6,9 @@ import unittest
 import zipfile
 from unittest import mock
 
-from waydroid_manager.daemon import armtrans, magisk
+from waydroid_manager.daemon import armtrans, magisk, util
 
-from waydroid_manager.daemon.util import overlay_opts
+from waydroid_manager.daemon.util import SELINUX_ROOTFS_CONTEXT, overlay_opts
 from waydroid_manager.instance import RESTART_SETTINGS, setting_default, validate_setting
 
 
@@ -20,6 +20,73 @@ class OverlayOptsTest(unittest.TestCase):
     def test_writable_uses_upper_and_work(self):
         o = overlay_opts(["/a", "/b"], "/up", "/wk", True)
         self.assertEqual(o, "lowerdir=/a:/b,upperdir=/up,workdir=/wk,xino=off")
+
+    def test_selinux_context_appended_when_given(self):
+        o_ro = overlay_opts(["/a"], "/up", "/wk", False, context=SELINUX_ROOTFS_CONTEXT)
+        o_rw = overlay_opts(["/a"], "/up", "/wk", True, context=SELINUX_ROOTFS_CONTEXT)
+        self.assertEqual(o_ro, 'ro,lowerdir=/up:/a,xino=off,context="{}"'.format(SELINUX_ROOTFS_CONTEXT))
+        self.assertEqual(o_rw, 'lowerdir=/a,upperdir=/up,workdir=/wk,xino=off,context="{}"'.format(
+            SELINUX_ROOTFS_CONTEXT))
+
+    def test_mount_image_and_overlay_apply_selinux_context_and_mount2(self):
+        with tempfile.TemporaryDirectory() as t:
+            up, wk, mnt = os.path.join(t, "up"), os.path.join(t, "wk"), os.path.join(t, "mnt")
+            with mock.patch.object(util, "selinux_rootfs_context", return_value=SELINUX_ROOTFS_CONTEXT), \
+                    mock.patch.object(util, "is_mount", return_value=True), \
+                    mock.patch.object(util, "run") as run:
+                util.mount_image("/img/system.img", mnt)
+                self.assertEqual(run.call_args_list[0].args[0],
+                                 ["mount", "-o", 'ro,context="{}"'.format(SELINUX_ROOTFS_CONTEXT),
+                                  "/img/system.img", mnt])
+                util.mount_overlay(["/lo"], mnt, up, wk, writable=False)
+                call = run.call_args_list[1]
+                self.assertEqual(call.args[0],
+                                 ["mount", "-t", "overlay", "-o",
+                                  'ro,lowerdir={}:/lo,xino=off,context="{}"'.format(up, SELINUX_ROOTFS_CONTEXT),
+                                  "overlay", mnt])
+                self.assertEqual(call.kwargs.get("env"), {"LIBMOUNT_FORCE_MOUNT2": "always"})
+
+            with mock.patch.object(util, "selinux_rootfs_context", return_value=None), \
+                    mock.patch.object(util, "is_mount", return_value=True), \
+                    mock.patch.object(util, "run") as run:
+                util.mount_image("/img/system.img", mnt)
+                self.assertEqual(run.call_args_list[0].args[0], ["mount", "-o", "ro", "/img/system.img", mnt])
+                util.mount_overlay(["/lo"], mnt, up, wk, writable=False)
+                self.assertEqual(run.call_args_list[1].args[0],
+                                 ["mount", "-t", "overlay", "-o",
+                                  "ro,lowerdir={}:/lo,xino=off".format(up), "overlay", mnt])
+                self.assertEqual(run.call_args_list[1].kwargs.get("env"), {"LIBMOUNT_FORCE_MOUNT2": "always"})
+
+    def test_selinux_mode_and_binder_query(self):
+        with mock.patch("builtins.open", mock.mock_open(read_data="1\n")):
+            self.assertEqual(util.selinux_mode(), "enforcing")
+        with mock.patch("builtins.open", mock.mock_open(read_data="0\n")):
+            self.assertEqual(util.selinux_mode(), "permissive")
+        with mock.patch("builtins.open", side_effect=FileNotFoundError):
+            self.assertIsNone(util.selinux_mode())
+            self.assertIsNone(util.selinux_binder_allowed())
+
+        with mock.patch.object(util.os, "open", side_effect=PermissionError(13, "denied")):
+            self.assertIsNone(util.selinux_context_valid(SELINUX_ROOTFS_CONTEXT))
+        with mock.patch.object(util.os, "open", side_effect=OSError(22, "invalid")):
+            self.assertIs(util.selinux_context_valid(SELINUX_ROOTFS_CONTEXT), False)
+
+        files = {
+            "/sys/fs/selinux/class/binder/index": "77\n",
+            "/sys/fs/selinux/class/binder/perms/call": "2\n",
+        }
+        def fake_open(path, *_a, **_kw):
+            return mock.mock_open(read_data=files[path])()
+
+        for resp, expected in ((b"a ffffffff 0 ffffffff 2 0\x00", True), (b"0 ffffffff 0 ffffffff 3 0\x00", False)):
+            with mock.patch.object(util, "selinux_mode", return_value="enforcing"), \
+                    mock.patch.object(util, "selinux_context_valid", return_value=True), \
+                    mock.patch("builtins.open", side_effect=fake_open), \
+                    mock.patch.object(util.os, "open", return_value=99), \
+                    mock.patch.object(util.os, "write", return_value=10), \
+                    mock.patch.object(util.os, "read", return_value=resp), \
+                    mock.patch.object(util.os, "close"):
+                self.assertIs(util.selinux_binder_allowed(), expected)
 
     def test_setting(self):
         self.assertIn("system_writable", RESTART_SETTINGS)

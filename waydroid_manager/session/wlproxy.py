@@ -894,6 +894,21 @@ class Session:
             elif name_iface == "wl_compositor":
                 self.comp_version = version
             return None
+        if iface == "wl_shm" and op == P.WL_SHM_CREATE_POOL:
+            self.objs[r.n()] = "wl_shm_pool"
+            return None
+        if iface == "wl_shm_pool" and op == P.WL_SHM_POOL_CREATE_BUFFER:
+            buf, offset, width, height, stride, fmt = r.n(), r.i(), r.i(), r.i(), r.i(), r.u()
+            self.objs[buf] = "wl_buffer"
+            if fmt not in (P.WL_SHM_FORMAT_ARGB8888, P.WL_SHM_FORMAT_XRGB8888) and (
+                    fmt >= 0x80000000 or (self.shm_formats and fmt not in self.shm_formats)):
+                # Waydroid's hwcomposer creates a shm buffer even when HAL format conversion fails
+                # (passing -EINVAL = 0xffffffea, e.g. on inactive-window snapshots in Android 16);
+                # fall back to ARGB8888 instead of letting the compositor abort hwcomposer.
+                if width > 0 and stride >= 4 and stride < width * 4:
+                    width = stride // 4
+                return [msg(obj, op, "niiiiu", buf, offset, width, height, stride, P.WL_SHM_FORMAT_ARGB8888)]
+            return None
         if iface == "wl_compositor" and op == P.WL_COMPOSITOR_CREATE_SURFACE:
             sid = r.n()
             self.objs[sid] = "wl_surface"
@@ -1391,12 +1406,30 @@ class Session:
 
     def _keyboard_event(self, kid, op, r):
         if op == P.WL_KEYBOARD_EV_ENTER:
-            self.last_serial, self.kbd_focus = r.u(), r.o()
+            serial, sid, keys = r.u(), r.o(), r.a()
+            self.last_serial = serial
+            rewritten = sid in self.mine
+            if rewritten:
+                if not self.window:
+                    self.kbd_focus = None
+                    return []
+                sid = self.window.surface
+            self.kbd_focus = sid
             if self.cfg.nested and self.data_device:
                 self._offer_x11_clipboard()
-        elif op == 2:                                     # leave
-            self.last_serial = r.u()
+            if rewritten:
+                # Compositors such as Weston focus keyboard on the clicked frame subsurface;
+                # never expose our proxy-owned surface id to the HWC (libwayland disconnects on it).
+                return [msg(kid, op, "uoa", serial, sid, keys)]
+        elif op == P.WL_KEYBOARD_EV_LEAVE:
+            serial, sid = r.u(), r.o()
+            self.last_serial = serial
+            prev = getattr(self, "kbd_focus", None)
             self.kbd_focus = None
+            if sid in self.mine:
+                if self.window and prev == self.window.surface:
+                    return [msg(kid, op, "uo", serial, self.window.surface)]
+                return []
         elif op == 4:                                     # modifiers
             self.last_serial = r.u()
         elif op == P.WL_KEYBOARD_EV_KEY:

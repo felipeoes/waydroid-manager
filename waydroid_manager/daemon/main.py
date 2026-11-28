@@ -1162,7 +1162,8 @@ def main():
         print("waydroid-manager-daemon must run as root", file=sys.stderr)
         return 1
     os.umask(0o022)
-    for d in (paths.STATE_DIR, paths.INSTANCES_DIR, paths.LXC_PATH, paths.IMAGES_DIR, paths.RUN_DIR):
+    for d in (paths.STATE_DIR, paths.INSTANCES_DIR, paths.LXC_PATH, paths.IMAGES_DIR,
+              paths.RUN_DIR, paths.DNSMASQ_RUN_DIR):
         os.makedirs(d, mode=0o755, exist_ok=True)
     w = stock.check_version()
     if w:

@@ -2,6 +2,7 @@
 import array
 import io
 import os
+import shutil
 import socket
 import struct
 import tempfile
@@ -734,6 +735,29 @@ class WindowStateTest(unittest.TestCase):
         out = h.ev(msg(KBD, P.WL_KEYBOARD_EV_KEY, "uuuu", 8, 0, 1, 1))
         self.assertEqual(len(out), 1)
 
+    def test_keyboard_focus_on_frame_surface_rewrites_to_window_surface(self):
+        h = self.h
+        title = h.s.window.frame["title"]
+        out = h.ev(msg(KBD, P.WL_KEYBOARD_EV_ENTER, "uoa", 10, title, b"\x1c\x00\x00\x00"))
+        self.assertEqual(len(out), 1)
+        self.assertEqual(out[0][:2], (KBD, P.WL_KEYBOARD_EV_ENTER))
+        self.assertEqual(args(out[0][2], "uoa"), [10, S, b"\x1c\x00\x00\x00"])
+        self.assertEqual(h.s.kbd_focus, S)
+
+        out = h.ev(msg(KBD, P.WL_KEYBOARD_EV_LEAVE, "uo", 11, title))
+        self.assertEqual(len(out), 1)
+        self.assertEqual(out[0][:2], (KBD, P.WL_KEYBOARD_EV_LEAVE))
+        self.assertEqual(args(out[0][2], "uo"), [11, S])
+        self.assertIsNone(h.s.kbd_focus)
+
+        # Unmatched leave for a frame surface when HWC does not hold focus on the current window is dropped.
+        self.assertEqual(h.ev(msg(KBD, P.WL_KEYBOARD_EV_LEAVE, "uo", 12, title)), [])
+
+        # If the window is already gone, frame surface focus events are dropped instead of leaking proxy ids.
+        h.s._drop_window()
+        self.assertEqual(h.ev(msg(KBD, P.WL_KEYBOARD_EV_ENTER, "uoa", 13, title, b"")), [])
+        self.assertEqual(h.ev(msg(KBD, P.WL_KEYBOARD_EV_LEAVE, "uo", 14, title)), [])
+
     def test_nav_glyphs_render(self):
         from waydroid_manager.session import frame
         data, w, h_, stride = frame.render_toolbar(400, 1, "dark")
@@ -1455,6 +1479,61 @@ class ProxyIntegrationTest(unittest.TestCase):
             client.sendall(msg(1, 1, "n", 2))
             self.assertEqual(parse(server.recv(4096)), [(1, 1, struct.pack("=I", 2))])
             self.assertTrue(ticks)
+        for s in (client, server, comp):
+            s.close()
+
+    def test_invalid_shm_buffer_format_falls_back_to_argb8888(self):
+        tmp = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, tmp)
+        upstream_path, listen_path = os.path.join(tmp, "compositor"), os.path.join(tmp, "wayland-0")
+        comp = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        comp.bind(upstream_path)
+        comp.listen(1)
+        proxy = wp.Proxy(listen_path, upstream_path, wp.Config("9", "Nine", frame=False), io.StringIO())
+        proxy.bind()
+        threading.Thread(target=proxy.run, daemon=True).start()
+        client = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        client.connect(listen_path)
+        client.settimeout(5)
+        server, _ = comp.accept()
+        server.settimeout(5)
+        r, w = os.pipe()
+        # Bind wl_shm(3), let compositor advertise formats (ARGB8888 + ABGR8888), then create buffers:
+        # 1) -EINVAL (0xffffffea, Android 16 hwcomposer snapshot) -> ARGB8888
+        # 2) unadvertised RGB565 (0x36314752) with 2bpp stride (32 for width 16) -> ARGB8888, width clamped to 8
+        # 3) mandatory XRGB8888 (1) even though omitted from advertised set -> untouched
+        # 4) advertised ABGR8888 (0x34324241) -> untouched
+        init = msg(1, 1, "n", 2) + msg(2, 0, "usun", 3, "wl_shm", 1, 3)
+        client.sendall(init)
+        got = b""
+        while len(parse(got)) < 2:
+            got += server.recv(4096)
+        shm_sid = args(parse(got)[1][2], "usun")[-1]
+        server.sendall(msg(shm_sid, P.WL_SHM_EV_FORMAT, "u", P.WL_SHM_FORMAT_ARGB8888) +
+                       msg(shm_sid, P.WL_SHM_EV_FORMAT, "u", P.DRM_FORMAT_ABGR8888))
+        ev_got = b""
+        while len(parse(ev_got)) < 2:
+            ev_got += client.recv(4096)
+
+        data = (msg(3, P.WL_SHM_CREATE_POOL, "ni", 4, 4096) +
+                msg(4, P.WL_SHM_POOL_CREATE_BUFFER, "niiiiu", 5, 0, 16, 16, 64, 0xffffffea) +
+                msg(4, P.WL_SHM_POOL_CREATE_BUFFER, "niiiiu", 6, 0, 16, 16, 32, 0x36314752) +
+                msg(4, P.WL_SHM_POOL_CREATE_BUFFER, "niiiiu", 7, 0, 16, 16, 64, P.WL_SHM_FORMAT_XRGB8888) +
+                msg(4, P.WL_SHM_POOL_CREATE_BUFFER, "niiiiu", 8, 0, 16, 16, 64, P.DRM_FORMAT_ABGR8888))
+        client.sendmsg([data], [(socket.SOL_SOCKET, socket.SCM_RIGHTS, array.array("i", [r]))])
+        got, fds = b"", []
+        while len(parse(got)) < 5:
+            chunk, anc, _, _ = server.recvmsg(65536, socket.CMSG_SPACE(64))
+            got += chunk
+            for _level, _type, payload in anc:
+                fds.extend(array.array("i", payload[:len(payload) - len(payload) % 4]))
+        msgs = parse(got)
+        self.assertEqual(args(msgs[1][2], "niiiiu")[2:], [16, 16, 64, P.WL_SHM_FORMAT_ARGB8888])
+        self.assertEqual(args(msgs[2][2], "niiiiu")[2:], [8, 16, 32, P.WL_SHM_FORMAT_ARGB8888])
+        self.assertEqual(args(msgs[3][2], "niiiiu")[2:], [16, 16, 64, P.WL_SHM_FORMAT_XRGB8888])
+        self.assertEqual(args(msgs[4][2], "niiiiu")[2:], [16, 16, 64, P.DRM_FORMAT_ABGR8888])
+        for fd in fds + [r, w]:
+            os.close(fd)
         for s in (client, server, comp):
             s.close()
 

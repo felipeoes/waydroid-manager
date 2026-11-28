@@ -214,7 +214,8 @@ entry it first loaded.
 | `/var/lib/waydroid-manager/lxc/wdm-N/` | generated LXC config |
 | `/var/lib/waydroid-manager/images/` | image store; `current` is the copy of stock's set |
 | `/var/lib/waydroid-manager/{arm,gapps,nvidia}/` | shared read-only layers and NVIDIA's host renderer |
-| `/run/waydroid-manager/` | network env, dnsmasq hosts file, staged sockets, the AppArmor profile |
+| `/run/waydroid-manager/` | network env, staged sockets, the AppArmor profile |
+| `/run/dnsmasq-waydroid-manager/` | `dnsmasq` pidfile and static `dhcp-hosts` (labeled `dnsmasq_var_run_t` under SELinux) |
 | `/sys/kernel/config/vkms/waydroid-manager/` | the hidden vkms device (made on first software start) |
 | `~/.local/share/applications/waydroid-manager.*` | per-user launchers |
 | `~/.local/share/applications/Waydroid.desktop` | hides stock's Waydroid icon (#0's is the Waydroid icon) |
@@ -316,8 +317,11 @@ which Android reads last.
   images' ueventd remounts sysfs and replays every host device event, which made GNOME re-probe
   its GPUs and could end the session. lxc-start only switches to `lxc-*` profiles. Each start
   regenerates it from stock's and loads it (`container.load_apparmor_profile`). On SELinux hosts
-  without AppArmor (Fedora/Bazzite), no AppArmor profile is loaded and `install.sh` runs
-  `restorecon` on installed files when SELinux is enabled.
+  without AppArmor (Fedora/Bazzite), no AppArmor profile is loaded; images and overlays are mounted
+  with `context="system_u:object_r:waydroid_rootfs_t:s0"` when valid, `dnsmasq` keeps its runtime
+  files under `/run/dnsmasq-waydroid-manager/` (`dnsmasq_var_run_t`), and `install.sh` / the `.rpm`
+  install `data/selinux/waydroid-manager.cil` (allowing `spc_t` ↔ `container_runtime_t` binder IPC
+  for Android 14–17 loop-mounted APEXes) and restore file contexts.
 - **Instance names are visible to every local user:** the daemon keeps a marked block in the
   world-readable `/etc/hosts` (`netconfig.etc_hosts_text`) with one `waydroid-<name>` per instance,
   so adb can show instances by name. The names are reduced to `[a-z0-9-]`, so a display name can't
