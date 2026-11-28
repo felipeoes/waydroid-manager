@@ -6,6 +6,8 @@ follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions f
 
 ## [Unreleased]
 
+## [1.6.1] - 2026-11-28
+
 ### Fixed
 - **Fedora / Bazzite SELinux enforcing support (#120):**
   - Mount Android rootfs/vendor images and overlays with `context="system_u:object_r:waydroid_rootfs_t:s0"`
@@ -469,7 +471,8 @@ First release.
 - Root daemon hardened against symlink and race attacks, root-enabling Android properties,
   and misuse of passed file descriptors. Each user sees and controls only their own instances.
 
-[Unreleased]: https://github.com/felipeoes/waydroid-manager/compare/v1.6.0...HEAD
+[Unreleased]: https://github.com/felipeoes/waydroid-manager/compare/v1.6.1...HEAD
+[1.6.1]: https://github.com/felipeoes/waydroid-manager/compare/v1.6.0...v1.6.1
 [1.6.0]: https://github.com/felipeoes/waydroid-manager/compare/v1.5.0...v1.6.0
 [1.5.0]: https://github.com/felipeoes/waydroid-manager/compare/v1.4.0...v1.5.0
 [1.4.0]: https://github.com/felipeoes/waydroid-manager/compare/v1.3.6...v1.4.0
